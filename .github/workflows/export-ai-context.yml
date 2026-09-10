@@ -1,0 +1,119 @@
+name: Export AI Context
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - AI_CONTEXT.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate AI_CONTEXT.txt
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          allowed_extensions = {
+              ".swift",
+              ".plist",
+              ".yml",
+              ".yaml",
+              ".md",
+              ".storyboard",
+              ".json",
+              ".strings",
+              ".xcconfig",
+              ".entitlements",
+              ".pbxproj",
+          }
+
+          excluded_parts = {
+              ".git",
+              ".build",
+              "DerivedData",
+              "Pods",
+              "Carthage",
+              "node_modules",
+          }
+
+          root = Path(".")
+          output = root / "AI_CONTEXT.txt"
+
+          files = []
+
+          for path in root.rglob("*"):
+              if not path.is_file():
+                  continue
+
+              if path == output:
+                  continue
+
+              if any(part in excluded_parts for part in path.parts):
+                  continue
+
+              if path.suffix.lower() not in allowed_extensions:
+                  continue
+
+              files.append(path)
+
+          files.sort(key=lambda item: str(item).lower())
+
+          lines = [
+              "# AI Context",
+              "",
+              "此文件由 GitHub Actions 自动生成。",
+              "它包含仓库中的全部可阅读源码、配置和文本资源。",
+              "",
+              "## 文件列表",
+              "",
+          ]
+
+          for path in files:
+              lines.append(f"- `{path.as_posix()}`")
+
+          lines.extend(["", "## 文件内容", ""])
+
+          for path in files:
+              relative_path = path.as_posix()
+
+              try:
+                  content = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  content = path.read_text(encoding="utf-8", errors="replace")
+
+              lines.extend([
+                  f"### {relative_path}",
+                  "",
+                  "```text",
+                  content.rstrip(),
+                  "```",
+                  "",
+              ])
+
+          output.write_text("\n".join(lines), encoding="utf-8")
+          PY
+
+      - name: Commit AI_CONTEXT.txt
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add AI_CONTEXT.txt
+
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+
+          git commit -m "chore: update AI context"
+          git push
