@@ -88,17 +88,20 @@ final class SearchEngineStore {
 
 struct CustomBottomSheetItem {
     let title: String
+    var iconName: String? = nil
     var isDestructive: Bool = false
     let handler: (() -> Void)?
     let longPressHandler: (() -> Void)?
 
     init(
         title: String,
+        iconName: String? = nil,
         isDestructive: Bool = false,
         handler: (() -> Void)?,
         longPressHandler: (() -> Void)? = nil
     ) {
         self.title = title
+        self.iconName = iconName
         self.isDestructive = isDestructive
         self.handler = handler
         self.longPressHandler = longPressHandler
