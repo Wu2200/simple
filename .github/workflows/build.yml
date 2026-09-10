@@ -1,0 +1,135 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate App Icon
+        run: |
+          mkdir -p Assets.xcassets/AppIcon.appiconset
+
+          cat > Assets.xcassets/AppIcon.appiconset/Contents.json <<'EOF'
+          {
+            "images": [
+              {
+                "filename": "icon.png",
+                "idiom": "universal",
+                "platform": "ios",
+                "size": "1024x1024"
+              }
+            ],
+            "info": {
+              "author": "xcode",
+              "version": 1
+            }
+          }
+          EOF
+
+          swift - <<'EOF'
+          import AppKit
+
+          let size = NSSize(width: 1024, height: 1024)
+          let image = NSImage(size: size)
+
+          image.lockFocus()
+
+          let background = NSBezierPath(
+              roundedRect: NSRect(x: 0, y: 0, width: 1024, height: 1024),
+              xRadius: 220,
+              yRadius: 220
+          )
+
+          NSColor(
+              red: 0.08,
+              green: 0.42,
+              blue: 0.92,
+              alpha: 1.0
+          ).setFill()
+
+          background.fill()
+
+          let outerCircle = NSBezierPath(
+              ovalIn: NSRect(x: 212, y: 212, width: 600, height: 600)
+          )
+
+          NSColor.white.setFill()
+          outerCircle.fill()
+
+          let innerCircle = NSBezierPath(
+              ovalIn: NSRect(x: 390, y: 390, width: 244, height: 244)
+          )
+
+          NSColor(
+              red: 0.08,
+              green: 0.42,
+              blue: 0.92,
+              alpha: 1.0
+          ).setFill()
+
+          innerCircle.fill()
+
+          image.unlockFocus()
+
+          guard
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:])
+          else {
+              exit(1)
+          }
+
+          try png.write(
+              to: URL(fileURLWithPath: "Assets.xcassets/AppIcon.appiconset/icon.png")
+          )
+          EOF
+
+      - name: Generate Xcode Project
+        run: |
+          xcodegen generate
+          sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' SimpleBrowser.xcodeproj/project.pbxproj
+
+      - name: Build Application
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project SimpleBrowser.xcodeproj \
+            -scheme SimpleBrowser \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee xcodebuild.log
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleBrowser-Build-Log
+          path: xcodebuild.log
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/SimpleBrowser.app Payload/
+          zip -r SimpleBrowser.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleBrowser-IPA
+          path: SimpleBrowser.ipa
