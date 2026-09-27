@@ -1109,7 +1109,7 @@ final class BrowserSessionStore {
 
     func loadSession() -> BrowserSession? {
         guard let data = UserDefaults.standard.data(forKey: key),
-              let session = try? JSONDecoder().decode(BrowserSession.self, from: data),
+              let session = try? JSONDecoder().decode([BrowserSession].self, from: data),
               !session.tabs.isEmpty else {
             return nil
         }
@@ -1589,7 +1589,7 @@ final class FaviconLoader {
             isFinished = true
             lock.unlock()
 
-            if let img = image, let data = data {
+            if let data = data, image != nil {
                 self.saveHighResIcon(data: data, for: cleanDomain)
             }
 
