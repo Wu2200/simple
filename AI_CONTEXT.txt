@@ -5094,10 +5094,13 @@ final class CleanOptionRowCell: UITableViewCell {
 ```text
 import UIKit
 
-final class CustomBottomSheetViewController: UIViewController {
+final class CustomBottomSheetViewController: UIViewController, UIScrollViewDelegate {
     private let titleString: String
     private let items: [CustomBottomSheetItem]
     private let layout: CustomBottomSheetLayout
+
+    private var pageControl: UIPageControl?
+    private var pagedScrollView: UIScrollView?
 
     init(title: String, items: [CustomBottomSheetItem], layout: CustomBottomSheetLayout = .list) {
         self.titleString = title
@@ -5110,11 +5113,250 @@ final class CustomBottomSheetViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemGroupedBackground
-        setupViews()
+        view.backgroundColor = .systemBackground
+        if layout == .grid {
+            setupModernGridLayout()
+        } else {
+            setupListLayout()
+        }
     }
 
-    private func setupViews() {
+    private func setupModernGridLayout() {
+        let grabber = UIView()
+        grabber.translatesAutoresizingMaskIntoConstraints = false
+        grabber.backgroundColor = .tertiaryLabel
+        grabber.layer.cornerRadius = 2.5
+        grabber.clipsToBounds = true
+        view.addSubview(grabber)
+
+        let scrollView = UIScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.isPagingEnabled = true
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.delegate = self
+        self.pagedScrollView = scrollView
+        view.addSubview(scrollView)
+
+        let itemsPerPage = 8
+        let totalPages = max(1, Int(ceil(Double(items.count) / Double(itemsPerPage))))
+
+        let pc = UIPageControl()
+        pc.translatesAutoresizingMaskIntoConstraints = false
+        pc.numberOfPages = totalPages
+        pc.currentPage = 0
+        pc.hidesForSinglePage = true
+        pc.pageIndicatorTintColor = .tertiaryLabel
+        pc.currentPageIndicatorTintColor = .label
+        pc.isUserInteractionEnabled = true
+        pc.addTarget(self, action: #selector(handlePageControlChange(_:)), for: .valueChanged)
+        self.pageControl = pc
+        view.addSubview(pc)
+
+        let collapseButton = TouchButton()
+        collapseButton.translatesAutoresizingMaskIntoConstraints = false
+        collapseButton.tintColor = .secondaryLabel
+        collapseButton.setImage(
+            UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)),
+            for: .normal
+        )
+        collapseButton.hitTestInsets = UIEdgeInsets(top: -10, left: -40, bottom: -10, right: -40)
+        collapseButton.addTarget(self, action: #selector(handleDismiss), for: .touchUpInside)
+        view.addSubview(collapseButton)
+
+        NSLayoutConstraint.activate([
+            grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            grabber.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            grabber.widthAnchor.constraint(equalToConstant: 36),
+            grabber.heightAnchor.constraint(equalToConstant: 5),
+
+            scrollView.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 14),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.heightAnchor.constraint(equalToConstant: 162),
+
+            pc.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: 4),
+            pc.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            pc.heightAnchor.constraint(equalToConstant: (totalPages > 1 ? 18 : 0)),
+
+            collapseButton.topAnchor.constraint(equalTo: pc.bottomAnchor, constant: 4),
+            collapseButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            collapseButton.heightAnchor.constraint(equalToConstant: 32),
+            collapseButton.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -2)
+        ])
+
+        var previousPageAnchor: NSLayoutXAxisAnchor = scrollView.contentLayoutGuide.leadingAnchor
+        for pageIndex in 0..<totalPages {
+            let pageView = UIView()
+            pageView.translatesAutoresizingMaskIntoConstraints = false
+            scrollView.addSubview(pageView)
+
+            NSLayoutConstraint.activate([
+                pageView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+                pageView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+                pageView.leadingAnchor.constraint(equalTo: previousPageAnchor),
+                pageView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
+                pageView.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor)
+            ])
+            previousPageAnchor = pageView.trailingAnchor
+
+            let startIndex = pageIndex * itemsPerPage
+            let endIndex = min(startIndex + itemsPerPage, items.count)
+            let pageItems = Array(items[startIndex..<endIndex])
+
+            let row1 = UIStackView()
+            row1.axis = .horizontal
+            row1.distribution = .fillEqually
+            row1.alignment = .fill
+            row1.spacing = 0
+
+            let row2 = UIStackView()
+            row2.axis = .horizontal
+            row2.distribution = .fillEqually
+            row2.alignment = .fill
+            row2.spacing = 0
+
+            for i in 0..<4 {
+                if i < pageItems.count {
+                    let globalIndex = startIndex + i
+                    row1.addArrangedSubview(createGridItemButton(item: pageItems[i], tag: globalIndex))
+                } else {
+                    let spacer = UIView()
+                    row1.addArrangedSubview(spacer)
+                }
+            }
+
+            for i in 4..<8 {
+                if i < pageItems.count {
+                    let globalIndex = startIndex + i
+                    row2.addArrangedSubview(createGridItemButton(item: pageItems[i], tag: globalIndex))
+                } else {
+                    let spacer = UIView()
+                    row2.addArrangedSubview(spacer)
+                }
+            }
+
+            let pageStack = UIStackView(arrangedSubviews: [row1, row2])
+            pageStack.translatesAutoresizingMaskIntoConstraints = false
+            pageStack.axis = .vertical
+            pageStack.distribution = .fillEqually
+            pageStack.spacing = 8
+
+            pageView.addSubview(pageStack)
+            NSLayoutConstraint.activate([
+                pageStack.topAnchor.constraint(equalTo: pageView.topAnchor),
+                pageStack.bottomAnchor.constraint(equalTo: pageView.bottomAnchor),
+                pageStack.leadingAnchor.constraint(equalTo: pageView.leadingAnchor, constant: 12),
+                pageStack.trailingAnchor.constraint(equalTo: pageView.trailingAnchor, constant: -12)
+            ])
+        }
+        scrollView.contentLayoutGuide.trailingAnchor.constraint(equalTo: previousPageAnchor).isActive = true
+    }
+
+    private func createGridItemButton(item: CustomBottomSheetItem, tag: Int) -> TouchButton {
+        let button = TouchButton()
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.backgroundColor = .clear
+        button.tag = tag
+        button.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
+
+        if item.longPressHandler != nil {
+            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleItemLongPress(_:)))
+            longPress.minimumPressDuration = 0.45
+            button.addGestureRecognizer(longPress)
+        }
+
+        let iconContainer = UIView()
+        iconContainer.translatesAutoresizingMaskIntoConstraints = false
+        iconContainer.isUserInteractionEnabled = false
+
+        let iconImageView = UIImageView()
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        iconImageView.contentMode = .scaleAspectFit
+        let iconName = item.iconName ?? "circle.grid.2x2"
+        iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 25, weight: .regular))
+        iconImageView.tintColor = item.isDestructive ? .systemRed : .label
+        iconImageView.isUserInteractionEnabled = false
+        iconContainer.addSubview(iconImageView)
+
+        NSLayoutConstraint.activate([
+            iconImageView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
+            iconImageView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
+            iconImageView.widthAnchor.constraint(equalToConstant: 28),
+            iconImageView.heightAnchor.constraint(equalToConstant: 28)
+        ])
+
+        if let isOn = item.isSwitchOn {
+            let switchPill = UIView()
+            switchPill.translatesAutoresizingMaskIntoConstraints = false
+            switchPill.backgroundColor = isOn ? .systemBlue : .tertiarySystemFill
+            switchPill.layer.cornerRadius = 6
+            switchPill.clipsToBounds = true
+            switchPill.isUserInteractionEnabled = false
+
+            let knob = UIView()
+            knob.translatesAutoresizingMaskIntoConstraints = false
+            knob.backgroundColor = .white
+            knob.layer.cornerRadius = 4.5
+            knob.clipsToBounds = true
+            knob.isUserInteractionEnabled = false
+            switchPill.addSubview(knob)
+
+            iconContainer.addSubview(switchPill)
+            NSLayoutConstraint.activate([
+                switchPill.widthAnchor.constraint(equalToConstant: 22),
+                switchPill.heightAnchor.constraint(equalToConstant: 12),
+                switchPill.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: -6),
+                switchPill.bottomAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: -1),
+
+                knob.widthAnchor.constraint(equalToConstant: 9),
+                knob.heightAnchor.constraint(equalToConstant: 9),
+                knob.centerYAnchor.constraint(equalTo: switchPill.centerYAnchor),
+                isOn ? knob.trailingAnchor.constraint(equalTo: switchPill.trailingAnchor, constant: -1.5)
+                     : knob.leadingAnchor.constraint(equalTo: switchPill.leadingAnchor, constant: 1.5)
+            ])
+        }
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 12, weight: .regular)
+        label.textColor = item.isDestructive ? .systemRed : .label
+        label.text = item.title
+        label.textAlignment = .center
+        label.numberOfLines = 1
+        label.isUserInteractionEnabled = false
+
+        button.addSubview(iconContainer)
+        button.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            iconContainer.topAnchor.constraint(equalTo: button.topAnchor, constant: 6),
+            iconContainer.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            iconContainer.heightAnchor.constraint(equalToConstant: 34),
+            iconContainer.widthAnchor.constraint(equalToConstant: 50),
+
+            label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 6),
+            label.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -4),
+            label.bottomAnchor.constraint(lessThanOrEqualTo: button.bottomAnchor, constant: -4)
+        ])
+
+        return button
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView.bounds.width > 0 else { return }
+        let page = Int(round(scrollView.contentOffset.x / scrollView.bounds.width))
+        pageControl?.currentPage = page
+    }
+
+    @objc private func handlePageControlChange(_ sender: UIPageControl) {
+        guard let sv = pagedScrollView else { return }
+        let offset = CGFloat(sender.currentPage) * sv.bounds.width
+        sv.setContentOffset(CGPoint(x: offset, y: 0), animated: true)
+    }
+
+    private func setupListLayout() {
         let headerContainer = UIView()
         headerContainer.translatesAutoresizingMaskIntoConstraints = false
 
@@ -5148,12 +5390,17 @@ final class CustomBottomSheetViewController: UIViewController {
         scrollView.alwaysBounceVertical = true
         scrollView.showsVerticalScrollIndicator = false
 
-        if layout == .grid {
-            setupGridLayout(in: scrollView)
-        } else {
-            setupListLayout(in: scrollView)
+        let itemsStack = UIStackView()
+        itemsStack.translatesAutoresizingMaskIntoConstraints = false
+        itemsStack.axis = .vertical
+        itemsStack.spacing = 8
+
+        for (idx, item) in items.enumerated() {
+            let card = createListCardButton(item: item, tag: idx)
+            itemsStack.addArrangedSubview(card)
         }
 
+        scrollView.addSubview(itemsStack)
         view.addSubview(headerContainer)
         view.addSubview(scrollView)
 
@@ -5179,58 +5426,8 @@ final class CustomBottomSheetViewController: UIViewController {
             scrollView.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 6),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
-        ])
-    }
+            scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
 
-    private func setupGridLayout(in scrollView: UIScrollView) {
-        let mainStack = UIStackView()
-        mainStack.translatesAutoresizingMaskIntoConstraints = false
-        mainStack.axis = .vertical
-        mainStack.spacing = 10
-
-        var rowStack: UIStackView?
-        for (idx, item) in items.enumerated() {
-            if idx % 2 == 0 {
-                rowStack = UIStackView()
-                rowStack?.axis = .horizontal
-                rowStack?.spacing = 10
-                rowStack?.distribution = .fillEqually
-                mainStack.addArrangedSubview(rowStack!)
-            }
-
-            let card = createGridCardButton(item: item, tag: idx)
-            rowStack?.addArrangedSubview(card)
-        }
-
-        if items.count % 2 != 0 {
-            let spacer = UIView()
-            rowStack?.addArrangedSubview(spacer)
-        }
-
-        scrollView.addSubview(mainStack)
-        NSLayoutConstraint.activate([
-            mainStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
-            mainStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
-            mainStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
-            mainStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-            mainStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
-        ])
-    }
-
-    private func setupListLayout(in scrollView: UIScrollView) {
-        let itemsStack = UIStackView()
-        itemsStack.translatesAutoresizingMaskIntoConstraints = false
-        itemsStack.axis = .vertical
-        itemsStack.spacing = 8
-
-        for (idx, item) in items.enumerated() {
-            let card = createListCardButton(item: item, tag: idx)
-            itemsStack.addArrangedSubview(card)
-        }
-
-        scrollView.addSubview(itemsStack)
-        NSLayoutConstraint.activate([
             itemsStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             itemsStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
             itemsStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
@@ -5239,67 +5436,12 @@ final class CustomBottomSheetViewController: UIViewController {
         ])
     }
 
-    private func createGridCardButton(item: CustomBottomSheetItem, tag: Int) -> TouchButton {
-        let card = TouchButton()
-        card.translatesAutoresizingMaskIntoConstraints = false
-        card.backgroundColor = .secondarySystemGroupedBackground
-        card.layer.cornerRadius = 14
-        card.layer.borderWidth = 0.5
-        card.layer.borderColor = UIColor.separator.withAlphaComponent(0.25).cgColor
-        card.clipsToBounds = true
-        card.tag = tag
-        card.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
-
-        if item.longPressHandler != nil {
-            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleItemLongPress(_:)))
-            longPress.minimumPressDuration = 0.45
-            card.addGestureRecognizer(longPress)
-        }
-
-        let iconImageView = UIImageView()
-        iconImageView.translatesAutoresizingMaskIntoConstraints = false
-        iconImageView.contentMode = .scaleAspectFit
-        let iconName = item.iconName ?? "circle.grid.2x2"
-        let iconColor: UIColor = item.isDestructive ? .systemRed : .systemBlue
-        iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium))
-        iconImageView.tintColor = iconColor
-
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = item.isDestructive ? .systemRed : .label
-        label.text = item.title
-        label.textAlignment = .center
-        label.numberOfLines = 2
-        label.lineBreakMode = .byTruncatingTail
-
-        card.addSubview(iconImageView)
-        card.addSubview(label)
-
-        NSLayoutConstraint.activate([
-            card.heightAnchor.constraint(equalToConstant: 72),
-
-            iconImageView.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-            iconImageView.centerXAnchor.constraint(equalTo: card.centerXAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 24),
-            iconImageView.heightAnchor.constraint(equalToConstant: 24),
-
-            label.topAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: 6),
-            label.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
-            label.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor, constant: -8)
-        ])
-
-        return card
-    }
-
     private func createListCardButton(item: CustomBottomSheetItem, tag: Int) -> TouchButton {
         let card = TouchButton()
         card.translatesAutoresizingMaskIntoConstraints = false
         card.backgroundColor = .secondarySystemGroupedBackground
-        card.layer.cornerRadius = 13
-        card.layer.borderWidth = 0.5
-        card.layer.borderColor = UIColor.separator.withAlphaComponent(0.25).cgColor
+        card.layer.cornerRadius = 14
+        card.layer.cornerCurve = .continuous
         card.clipsToBounds = true
         card.tag = tag
         card.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
@@ -5314,18 +5456,18 @@ final class CustomBottomSheetViewController: UIViewController {
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.contentMode = .scaleAspectFit
         let iconName = item.iconName ?? "doc.plaintext"
-        let iconColor: UIColor = item.isDestructive ? .systemRed : .systemBlue
-        iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
+        let iconColor: UIColor = item.isDestructive ? .systemRed : .label
+        iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
         iconImageView.tintColor = iconColor
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 15, weight: .medium)
+        label.font = .systemFont(ofSize: 15, weight: .regular)
         label.textColor = item.isDestructive ? .systemRed : .label
         label.text = item.title
         label.numberOfLines = 1
 
-        let chevron = UIImageView(image: UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)))
+        let chevron = UIImageView(image: UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
         chevron.translatesAutoresizingMaskIntoConstraints = false
         chevron.tintColor = .tertiaryLabel
         chevron.isHidden = (item.handler == nil)
@@ -5335,7 +5477,7 @@ final class CustomBottomSheetViewController: UIViewController {
         card.addSubview(chevron)
 
         NSLayoutConstraint.activate([
-            card.heightAnchor.constraint(equalToConstant: 50),
+            card.heightAnchor.constraint(equalToConstant: 48),
 
             iconImageView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
             iconImageView.centerYAnchor.constraint(equalTo: card.centerYAnchor),
