@@ -967,7 +967,7 @@ final class UserScriptEditorViewController: UIViewController {
     var onSave: ((UserScript) -> Void)?
 
     private let nameField = UITextField()
-    private let matchField = UITextField()
+    private let matchField = UITextView()
     private let textView = UITextView()
 
     init(script: UserScript?) {
@@ -1000,7 +1000,6 @@ final class UserScriptEditorViewController: UIViewController {
         nameField.layer.cornerRadius = 10
         nameField.clipsToBounds = true
         nameField.placeholder = "脚本名称"
-        nameField.text = script?.name ?? ""
         nameField.font = .systemFont(ofSize: 15)
 
         let namePadding = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 1))
@@ -1011,13 +1010,11 @@ final class UserScriptEditorViewController: UIViewController {
         matchField.backgroundColor = .secondarySystemGroupedBackground
         matchField.layer.cornerRadius = 10
         matchField.clipsToBounds = true
-        matchField.placeholder = "匹配域名规则 (如 * 或 google.com)"
-        matchField.text = script?.matchPattern ?? "*"
-        matchField.font = .systemFont(ofSize: 15)
-
-        let matchPadding = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 1))
-        matchField.leftView = matchPadding
-        matchField.leftViewMode = .always
+        matchField.font = .systemFont(ofSize: 14)
+        matchField.textColor = .label
+        matchField.autocapitalizationType = .none
+        matchField.autocorrectionType = .no
+        matchField.textContainerInset = UIEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
 
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .secondarySystemGroupedBackground
@@ -1027,7 +1024,18 @@ final class UserScriptEditorViewController: UIViewController {
         textView.autocapitalizationType = .none
         textView.autocorrectionType = .no
         textView.textContainerInset = UIEdgeInsets(top: 12, left: 10, bottom: 12, right: 10)
-        textView.text = script?.code ?? "(function() {\n    'use strict';\n})();"
+
+        if let currentScript = script {
+            nameField.text = currentScript.name
+            matchField.text = currentScript.matchPattern
+            textView.text = currentScript.code
+        } else {
+            let defaultCode = "(function() {\n    'use strict';\n})();"
+            textView.text = defaultCode
+            let parsed = UserScriptStore.shared.parseMetadata(from: defaultCode)
+            nameField.text = parsed.name == "未命名脚本" ? "" : parsed.name
+            matchField.text = parsed.match
+        }
 
         view.addSubview(nameField)
         view.addSubview(matchField)
@@ -1042,7 +1050,7 @@ final class UserScriptEditorViewController: UIViewController {
             matchField.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 10),
             matchField.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
             matchField.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            matchField.heightAnchor.constraint(equalToConstant: 42),
+            matchField.heightAnchor.constraint(equalToConstant: 54),
 
             textView.topAnchor.constraint(equalTo: matchField.bottomAnchor, constant: 12),
             textView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
@@ -1054,7 +1062,7 @@ final class UserScriptEditorViewController: UIViewController {
     @objc private func handleSave() {
         let codeText = textView.text ?? ""
         var nameText = nameField.text?.trimmingCharacters(in: .whitespaces) ?? ""
-        var matchText = matchField.text?.trimmingCharacters(in: .whitespaces) ?? ""
+        var matchText = matchField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         let parsed = UserScriptStore.shared.parseMetadata(from: codeText)
         if nameText.isEmpty { nameText = parsed.name }
