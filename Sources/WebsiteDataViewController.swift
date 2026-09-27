@@ -1035,7 +1035,6 @@ final class UserScriptEditorViewController: UIViewController {
 
         NSLayoutConstraint.activate([
             nameField.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            nameField.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             nameField.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
             nameField.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             nameField.heightAnchor.constraint(equalToConstant: 42),
