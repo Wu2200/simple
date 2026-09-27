@@ -227,8 +227,8 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
                 itemsStack.addArrangedSubview(separator)
                 NSLayoutConstraint.activate([
                     separator.heightAnchor.constraint(equalToConstant: 0.5),
-                    separator.leadingAnchor.constraint(equalTo: itemsStack.leadingAnchor, constant: 52),
-                    separator.trailingAnchor.constraint(equalTo: itemsStack.trailingAnchor, constant: -16)
+                    separator.leadingAnchor.constraint(equalTo: itemsStack.leadingAnchor, constant: 58),
+                    separator.trailingAnchor.constraint(equalTo: itemsStack.trailingAnchor, constant: -20)
                 ])
             }
         }
@@ -344,14 +344,14 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             let iconName = item.iconName ?? "doc.plaintext"
             iconImageView.image = UIImage(
                 systemName: iconName,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular)
             )
         }
         iconImageView.tintColor = resolvedIconColor
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 16, weight: .regular)
+        label.font = .systemFont(ofSize: 16.5, weight: .regular)
         label.textColor = item.isDestructive ? .systemRed : (isActionable ? UIColor { trait in
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.90, alpha: 1.0) : UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0)
         } : disabledColor)
@@ -373,9 +373,9 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         row.addSubview(chevron)
 
         NSLayoutConstraint.activate([
-            row.heightAnchor.constraint(equalToConstant: 54),
+            row.heightAnchor.constraint(equalToConstant: 58),
 
-            iconImageView.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 18),
+            iconImageView.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 20),
             iconImageView.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             iconImageView.widthAnchor.constraint(equalToConstant: 24),
             iconImageView.heightAnchor.constraint(equalToConstant: 24),
@@ -384,7 +384,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             label.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -10),
             label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
 
-            chevron.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -18),
+            chevron.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -20),
             chevron.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 12),
             chevron.heightAnchor.constraint(equalToConstant: 16)
