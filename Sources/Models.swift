@@ -2,26 +2,6 @@ import Foundation
 import UIKit
 import WebKit
 
-// MARK: - 基础触控高亮按钮
-class TouchButton: UIButton {
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        adjustsImageWhenHighlighted = false
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override var isHighlighted: Bool {
-        didSet {
-            UIView.animate(withDuration: 0.1) {
-                self.alpha = self.isHighlighted ? 0.6 : 1.0
-            }
-        }
-    }
-}
-
 // MARK: - 书签模型（支持多级目录树）
 struct BookmarkItem: Codable, Equatable {
     let id: String
@@ -41,6 +21,7 @@ struct BookmarkItem: Codable, Equatable {
     }
 }
 
+// MARK: - 书签持久化管理器
 final class BookmarkStore {
     static let shared = BookmarkStore()
     private let key = "SimpleBrowserBookmarksTree_V2"
@@ -59,7 +40,7 @@ final class BookmarkStore {
             ("GitHub", "https://github.com"),
             ("Google", "https://www.google.com"),
             ("哔哩哔哩", "https://www.bilibili.com"),
-            ("Bing 搜索", "https://www.bing.com"),
+            ("Bing 搜索", "https://cn.bing.com"),
             ("V2EX", "https://www.v2ex.com")
         ]
         for (t, u) in defaults {
@@ -275,7 +256,7 @@ final class HomeShortcutStore {
     }
 }
 
-// MARK: - 历史记录
+// MARK: - 浏览器历史记录
 struct HistoryItem: Codable, Equatable {
     let id: String
     let title: String
@@ -339,7 +320,7 @@ final class BrowserHistoryStore {
     }
 }
 
-// MARK: - 搜索历史
+// MARK: - 搜索历史记录
 final class SearchHistoryStore {
     static let shared = SearchHistoryStore()
     private let key = "SimpleBrowserSearchKeywords"
@@ -366,7 +347,7 @@ final class SearchHistoryStore {
     }
 }
 
-// MARK: - Logo 预加载
+// MARK: - 网站 Logo 本地预加载与磁盘缓存
 final class FaviconLoader {
     static let shared = FaviconLoader()
     private let memCache = NSCache<NSString, UIImage>()
@@ -445,7 +426,7 @@ final class FaviconLoader {
     }
 }
 
-// MARK: - 清理
+// MARK: - 网站数据原子清除引擎
 enum WebsiteCleaner {
     static func clean(options: Set<CleanDataType>, completion: @escaping () -> Void) {
         var dataTypesToRemove = Set<String>()
@@ -480,7 +461,7 @@ enum WebsiteCleaner {
         if !dataTypesToRemove.isEmpty {
             let store = WKWebsiteDataStore.default()
             store.fetchDataRecords(ofTypes: dataTypesToRemove) { records in
-                let targetRecords = records.filter { !CookieLockStore.shared.isLocked(host: $0.displayName) }
+                let targetRecords = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
                 if targetRecords.isEmpty {
                     completion()
                     return
@@ -502,7 +483,7 @@ enum CleanDataType: String, CaseIterable {
     case scriptData = "用户脚本缓存数据"
 }
 
-// MARK: - 锁定
+// MARK: - 域名独立加锁持久化管理器
 final class CookieLockStore {
     static let shared = CookieLockStore()
     private let key = "LockedWebsiteDomainsList"
@@ -519,15 +500,15 @@ final class CookieLockStore {
 
     private init() {}
 
-    func isLocked(host: String) -> Bool {
-        let clean = host.lowercased()
+    func isLocked(domain: String) -> Bool {
+        let clean = domain.lowercased()
         return lockedHosts.contains(clean)
     }
 
     @discardableResult
-    func toggleLock(host: String) -> Bool {
+    func toggleLock(domain: String) -> Bool {
         var set = lockedHosts
-        let clean = host.lowercased()
+        let clean = domain.lowercased()
         let result: Bool
         if set.contains(clean) {
             set.remove(clean)
@@ -540,77 +521,108 @@ final class CookieLockStore {
         return result
     }
 
-    func lock(host: String) {
+    func lock(domain: String) {
         var set = lockedHosts
-        set.insert(host.lowercased())
+        set.insert(domain.lowercased())
         lockedHosts = set
     }
 
-    func unlock(host: String) {
+    func unlock(domain: String) {
         var set = lockedHosts
-        set.remove(host.lowercased())
+        set.remove(domain.lowercased())
         lockedHosts = set
     }
 }
 
-// MARK: - 浏览器标识 (User-Agent)
-enum UserAgentCategory: String, CaseIterable {
-    case mobile = "手机版"
-    case desktop = "电脑版"
+// MARK: - 浏览器标识分类与模型
+enum UserAgentCategory: String, CaseIterable, Codable {
+    case mobile = "移动端 (Mobile)"
+    case desktop = "桌面端 (Desktop)"
 }
 
-struct UserAgentPreset: Codable, Equatable {
+struct UserAgentItem: Codable, Equatable {
     let id: String
     var name: String
-    var ua: String
-    var isDesktop: Bool
+    var userAgent: String
+    var category: UserAgentCategory
+    var isBuiltIn: Bool
 
-    init(id: String = UUID().uuidString, name: String, ua: String, isDesktop: Bool) {
+    init(id: String = UUID().uuidString, name: String, userAgent: String, category: UserAgentCategory, isBuiltIn: Bool = false) {
         self.id = id
         self.name = name
-        self.ua = ua
-        self.isDesktop = isDesktop
+        self.userAgent = userAgent
+        self.category = category
+        self.isBuiltIn = isBuiltIn
     }
 }
 
 final class UserAgentStore {
     static let shared = UserAgentStore()
-    private let activeUAIdKey = "ActiveUserAgentId_V2"
+    private let key = "CustomUserAgentList_V2"
+    private let activeKey = "ActiveUserAgentId_V2"
+
+    private(set) var items: [UserAgentItem] = []
 
     static let defaultMobileSafari = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-    static let defaultMobileChrome = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/116.0.5845.177 Mobile/15E148 Safari/604.1"
     static let defaultMacSafari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
-    static let defaultMacChrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
 
-    let presets: [UserAgentPreset] = [
-        UserAgentPreset(id: "preset_mobile_safari", name: "iOS 16 Safari", ua: defaultMobileSafari, isDesktop: false),
-        UserAgentPreset(id: "preset_mobile_chrome", name: "iOS Chrome", ua: defaultMobileChrome, isDesktop: false),
-        UserAgentPreset(id: "preset_desktop_safari", name: "macOS Safari", ua: defaultMacSafari, isDesktop: true),
-        UserAgentPreset(id: "preset_desktop_chrome", name: "macOS Chrome", ua: defaultMacChrome, isDesktop: true)
-    ]
-
-    var currentUA: String {
-        let activeId = UserDefaults.standard.string(forKey: activeUAIdKey) ?? "preset_mobile_safari"
-        if let found = presets.first(where: { $0.id == activeId }) {
-            return found.ua
-        }
-        return Self.defaultMobileSafari
+    var activeItem: UserAgentItem {
+        let activeId = UserDefaults.standard.string(forKey: activeKey) ?? "builtin_mobile_safari"
+        return items.first(where: { $0.id == activeId }) ?? items[0]
     }
 
     var isCurrentDesktop: Bool {
-        let activeId = UserDefaults.standard.string(forKey: activeUAIdKey) ?? "preset_mobile_safari"
-        return presets.first(where: { $0.id == activeId })?.isDesktop ?? false
+        return activeItem.category == .desktop
     }
 
-    var activePresetId: String {
-        return UserDefaults.standard.string(forKey: activeUAIdKey) ?? "preset_mobile_safari"
+    private init() {
+        loadItems()
+        if items.isEmpty {
+            createDefaults()
+        }
     }
 
-    private init() {}
+    private func createDefaults() {
+        items = [
+            UserAgentItem(id: "builtin_mobile_safari", name: "iOS 16 Safari", userAgent: Self.defaultMobileSafari, category: .mobile, isBuiltIn: true),
+            UserAgentItem(id: "builtin_mobile_chrome", name: "iOS Chrome", userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/116.0.5845.177 Mobile/15E148 Safari/604.1", category: .mobile, isBuiltIn: true),
+            UserAgentItem(id: "builtin_desktop_safari", name: "macOS Safari", userAgent: Self.defaultMacSafari, category: .desktop, isBuiltIn: true),
+            UserAgentItem(id: "builtin_desktop_chrome", name: "macOS Chrome", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36", category: .desktop, isBuiltIn: true)
+        ]
+        saveItems()
+    }
 
-    func setActiveUA(id: String) {
-        UserDefaults.standard.set(id, forKey: activeUAIdKey)
+    func setActive(id: String) {
+        UserDefaults.standard.set(id, forKey: activeKey)
         NotificationCenter.default.post(name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
+    }
+
+    func addItem(name: String, userAgent: String, category: UserAgentCategory) {
+        let item = UserAgentItem(name: name, userAgent: userAgent, category: category, isBuiltIn: false)
+        items.append(item)
+        saveItems()
+        setActive(id: item.id)
+    }
+
+    func deleteItem(id: String) {
+        items.removeAll { $0.id == id && !$0.isBuiltIn }
+        saveItems()
+        if activeItem.id == id {
+            setActive(id: "builtin_mobile_safari")
+        }
+    }
+
+    private func saveItems() {
+        if let data = try? JSONEncoder().encode(items) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private func loadItems() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let list = try? JSONDecoder().decode([UserAgentItem].self, from: data) {
+            items = list
+        }
     }
 }
 
@@ -643,5 +655,37 @@ struct CustomBottomSheetItem {
         self.dismissOnTap = dismissOnTap
         self.action = action
         self.longPressAction = longPressAction
+    }
+}
+
+// MARK: - 基础触控反馈按钮组件
+open class TouchButton: UIButton {
+    public override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupTouchEvents()
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupTouchEvents()
+    }
+
+    private func setupTouchEvents() {
+        addTarget(self, action: #selector(touchDown), for: [.touchDown, .touchDragEnter])
+        addTarget(self, action: #selector(touchUp), for: [.touchUpInside, .touchCancel, .touchDragExit])
+    }
+
+    @objc private func touchDown() {
+        UIView.animate(withDuration: 0.1) {
+            self.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
+            self.alpha = 0.8
+        }
+    }
+
+    @objc private func touchUp() {
+        UIView.animate(withDuration: 0.15) {
+            self.transform = .identity
+            self.alpha = 1.0
+        }
     }
 }
