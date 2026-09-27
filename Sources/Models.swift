@@ -772,6 +772,10 @@ public final class UserAgentStore {
 open class TouchButton: UIButton {
     public var hitTestInsets: UIEdgeInsets = .zero
 
+    public convenience init() {
+        self.init(frame: .zero)
+    }
+
     public override init(frame: CGRect) {
         super.init(frame: frame)
     }
@@ -867,6 +871,14 @@ public struct UserScript: Codable, Equatable {
     public var matchPattern: String
     public var code: String
     public var isEnabled: Bool
+
+    public init(name: String, matchPattern: String = "*", code: String = "", isEnabled: Bool = true, id: String = UUID().uuidString) {
+        self.id = id
+        self.name = name
+        self.matchPattern = matchPattern
+        self.code = code
+        self.isEnabled = isEnabled
+    }
 
     public init(id: String = UUID().uuidString, name: String, matchPattern: String = "*", code: String = "", isEnabled: Bool = true) {
         self.id = id
