@@ -202,34 +202,69 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
             content.secondaryText = item.urlString
             content.secondaryTextProperties.numberOfLines = 1
             content.textProperties.numberOfLines = 1
-            content.image = UIImage(systemName: "star.fill")
-            content.imageProperties.tintColor = .systemYellow
-            content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
+
+            let host = URL(string: item.urlString)?.host ?? ""
+            if let cached = FaviconLoader.shared.cachedFavicon(for: host) {
+                content.image = cached
+                content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
+                content.imageProperties.cornerRadius = 4
+            } else {
+                content.image = UIImage(systemName: "star.fill")
+                content.imageProperties.tintColor = .systemYellow
+                content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
+
+                if !host.isEmpty {
+                    FaviconLoader.shared.loadFavicon(for: host) { [weak tableView] image in
+                        guard let image = image else { return }
+                        DispatchQueue.main.async {
+                            if let currentCell = tableView?.cellForRow(at: indexPath) {
+                                var updatedContent = currentCell.defaultContentConfiguration()
+                                updatedContent.text = item.title
+                                updatedContent.secondaryText = item.urlString
+                                updatedContent.secondaryTextProperties.numberOfLines = 1
+                                updatedContent.textProperties.numberOfLines = 1
+                                updatedContent.image = image
+                                updatedContent.imageProperties.maximumSize = CGSize(width: 22, height: 22)
+                                updatedContent.imageProperties.cornerRadius = 4
+                                currentCell.contentConfiguration = updatedContent
+                            }
+                        }
+                    }
+                }
+            }
         } else {
             let item = sections[indexPath.section].items[indexPath.row]
             content.text = item.title
             content.secondaryText = "\(item.urlString)\n\(formattedDate(item.visitedAt))"
             content.secondaryTextProperties.numberOfLines = 2
             content.textProperties.numberOfLines = 1
-            content.image = UIImage(systemName: "globe")
-            content.imageProperties.tintColor = .secondaryLabel
-            content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
-            content.imageProperties.cornerRadius = 4
 
-            if let url = URL(string: item.urlString), let host = url.host {
-                FaviconLoader.shared.loadFavicon(for: host) { [weak tableView] image in
-                    guard let image = image else { return }
-                    DispatchQueue.main.async {
-                        if let currentCell = tableView?.cellForRow(at: indexPath) {
-                            var updatedContent = currentCell.defaultContentConfiguration()
-                            updatedContent.text = item.title
-                            updatedContent.secondaryText = "\(item.urlString)\n\(self.formattedDate(item.visitedAt))"
-                            updatedContent.secondaryTextProperties.numberOfLines = 2
-                            updatedContent.textProperties.numberOfLines = 1
-                            updatedContent.image = image
-                            updatedContent.imageProperties.maximumSize = CGSize(width: 22, height: 22)
-                            updatedContent.imageProperties.cornerRadius = 4
-                            currentCell.contentConfiguration = updatedContent
+            let host = URL(string: item.urlString)?.host ?? ""
+            if let cached = FaviconLoader.shared.cachedFavicon(for: host) {
+                content.image = cached
+                content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
+                content.imageProperties.cornerRadius = 4
+            } else {
+                content.image = UIImage(systemName: "globe")
+                content.imageProperties.tintColor = .secondaryLabel
+                content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
+                content.imageProperties.cornerRadius = 4
+
+                if !host.isEmpty {
+                    FaviconLoader.shared.loadFavicon(for: host) { [weak tableView] image in
+                        guard let image = image else { return }
+                        DispatchQueue.main.async {
+                            if let currentCell = tableView?.cellForRow(at: indexPath) {
+                                var updatedContent = currentCell.defaultContentConfiguration()
+                                updatedContent.text = item.title
+                                updatedContent.secondaryText = "\(item.urlString)\n\(self.formattedDate(item.visitedAt))"
+                                updatedContent.secondaryTextProperties.numberOfLines = 2
+                                updatedContent.textProperties.numberOfLines = 1
+                                updatedContent.image = image
+                                updatedContent.imageProperties.maximumSize = CGSize(width: 22, height: 22)
+                                updatedContent.imageProperties.cornerRadius = 4
+                                currentCell.contentConfiguration = updatedContent
+                            }
                         }
                     }
                 }
