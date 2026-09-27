@@ -75,13 +75,6 @@ final class AddressTextField: UITextField {
     }
 }
 
-private struct HomeShortcut {
-    let title: String
-    let urlString: String
-    let iconName: String
-    let iconColor: UIColor
-}
-
 final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate, UIGestureRecognizerDelegate {
     private var tabs: [TabItem] = []
     private var activeTabIndex = 0
@@ -107,6 +100,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private let homeScrollView = UIScrollView()
     private let homeSearchContainer = UIView()
     private let homeSearchField = AddressTextField()
+    private let shortcutsStack = UIStackView()
 
     private let failureOverlayView = UIView()
     private let failureTitleLabel = UILabel()
@@ -139,17 +133,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private var webTopFullscreenConstraint: NSLayoutConstraint?
     private var webBottomPanelConstraint: NSLayoutConstraint?
     private var webBottomFullscreenConstraint: NSLayoutConstraint?
-
-    private let homeShortcuts: [HomeShortcut] = [
-        HomeShortcut(title: "百度", urlString: "https://www.baidu.com", iconName: "magnifyingglass", iconColor: .systemBlue),
-        HomeShortcut(title: "必应", urlString: "https://www.bing.com", iconName: "globe.asia.australia.fill", iconColor: .systemTeal),
-        HomeShortcut(title: "GitHub", urlString: "https://github.com", iconName: "chevron.left.forwardslash.chevron.right", iconColor: .label),
-        HomeShortcut(title: "哔哩哔哩", urlString: "https://www.bilibili.com", iconName: "play.tv.fill", iconColor: .systemPink),
-        HomeShortcut(title: "知乎", urlString: "https://www.zhihu.com", iconName: "text.book.closed.fill", iconColor: .systemCyan),
-        HomeShortcut(title: "掘金", urlString: "https://juejin.cn", iconName: "flame.fill", iconColor: .systemOrange),
-        HomeShortcut(title: "维基百科", urlString: "https://zh.wikipedia.org", iconName: "character.book.closed.fill", iconColor: .systemIndigo),
-        HomeShortcut(title: "V2EX", urlString: "https://www.v2ex.com", iconName: "bubble.left.and.bubble.right.fill", iconColor: .systemGreen)
-    ]
 
     private var gentleToolbarIconColor: UIColor {
         UIColor { trait in
@@ -445,24 +428,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         shortcutsHeader.font = .systemFont(ofSize: 13, weight: .semibold)
         shortcutsHeader.textColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
 
-        let row1 = UIStackView()
-        row1.axis = .horizontal
-        row1.distribution = .fillEqually
-        row1.spacing = 10
-
-        let row2 = UIStackView()
-        row2.axis = .horizontal
-        row2.distribution = .fillEqually
-        row2.spacing = 10
-
-        for idx in 0..<4 {
-            row1.addArrangedSubview(createShortcutButton(shortcut: homeShortcuts[idx], index: idx))
-        }
-        for idx in 4..<8 {
-            row2.addArrangedSubview(createShortcutButton(shortcut: homeShortcuts[idx], index: idx))
-        }
-
-        let shortcutsStack = UIStackView(arrangedSubviews: [row1, row2])
         shortcutsStack.translatesAutoresizingMaskIntoConstraints = false
         shortcutsStack.axis = .vertical
         shortcutsStack.spacing = 14
@@ -484,13 +449,54 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             shortcutsStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -16),
             shortcutsStack.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -40)
         ])
+
+        reloadHomeShortcuts()
     }
 
-    private func createShortcutButton(shortcut: HomeShortcut, index: Int) -> TouchButton {
+    private func reloadHomeShortcuts() {
+        for sub in shortcutsStack.arrangedSubviews {
+            shortcutsStack.removeArrangedSubview(sub)
+            sub.removeFromSuperview()
+        }
+
+        let shortcuts = HomeShortcutStore.shared.loadShortcuts()
+        let itemsPerRow = 4
+        var currentRow: UIStackView?
+
+        for (idx, item) in shortcuts.enumerated() {
+            if idx % itemsPerRow == 0 {
+                let row = UIStackView()
+                row.axis = .horizontal
+                row.distribution = .fillEqually
+                row.spacing = 10
+                shortcutsStack.addArrangedSubview(row)
+                currentRow = row
+            }
+            let btn = createShortcutButton(shortcut: item, index: idx)
+            currentRow?.addArrangedSubview(btn)
+        }
+
+        if let lastRow = currentRow {
+            let remainder = shortcuts.count % itemsPerRow
+            if remainder != 0 {
+                let fillersNeeded = itemsPerRow - remainder
+                for _ in 0..<fillersNeeded {
+                    let filler = UIView()
+                    filler.translatesAutoresizingMaskIntoConstraints = false
+                    lastRow.addArrangedSubview(filler)
+                }
+            }
+        }
+    }
+
+    private func createShortcutButton(shortcut: HomeShortcutItem, index: Int) -> TouchButton {
         let button = TouchButton()
         button.translatesAutoresizingMaskIntoConstraints = false
         button.tag = index
         button.addTarget(self, action: #selector(handleShortcutTap(_:)), for: .touchUpInside)
+
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleShortcutLongPress(_:)))
+        button.addGestureRecognizer(longPress)
 
         let iconContainer = UIView()
         iconContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -499,7 +505,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
         iconContainer.layer.cornerRadius = 16
         iconContainer.layer.cornerCurve = .continuous
-        iconContainer.layer.borderWidth = 0
         iconContainer.layer.shadowColor = UIColor.black.cgColor
         iconContainer.layer.shadowOpacity = 0.03
         iconContainer.layer.shadowRadius = 4
@@ -508,13 +513,32 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         let iconImageView = UIImageView()
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
-        iconImageView.image = UIImage(
-            systemName: shortcut.iconName,
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
-        )
-        iconImageView.tintColor = shortcut.iconColor
         iconImageView.contentMode = .scaleAspectFit
+        iconImageView.layer.cornerRadius = 4
+        iconImageView.clipsToBounds = true
         iconImageView.isUserInteractionEnabled = false
+
+        if let url = URL(string: shortcut.urlString), let host = url.host {
+            if let cached = FaviconLoader.shared.cachedFavicon(for: host) {
+                iconImageView.image = cached
+            } else {
+                iconImageView.image = UIImage(
+                    systemName: "globe",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+                )
+                iconImageView.tintColor = .systemBlue
+                FaviconLoader.shared.loadFavicon(for: host) { [weak iconImageView] img in
+                    if let img = img {
+                        DispatchQueue.main.async {
+                            iconImageView?.image = img
+                        }
+                    }
+                }
+            }
+        } else {
+            iconImageView.image = UIImage(systemName: "globe")
+            iconImageView.tintColor = .systemBlue
+        }
         iconContainer.addSubview(iconImageView)
 
         let label = UILabel()
@@ -553,10 +577,26 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc private func handleShortcutTap(_ sender: UIButton) {
-        let index = sender.tag
-        guard homeShortcuts.indices.contains(index),
-              let url = URL(string: homeShortcuts[index].urlString) else { return }
+        let shortcuts = HomeShortcutStore.shared.loadShortcuts()
+        guard shortcuts.indices.contains(sender.tag),
+              let url = URL(string: shortcuts[sender.tag].urlString) else { return }
         load(url: url)
+    }
+
+    @objc private func handleShortcutLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began, let btn = gesture.view as? UIButton else { return }
+        let shortcuts = HomeShortcutStore.shared.loadShortcuts()
+        guard shortcuts.indices.contains(btn.tag) else { return }
+        let item = shortcuts[btn.tag]
+
+        let alert = UIAlertController(title: "常用站点", message: item.title, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "删除该快捷方式", style: .destructive) { [weak self] _ in
+            HomeShortcutStore.shared.deleteShortcut(id: item.id)
+            self?.reloadHomeShortcuts()
+            self?.showToastNotice("已从主页移除")
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
     }
 
     private func configureFailureView() {
@@ -1173,7 +1213,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         } else if let url = tab.url {
             showBrowserUI()
             let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-            let hostString = url.host?.removingPercentEncoding ?? url.host ?? rawString
+            let hostString = url.host?.removingPercentEncoding ?? url.host ?? (rawString == "about:blank" ? "" : rawString)
             addressField.text = hostString
             if let host = url.host {
                 FaviconLoader.shared.preloadFavicon(for: host)
@@ -1258,7 +1298,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         activeTab.url = url
         activeTab.title = url.host ?? url.absoluteString
 
-        addressField.text = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+        let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+        addressField.text = (raw == "about:blank") ? "" : raw
         activeTab.webView.load(URLRequest(url: url))
 
         if let host = url.host {
@@ -1301,7 +1342,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             failureTitleLabel.text = "无法打开网页"
             failureReasonLabel.text = err.localizedDescription
         }
-        let hostStr = targetURL?.host?.removingPercentEncoding ?? targetURL?.host ?? (targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? "")
+        let rawStr = targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? ""
+        let hostStr = targetURL?.host?.removingPercentEncoding ?? targetURL?.host ?? (rawStr == "about:blank" ? "" : rawStr)
         addressField.text = hostStr
         resetProgress()
         updateUIState()
@@ -1480,7 +1522,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             failureOverlayView.isHidden = true
             if let url = tab.url, !addressField.isFirstResponder {
                 let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-                let hostString = url.host?.removingPercentEncoding ?? url.host ?? rawString
+                let hostString = url.host?.removingPercentEncoding ?? url.host ?? (rawString == "about:blank" ? "" : rawString)
                 addressField.text = hostString
                 if let host = url.host {
                     FaviconLoader.shared.preloadFavicon(for: host)
@@ -1492,7 +1534,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             resetProgress()
 
             if !tab.isDisplayingFailurePage,
-               let url = tab.url {
+               let url = tab.url,
+               url.absoluteString != "about:blank" {
                 BrowserHistoryStore.shared.record(
                     url: url,
                     title: tab.title
@@ -1516,7 +1559,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     func textFieldDidBeginEditing(_ textField: UITextField) {
         if textField == addressField {
             if let url = activeTab.url {
-                textField.text = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+                let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+                textField.text = (raw == "about:blank") ? "" : raw
             }
 
             navigationStack.isHidden = true
@@ -1533,7 +1577,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if textField == addressField {
             if let url = activeTab.url {
                 let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-                textField.text = url.host?.removingPercentEncoding ?? url.host ?? rawString
+                textField.text = url.host?.removingPercentEncoding ?? url.host ?? (rawString == "about:blank" ? "" : rawString)
             } else if textField.text?.isEmpty == true {
                 textField.text = ""
             }
@@ -1986,13 +2030,30 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(nav, animated: true)
     }
 
-    private func addCurrentPageToBookmarks() {
+    private func handleAddAction() {
         guard let url = activeTab.url else {
-            showToastNotice("主页无需添加书签")
+            showToastNotice("主页无需添加")
             return
         }
-        BookmarkStore.shared.addBookmark(title: activeTab.title, urlString: url.absoluteString)
-        showToastNotice("已添加到书签")
+
+        let rawTitle = activeTab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = rawTitle.isEmpty ? (url.host ?? url.absoluteString) : rawTitle
+
+        let alert = UIAlertController(title: "添加当前网页", message: resolvedTitle, preferredStyle: .actionSheet)
+
+        alert.addAction(UIAlertAction(title: "添加到书签", style: .default) { [weak self] _ in
+            BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString)
+            self?.showToastNotice("已添加到书签")
+        })
+
+        alert.addAction(UIAlertAction(title: "添加到主页", style: .default) { [weak self] _ in
+            HomeShortcutStore.shared.addShortcut(title: resolvedTitle, urlString: url.absoluteString)
+            self?.reloadHomeShortcuts()
+            self?.showToastNotice("已添加到主页")
+        })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
     }
 
     @objc private func showMoreMenu() {
@@ -2058,13 +2119,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 5. 添加书签 (放置在原全屏浏览位置)
+        // 5. 添加 (添加到书签 / 添加到主页)
         items.append(CustomBottomSheetItem(
-            title: "添加书签",
+            title: "添加",
             customImage: makeAddBookmarkIcon(),
             dismissOnTap: true,
             handler: { [weak self] in
-                self?.addCurrentPageToBookmarks()
+                self?.handleAddAction()
             }
         ))
 
@@ -2206,18 +2267,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func performCleanData(options: Set<CleanOption>, completion: @escaping () -> Void) {
+        let cleanCache = options.contains(.cache)
+        let cleanLoginAndData = options.contains(.loginAndData)
+
         let group = DispatchGroup()
 
-        if options.contains(.cache) {
+        if cleanCache || cleanLoginAndData {
             group.enter()
-            WebsiteCleaner.shared.cleanCacheOnly {
-                group.leave()
-            }
-        }
-
-        if options.contains(.loginAndData) {
-            group.enter()
-            WebsiteCleaner.shared.cleanUnprotectedLoginAndData {
+            WebsiteCleaner.shared.clean(cache: cleanCache, loginAndData: cleanLoginAndData) {
                 group.leave()
             }
         }
@@ -2231,28 +2288,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ScriptDataStore.shared.clearAllScriptData()
         }
 
-        group.notify(queue: .main) { [weak self] in
-            guard let self = self else {
-                completion()
-                return
-            }
-
-            if options.contains(.loginAndData) {
-                for tab in self.tabs {
-                    if let host = tab.url?.host, !CookieLockStore.shared.isLocked(domain: host) {
-                        tab.webView.load(URLRequest(url: URL(string: "about:blank")!))
-                        tab.url = nil
-                        tab.title = "主页"
-                    }
-                }
-                self.showHomeUI()
-                self.persistCurrentSession()
-            } else if options.contains(.cache) {
-                if !self.activeTab.isDisplayingFailurePage && self.activeTab.url != nil {
-                    self.activeTab.webView.reload()
-                }
-            }
-
+        group.notify(queue: .main) {
             completion()
         }
     }
