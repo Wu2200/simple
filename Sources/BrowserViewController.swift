@@ -1,10 +1,11 @@
 import UIKit
 import WebKit
+import SafariServices
 
-// MARK: - 主浏览器控制器
-final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate {
+// MARK: - 主浏览器视图控制器
+final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavigationDelegate, WKUIDelegate, TabItemDelegate {
 
-    // UI 组件
+    // MARK: - UI 布局组件
     private let webContainerView = UIView()
     private let bottomBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
     private let bottomToolbar = UIStackView()
@@ -23,17 +24,20 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private let rightActionBtn = UIButton(type: .system)
     private let progressView = UIProgressView(progressViewStyle: .default)
 
+    // 单一活跃 Toast 引用，杜绝堆叠
     private weak var currentToastView: UIView?
+
+    // 气泡长按菜单
     private var calloutMenu: AddressCalloutMenuView?
 
-    // 主页视图
+    // 主页视图组件
     private let homeContainerView = UIView()
     private let homeSearchCard = UIView()
     private let homeSearchField = UITextField()
     private let shortcutsLabel = UILabel()
     private let shortcutsContainer = UIStackView()
 
-    // 标签页管理
+    // 标签页体系
     private var tabs: [TabItem] = []
     private var activeTabIndex: Int = 0
 
@@ -45,6 +49,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private var isAdBlockEnabled: Bool = true
     private var isNightModeEnabled: Bool = false
 
+    // MARK: - 控制器生命周期
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -63,6 +68,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         navigationController?.setNavigationBarHidden(true, animated: false)
     }
 
+    // MARK: - 基础布局
     private func setupLayout() {
         webContainerView.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
@@ -136,6 +142,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         progressView.alpha = 0
         addressContentView.addSubview(progressView)
 
+        // 底部工具栏五键
         bottomToolbar.translatesAutoresizingMaskIntoConstraints = false
         bottomToolbar.axis = .horizontal
         bottomToolbar.distribution = .equalSpacing
@@ -207,6 +214,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         addressContentView.addGestureRecognizer(longPress)
     }
 
+    // MARK: - 主页组件
     private func setupHomeView() {
         homeSearchCard.translatesAutoresizingMaskIntoConstraints = false
         homeSearchCard.backgroundColor = .secondarySystemGroupedBackground
@@ -355,6 +363,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleShortcutTap(_:)))
         container.addGestureRecognizer(tap)
         container.isUserInteractionEnabled = true
+        container.tag = item.id.hashValue
         objc_setAssociatedObject(container, "shortcut_item", item, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleShortcutLongPress(_:)))
@@ -411,9 +420,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(alert, animated: true)
     }
 
+    // MARK: - 展开半屏搜索栏编辑器
     @objc private func handleExpandURLEditor() {
         let currentText = addressField.text ?? ""
-        let editorVC = ExpandedURLEditorViewController(initialText: currentText) { [weak self] updatedText in
+        let editorVC = HalfSheetURLEditorViewController(initialText: currentText) { [weak self] updatedText in
             guard let self = self else { return }
             self.addressField.text = updatedText
             self.loadInputText(updatedText)
@@ -421,6 +431,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(editorVC, animated: true)
     }
 
+    // MARK: - 长按地址栏横向气泡菜单
     @objc private func handleAddressLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         view.endEditing(true)
@@ -467,6 +478,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         menu.animateIn()
     }
 
+    // MARK: - 标签页与网页逻辑
     func createNewTab(url: URL? = nil) {
         let tab = TabItem()
         tab.delegate = self
@@ -491,7 +503,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             homeContainerView.isHidden = false
             addressField.text = ""
         }
-        updateAddressRightButtons()
+        updateAddressBar()
+        updateNavigationButtons()
     }
 
     func loadInputText(_ text: String) {
@@ -512,9 +525,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         addressField.text = targetURL.absoluteString
         activeTab?.load(url: targetURL)
-        updateAddressRightButtons()
+        updateAddressBar()
+        updateNavigationButtons()
     }
 
+    // MARK: - UITextFieldDelegate (点击自动全选)
     func textFieldDidBeginEditing(_ textField: UITextField) {
         calloutMenu?.dismissAnimated()
         rightActionBtn.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
@@ -524,7 +539,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func textFieldDidEndEditing(_ textField: UITextField) {
-        updateAddressRightButtons()
+        updateAddressBar()
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
@@ -533,16 +548,29 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         return true
     }
 
-    private func updateAddressRightButtons() {
+    func updateAddressBar() {
         guard let tab = activeTab else {
             rightActionBtn.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
             return
         }
         if tab.isLoading {
             rightActionBtn.setImage(UIImage(systemName: "xmark"), for: .normal)
+            progressView.alpha = 1.0
+            progressView.setProgress(Float(max(0.15, tab.progress)), animated: true)
         } else {
             rightActionBtn.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+            UIView.animate(withDuration: 0.25) {
+                self.progressView.alpha = 0
+            }
         }
+    }
+
+    func updateNavigationButtons() {
+        guard let tab = activeTab else { return }
+        backButton.isEnabled = tab.webView.canGoBack
+        forwardButton.isEnabled = tab.webView.canGoForward
+        backButton.alpha = tab.webView.canGoBack ? 1.0 : 0.4
+        forwardButton.alpha = tab.webView.canGoForward ? 1.0 : 0.4
     }
 
     @objc private func handleRightActionBtn() {
@@ -569,46 +597,39 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(alert, animated: true)
     }
 
-    // MARK: - TabItemDelegate 回调
+    // MARK: - TabItemDelegate 回调（无 public，杜绝编译错误）
     func tabDidUpdate(_ tab: TabItem) {
         guard tab == activeTab else { return }
-        let progress = tab.estimatedProgress
-        if tab.isLoading {
-            progressView.alpha = 1.0
-            progressView.setProgress(Float(max(progress, 0.1)), animated: true)
-        } else {
-            UIView.animate(withDuration: 0.2, animations: {
-                self.progressView.alpha = 0
-            }) { _ in
-                self.progressView.setProgress(0, animated: false)
-            }
-        }
-        updateAddressRightButtons()
         if let url = tab.currentURL {
-            addressField.text = url.absoluteString
+            if !addressField.isFirstResponder {
+                addressField.text = url.absoluteString
+            }
+            homeContainerView.isHidden = true
             BrowserHistoryStore.shared.record(title: tab.title, url: url.absoluteString)
         }
+        updateAddressBar()
+        updateNavigationButtons()
     }
 
     func tabDidFail(_ tab: TabItem, error: Error) {
         guard tab == activeTab else { return }
-        updateAddressRightButtons()
-    }
-
-    func tabProcessTerminated(_ tab: TabItem) {
-        guard tab == activeTab else { return }
-        tab.reload()
-    }
-
-    func tabRequestGoBack(_ tab: TabItem) {
-        handleBack()
+        updateAddressBar()
+        updateNavigationButtons()
     }
 
     func tabRequestNewTab(_ tab: TabItem, url: URL?) {
         createNewTab(url: url)
     }
 
-    // 底部按键
+    func tabProcessTerminated(_ tab: TabItem) {
+        tab.reload()
+    }
+
+    func tabRequestGoBack(_ tab: TabItem) {
+        tab.goBack()
+    }
+
+    // MARK: - 底部导航事件
     @objc private func handleBack() {
         activeTab?.goBack()
     }
@@ -654,7 +675,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             homeContainerView.isHidden = false
             addressField.text = ""
         }
-        updateAddressRightButtons()
+        updateAddressBar()
+        updateNavigationButtons()
     }
 
     private func closeTab(at index: Int) {
@@ -668,6 +690,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    // MARK: - 扩展插件与悬浮菜单
     @objc private func handlePlugin() {
         let vc = CustomBottomSheetViewController(title: nil, isGrid: false)
         let items = [
@@ -685,9 +708,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(vc, animated: true)
     }
 
+    // MARK: - 更多菜单（8项极简无边框设计）
     @objc private func handleMenu() {
         let vc = CustomBottomSheetViewController(title: nil, isGrid: true)
-        let isDesktop = UserAgentStore.shared.isCurrentDesktop
+        let isDesktop = activeTab?.isDesktopMode ?? false
 
         let page1: [CustomBottomSheetItem] = [
             CustomBottomSheetItem(iconName: "star", title: "书签/历史", action: { [weak self] in
@@ -704,9 +728,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 isSwitchOn: isDesktop,
                 dismissOnTap: false,
                 action: { [weak self] in
-                    let targetUA = isDesktop ? "builtin_mobile_safari" : "builtin_desktop_safari"
-                    UserAgentStore.shared.setActive(id: targetUA)
-                    self?.activeTab?.reload()
+                    guard let self = self, let tab = self.activeTab else { return }
+                    tab.setDesktopMode(!tab.isDesktopMode)
                 },
                 longPressAction: { [weak self] in
                     self?.openUserAgentSettings()
@@ -826,14 +849,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func openUserAgentSettings() {
-        let vc = UserAgentManagerViewController()
+        let vc = UserAgentSettingsViewController()
         present(UINavigationController(rootViewController: vc), animated: true)
     }
 
     private func createAddBookmarkVectorIcon() -> UIImage {
         let sz = CGSize(width: 24, height: 24)
         let renderer = UIGraphicsImageRenderer(size: sz)
-        return renderer.image { _ in
+        return renderer.image { ctx in
             let star = UIImage(systemName: "star")?.withTintColor(UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0))
             star?.draw(in: CGRect(x: 1, y: 1, width: 18, height: 18))
             let plus = UIImage(systemName: "plus.circle.fill")?.withTintColor(UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0))
@@ -841,6 +864,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    // MARK: - 纯白卡片式无堆叠 Toast 提示
     func showToastNotice(_ msg: String) {
         currentToastView?.layer.removeAllAnimations()
         currentToastView?.removeFromSuperview()
@@ -893,6 +917,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    // MARK: - 下载通知与手动确认
     private func setupNotifications() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleDownloadPrompt(_:)), name: NSNotification.Name("PromptDownloadConfirmationNotification"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleDownloadStarted), name: NSNotification.Name("DownloadStartedNotification"), object: nil)
@@ -924,11 +949,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 }
 
-// MARK: - 展开网址编辑器控制器
-final class ExpandedURLEditorViewController: UIViewController, UITextViewDelegate {
+// MARK: - 展开半屏搜索栏编辑器
+final class HalfSheetURLEditorViewController: UIViewController, UITextViewDelegate {
+
     private let initialText: String
     private let onCommit: (String) -> Void
+
+    private let cardContainer = UIView()
     private let textView = UITextView()
+    private let cancelButton = UIButton(type: .system)
+    private let goButton = UIButton(type: .system)
+    private let titleLabel = UILabel()
 
     init(initialText: String, onCommit: @escaping (String) -> Void) {
         self.initialText = initialText
@@ -936,46 +967,14 @@ final class ExpandedURLEditorViewController: UIViewController, UITextViewDelegat
         super.init(nibName: nil, bundle: nil)
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemGroupedBackground
-
-        if let sheet = sheetPresentationController {
-            sheet.detents = [.medium()]
-            sheet.prefersGrabberVisible = true
-        }
-
-        let nav = UINavigationBar()
-        nav.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(nav)
-
-        let item = UINavigationItem(title: "编辑网址")
-        item.leftBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(handleCancel))
-        item.rightBarButtonItem = UIBarButtonItem(title: "前往", style: .done, target: self, action: #selector(handleGo))
-        nav.items = [item]
-
-        textView.translatesAutoresizingMaskIntoConstraints = false
-        textView.font = .systemFont(ofSize: 15.5)
-        textView.text = initialText
-        textView.layer.cornerRadius = 14
-        textView.clipsToBounds = true
-        textView.delegate = self
-        textView.keyboardType = .webSearch
-        textView.returnKeyType = .go
-        view.addSubview(textView)
-
-        NSLayoutConstraint.activate([
-            nav.topAnchor.constraint(equalTo: view.topAnchor),
-            nav.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            nav.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-
-            textView.topAnchor.constraint(equalTo: nav.bottomAnchor, constant: 12),
-            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            textView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -16)
-        ])
+        setupSheetPresentation()
+        setupUI()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -984,7 +983,84 @@ final class ExpandedURLEditorViewController: UIViewController, UITextViewDelegat
         textView.selectAll(nil)
     }
 
-    @objc private func handleCancel() { dismiss(animated: true) }
+    private func setupSheetPresentation() {
+        view.backgroundColor = .systemGroupedBackground
+        if let sheet = sheetPresentationController {
+            sheet.detents = [.medium()]
+            sheet.prefersGrabberVisible = true
+            sheet.preferredCornerRadius = 24
+        }
+    }
+
+    private func setupUI() {
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = "编辑网址"
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        titleLabel.textColor = .label
+        titleLabel.textAlignment = .center
+        view.addSubview(titleLabel)
+
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
+        cancelButton.setTitle("取消", for: .normal)
+        cancelButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .regular)
+        cancelButton.tintColor = .secondaryLabel
+        cancelButton.addTarget(self, action: #selector(handleCancel), for: .touchUpInside)
+        view.addSubview(cancelButton)
+
+        goButton.translatesAutoresizingMaskIntoConstraints = false
+        goButton.setTitle("前往", for: .normal)
+        goButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        goButton.setTitleColor(.white, for: .normal)
+        goButton.backgroundColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+        goButton.layer.cornerRadius = 15
+        goButton.layer.cornerCurve = .continuous
+        goButton.addTarget(self, action: #selector(handleGo), for: .touchUpInside)
+        view.addSubview(goButton)
+
+        cardContainer.translatesAutoresizingMaskIntoConstraints = false
+        cardContainer.backgroundColor = .secondarySystemGroupedBackground
+        cardContainer.layer.cornerRadius = 16
+        cardContainer.layer.cornerCurve = .continuous
+        cardContainer.clipsToBounds = true
+        view.addSubview(cardContainer)
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.backgroundColor = .clear
+        textView.font = .systemFont(ofSize: 15.5, weight: .regular)
+        textView.textColor = .label
+        textView.text = initialText
+        textView.keyboardType = .webSearch
+        textView.returnKeyType = .go
+        textView.delegate = self
+        cardContainer.addSubview(textView)
+
+        NSLayoutConstraint.activate([
+            titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            titleLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+            cancelButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            cancelButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+
+            goButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+            goButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            goButton.widthAnchor.constraint(equalToConstant: 60),
+            goButton.heightAnchor.constraint(equalToConstant: 30),
+
+            cardContainer.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            cardContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            cardContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            cardContainer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -16),
+
+            textView.topAnchor.constraint(equalTo: cardContainer.topAnchor, constant: 10),
+            textView.leadingAnchor.constraint(equalTo: cardContainer.leadingAnchor, constant: 12),
+            textView.trailingAnchor.constraint(equalTo: cardContainer.trailingAnchor, constant: -12),
+            textView.bottomAnchor.constraint(equalTo: cardContainer.bottomAnchor, constant: -10)
+        ])
+    }
+
+    @objc private func handleCancel() {
+        dismiss(animated: true)
+    }
 
     @objc private func handleGo() {
         let text = textView.text ?? ""
@@ -1002,8 +1078,280 @@ final class ExpandedURLEditorViewController: UIViewController, UITextViewDelegat
     }
 }
 
-// MARK: - 长按地址栏气泡菜单
+// MARK: - 浏览器标识设置控制器
+final class UserAgentSettingsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private let store = UserAgentStore.shared
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "浏览器标识 (UA)"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.rowHeight = 52
+        view.addSubview(tableView)
+
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+
+    @objc private func handleDone() {
+        dismiss(animated: true)
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 2
+    }
+
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return section == 0 ? "手机版标识 (MOBILE)" : "电脑版标识 (DESKTOP)"
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        if section == 0 {
+            return store.presetMobileItems.count + store.customMobileItems.count + 1
+        } else {
+            return store.presetDesktopItems.count + store.customDesktopItems.count + 1
+        }
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "UACell")
+        cell.backgroundColor = .secondarySystemGroupedBackground
+
+        let isMobile = (indexPath.section == 0)
+        let presets = isMobile ? store.presetMobileItems : store.presetDesktopItems
+        let customs = isMobile ? store.customMobileItems : store.customDesktopItems
+        let allInGroup = presets + customs
+
+        if indexPath.row == allInGroup.count {
+            cell.textLabel?.text = isMobile ? "+ 添加自定义手机版标识" : "+ 添加自定义电脑版标识"
+            cell.textLabel?.textColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+            cell.textLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+            cell.detailTextLabel?.text = nil
+            cell.accessoryType = .none
+            cell.imageView?.image = UIImage(systemName: "plus.circle")
+            cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+            return cell
+        }
+
+        let item = allInGroup[indexPath.row]
+        cell.textLabel?.text = item.name
+        cell.textLabel?.textColor = .label
+        cell.textLabel?.font = .systemFont(ofSize: 15, weight: .regular)
+        cell.detailTextLabel?.text = item.ua
+        cell.detailTextLabel?.textColor = .secondaryLabel
+        cell.detailTextLabel?.font = .systemFont(ofSize: 11, weight: .regular)
+        cell.imageView?.image = UIImage(systemName: isMobile ? "iphone" : "laptopcomputer")
+        cell.imageView?.tintColor = .secondaryLabel
+
+        let activeId = isMobile ? store.activeMobilePresetId : store.activeDesktopPresetId
+        if item.id == activeId {
+            cell.accessoryType = .checkmark
+            cell.textLabel?.textColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+        } else {
+            cell.accessoryType = .none
+        }
+
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+
+        let isMobile = (indexPath.section == 0)
+        let presets = isMobile ? store.presetMobileItems : store.presetDesktopItems
+        let customs = isMobile ? store.customMobileItems : store.customDesktopItems
+        let allInGroup = presets + customs
+
+        if indexPath.row == allInGroup.count {
+            promptAddCustomUA(isDesktop: !isMobile)
+            return
+        }
+
+        let item = allInGroup[indexPath.row]
+        if isMobile {
+            store.activeMobilePresetId = item.id
+        } else {
+            store.activeDesktopPresetId = item.id
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        tableView.reloadData()
+    }
+
+    private func promptAddCustomUA(isDesktop: Bool) {
+        let typeStr = isDesktop ? "电脑版" : "手机版"
+        let alert = UIAlertController(title: "添加自定义\(typeStr)标识", message: nil, preferredStyle: .alert)
+        alert.addTextField { tf in
+            tf.placeholder = "标识名称"
+        }
+        alert.addTextField { tf in
+            tf.placeholder = "User-Agent 完整内容"
+        }
+        alert.addAction(UIAlertAction(title: "保存", style: .default, handler: { [weak self] _ in
+            let name = alert.textFields?[0].text ?? ""
+            let ua = alert.textFields?[1].text ?? ""
+            self?.store.addCustomPreset(name: name, ua: ua, isDesktop: isDesktop)
+            self?.tableView.reloadData()
+        }))
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let isMobile = (indexPath.section == 0)
+        let presets = isMobile ? store.presetMobileItems : store.presetDesktopItems
+        let customs = isMobile ? store.customMobileItems : store.customDesktopItems
+        let allInGroup = presets + customs
+
+        if indexPath.row >= presets.count && indexPath.row < allInGroup.count {
+            let customIndex = indexPath.row - presets.count
+            let item = customs[customIndex]
+
+            let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
+                self?.store.deleteCustomPreset(id: item.id)
+                self?.tableView.reloadData()
+                completion(true)
+            }
+            return UISwipeActionsConfiguration(actions: [delete])
+        }
+        return nil
+    }
+}
+
+// MARK: - 下载管理器视图控制器
+final class DownloadManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentInteractionControllerDelegate {
+
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private var downloadFiles: [URL] = []
+    private var docInteraction: UIDocumentInteractionController?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "下载管理"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "清空", style: .plain, target: self, action: #selector(handleClearAll))
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.rowHeight = 60
+        view.addSubview(tableView)
+
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        loadDownloadedFiles()
+    }
+
+    private func loadDownloadedFiles() {
+        let fileManager = FileManager.default
+        let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let downloadsDir = docs.appendingPathComponent("Downloads", isDirectory: true)
+
+        if let urls = try? fileManager.contentsOfDirectory(at: downloadsDir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey], options: .skipsHiddenFiles) {
+            downloadFiles = urls.sorted { (u1, u2) -> Bool in
+                let d1 = (try? u1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+                let d2 = (try? u2.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+                return d1 > d2
+            }
+        } else {
+            downloadFiles = []
+        }
+        tableView.reloadData()
+    }
+
+    @objc private func handleClearAll() {
+        guard !downloadFiles.isEmpty else { return }
+        let alert = UIAlertController(title: "清空所有下载", message: "将删除所有已下载的本地文件，此操作不可撤销。", preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "清空全部", style: .destructive, handler: { [weak self] _ in
+            let fm = FileManager.default
+            self?.downloadFiles.forEach { try? fm.removeItem(at: $0) }
+            self?.loadDownloadedFiles()
+        }))
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return downloadFiles.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "DownloadCell")
+        cell.backgroundColor = .secondarySystemGroupedBackground
+
+        let url = downloadFiles[indexPath.row]
+        cell.textLabel?.text = url.lastPathComponent
+        cell.textLabel?.font = .systemFont(ofSize: 15, weight: .regular)
+
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let sizeStr = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        cell.detailTextLabel?.text = sizeStr
+        cell.detailTextLabel?.textColor = .secondaryLabel
+        cell.detailTextLabel?.font = .systemFont(ofSize: 12)
+
+        cell.imageView?.image = UIImage(systemName: "doc.fill")
+        cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+        cell.accessoryType = .disclosureIndicator
+
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        let fileURL = downloadFiles[indexPath.row]
+
+        docInteraction = UIDocumentInteractionController(url: fileURL)
+        docInteraction?.delegate = self
+        if !(docInteraction?.presentPreview(animated: true) ?? false) {
+            docInteraction?.presentOptionsMenu(from: view.bounds, in: view, animated: true)
+        }
+    }
+
+    func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
+        return self
+    }
+
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let fileURL = downloadFiles[indexPath.row]
+
+        let share = UIContextualAction(style: .normal, title: "共享") { [weak self] (_, _, completion) in
+            guard let self = self else { return }
+            let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+            self.present(activity, animated: true)
+            completion(true)
+        }
+        share.backgroundColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+
+        let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
+            try? FileManager.default.removeItem(at: fileURL)
+            self?.loadDownloadedFiles()
+            completion(true)
+        }
+
+        return UISwipeActionsConfiguration(actions: [delete, share])
+    }
+}
+
+// MARK: - 长按地址栏横向气泡指示菜单
 final class AddressCalloutMenuView: UIView {
+
     private let onCopy: () -> Void
     private let onPaste: () -> Void
     private let onEdit: () -> Void
@@ -1015,12 +1363,14 @@ final class AddressCalloutMenuView: UIView {
         self.onEdit = onEdit
         self.onPasteAndGo = onPasteAndGo
         super.init(frame: .zero)
-        setup()
+        setupView()
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
-    private func setup() {
+    private func setupView() {
         backgroundColor = .clear
 
         let bubble = UIView()
@@ -1037,6 +1387,7 @@ final class AddressCalloutMenuView: UIView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal
         stack.distribution = .fillProportionally
+        stack.alignment = .fill
         bubble.addSubview(stack)
 
         let b1 = makeBtn(title: "拷贝", action: #selector(actCopy))
@@ -1064,7 +1415,8 @@ final class AddressCalloutMenuView: UIView {
         let btn = UIButton(type: .system)
         btn.setTitle(title, for: .normal)
         btn.setTitleColor(UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0), for: .normal)
-        btn.titleLabel?.font = .systemFont(ofSize: 14.5)
+        btn.titleLabel?.font = .systemFont(ofSize: 14.5, weight: .regular)
+        btn.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
         btn.addTarget(self, action: action, for: .touchUpInside)
         return btn
     }
@@ -1099,171 +1451,4 @@ final class AddressCalloutMenuView: UIView {
     @objc private func actPaste() { dismissAnimated(); onPaste() }
     @objc private func actEdit() { dismissAnimated(); onEdit() }
     @objc private func actPasteAndGo() { dismissAnimated(); onPasteAndGo() }
-}
-
-// MARK: - 下载管理视图控制器
-final class DownloadManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
-    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private var files: [URL] = []
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "下载管理"
-        view.backgroundColor = .systemGroupedBackground
-
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
-
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.dataSource = self
-        tableView.delegate = self
-        view.addSubview(tableView)
-
-        NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.topAnchor),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-
-        loadFiles()
-    }
-
-    private func loadFiles() {
-        let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let dlFolder = docs.appendingPathComponent("Downloads", isDirectory: true)
-        if let list = try? fm.contentsOfDirectory(at: dlFolder, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey], options: .skipsHiddenFiles) {
-            files = list.sorted {
-                let d1 = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
-                let d2 = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
-                return d1 > d2
-            }
-        }
-        tableView.reloadData()
-    }
-
-    @objc private func handleDone() { dismiss(animated: true) }
-
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return files.count
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "DLCell")
-        let file = files[indexPath.row]
-        cell.textLabel?.text = file.lastPathComponent
-        cell.imageView?.image = UIImage(systemName: "doc")
-        let sz = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        cell.detailTextLabel?.text = ByteCountFormatter.string(fromByteCount: Int64(sz), countStyle: .file)
-        return cell
-    }
-
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        let file = files[indexPath.row]
-        let activity = UIActivityViewController(activityItems: [file], applicationActivities: nil)
-        present(activity, animated: true)
-    }
-
-    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        let del = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
-            guard let self = self else { return }
-            let file = self.files[indexPath.row]
-            try? FileManager.default.removeItem(at: file)
-            self.files.remove(at: indexPath.row)
-            self.tableView.deleteRows(at: [indexPath], with: .automatic)
-            completion(true)
-        }
-        return UISwipeActionsConfiguration(actions: [del])
-    }
-}
-
-// MARK: - 浏览器标识管理控制器
-final class UserAgentManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
-    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private let store = UserAgentStore.shared
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "浏览器标识 (UA)"
-        view.backgroundColor = .systemGroupedBackground
-
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
-
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.dataSource = self
-        tableView.delegate = self
-        view.addSubview(tableView)
-
-        NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.topAnchor),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-    }
-
-    @objc private func handleDone() { dismiss(animated: true) }
-
-    func numberOfSections(in tableView: UITableView) -> Int {
-        return UserAgentCategory.allCases.count
-    }
-
-    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return UserAgentCategory.allCases[section].rawValue
-    }
-
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        let cat = UserAgentCategory.allCases[section]
-        return store.items.filter { $0.category == cat }.count + 1
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "UACell")
-        let cat = UserAgentCategory.allCases[indexPath.section]
-        let catItems = store.items.filter { $0.category == cat }
-
-        if indexPath.row == catItems.count {
-            cell.textLabel?.text = "+ 添加自定义标识"
-            cell.textLabel?.textColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-            cell.detailTextLabel?.text = nil
-            cell.accessoryType = .none
-            return cell
-        }
-
-        let item = catItems[indexPath.row]
-        cell.textLabel?.text = item.name
-        cell.detailTextLabel?.text = item.userAgent
-        cell.accessoryType = (item.id == store.activeItem.id) ? .checkmark : .none
-        return cell
-    }
-
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        let cat = UserAgentCategory.allCases[indexPath.section]
-        let catItems = store.items.filter { $0.category == cat }
-
-        if indexPath.row == catItems.count {
-            promptAdd(category: cat)
-            return
-        }
-
-        let item = catItems[indexPath.row]
-        store.setActive(id: item.id)
-        tableView.reloadData()
-    }
-
-    private func promptAdd(category: UserAgentCategory) {
-        let alert = UIAlertController(title: "添加标识", message: nil, preferredStyle: .alert)
-        alert.addTextField { $0.placeholder = "标识名称" }
-        alert.addTextField { $0.placeholder = "User-Agent 字符串" }
-        alert.addAction(UIAlertAction(title: "保存", style: .default, handler: { [weak self] _ in
-            let name = alert.textFields?[0].text ?? "自定义"
-            let ua = alert.textFields?[1].text ?? ""
-            self?.store.addItem(name: name, userAgent: ua, category: category)
-            self?.tableView.reloadData()
-        }))
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
-    }
 }

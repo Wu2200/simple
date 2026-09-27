@@ -1,177 +1,134 @@
 import UIKit
 import WebKit
 
-// MARK: - TabItemDelegate 协议
+// MARK: - 标签页协议
 protocol TabItemDelegate: AnyObject {
     func tabDidUpdate(_ tab: TabItem)
     func tabDidFail(_ tab: TabItem, error: Error)
+    func tabRequestNewTab(_ tab: TabItem, url: URL?)
     func tabProcessTerminated(_ tab: TabItem)
     func tabRequestGoBack(_ tab: TabItem)
-    func tabRequestNewTab(_ tab: TabItem, url: URL?)
 }
 
-// MARK: - 下载协调器
+// MARK: - 下载代理管理
 final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     static let shared = DownloadCoordinator()
     private var downloadDestinations: [WKDownload: URL] = [:]
 
+    private override init() {
+        super.init()
+    }
+
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let dlFolder = docs.appendingPathComponent("Downloads", isDirectory: true)
-        if !fm.fileExists(atPath: dlFolder.path) {
-            try? fm.createDirectory(at: dlFolder, withIntermediateDirectories: true)
+        let fileManager = FileManager.default
+        let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let downloadsDir = docs.appendingPathComponent("Downloads", isDirectory: true)
+
+        if !fileManager.fileExists(atPath: downloadsDir.path) {
+            try? fileManager.createDirectory(at: downloadsDir, withIntermediateDirectories: true)
         }
 
-        var destination = dlFolder.appendingPathComponent(suggestedFilename)
+        var destination = downloadsDir.appendingPathComponent(suggestedFilename)
         var counter = 1
-        let baseName = (suggestedFilename as NSString).deletingPathExtension
-        let ext = (suggestedFilename as NSString).pathExtension
+        let baseName = destination.deletingPathExtension().lastPathComponent
+        let ext = destination.pathExtension
 
-        while fm.fileExists(atPath: destination.path) {
-            let newName = ext.isEmpty ? "\(baseName) (\(counter))" : "\(baseName) (\(counter)).\(ext)"
-            destination = dlFolder.appendingPathComponent(newName)
+        while fileManager.fileExists(atPath: destination.path) {
+            let newName = ext.isEmpty ? "\(baseName)_\(counter)" : "\(baseName)_\(counter).\(ext)"
+            destination = downloadsDir.appendingPathComponent(newName)
             counter += 1
         }
 
         downloadDestinations[download] = destination
         completionHandler(destination)
-        NotificationCenter.default.post(name: NSNotification.Name("DownloadStartedNotification"), object: nil)
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        if let dest = downloadDestinations[download] {
-            downloadDestinations.removeValue(forKey: download)
-            NotificationCenter.default.post(name: NSNotification.Name("DownloadFinishedNotification"), object: nil, userInfo: ["url": dest])
+        downloadDestinations.removeValue(forKey: download)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: NSNotification.Name("DownloadFinishedNotification"), object: nil)
         }
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         downloadDestinations.removeValue(forKey: download)
-        NotificationCenter.default.post(name: NSNotification.Name("DownloadFailedNotification"), object: nil)
-    }
-}
-
-// MARK: - 前端文件导出桥接
-final class DownloadBridge: NSObject, WKScriptMessageHandler {
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "downloadBlobBridge",
-              let body = message.body as? [String: Any],
-              let base64 = body["base64"] as? String,
-              let filename = body["filename"] as? String else { return }
-
-        guard let data = Data(base64Encoded: base64) else { return }
-
-        let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let dlFolder = docs.appendingPathComponent("Downloads", isDirectory: true)
-        if !fm.fileExists(atPath: dlFolder.path) {
-            try? fm.createDirectory(at: dlFolder, withIntermediateDirectories: true)
-        }
-
-        let fileURL = dlFolder.appendingPathComponent(filename)
-        try? data.write(to: fileURL)
-
         DispatchQueue.main.async {
-            NotificationCenter.default.post(name: NSNotification.Name("BlobDownloadFinishedNotification"), object: nil, userInfo: ["fileURL": fileURL, "filename": filename])
+            NotificationCenter.default.post(name: NSNotification.Name("DownloadFailedNotification"), object: nil)
         }
     }
 }
 
-// MARK: - 网页标签项核心实现
-final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate {
+// MARK: - 标签页实体
+final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
 
     weak var delegate: TabItemDelegate?
-    var webView: WKWebView!
+    let webView: WKWebView
 
     var title: String {
-        return webView?.title?.isEmpty == false ? webView.title! : "新标签页"
+        let t = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !t.isEmpty { return t }
+        if let host = webView.url?.host, !host.isEmpty { return host }
+        return "新标签页"
     }
 
     var currentURL: URL? {
-        return webView?.url
+        return webView.url
     }
 
     var isLoading: Bool {
-        return webView?.isLoading ?? false
+        return webView.isLoading
     }
 
-    var estimatedProgress: Double {
-        return webView?.estimatedProgress ?? 0.0
+    var progress: Double {
+        return webView.estimatedProgress
     }
 
-    var canGoBack: Bool {
-        return webView?.canGoBack ?? false
-    }
-
-    var canGoForward: Bool {
-        return webView?.canGoForward ?? false
-    }
-
-    private var progressObserver: NSKeyValueObservation?
-    private var isAdBlockEnabled: Bool = true
-    private let downloadBridge = DownloadBridge()
+    var isDesktopMode: Bool = false
 
     override init() {
-        super.init()
-        setupWebView()
-    }
-
-    private func setupWebView() {
         let config = WKWebViewConfiguration()
-        let pref = WKWebpagePreferences()
-        pref.allowsContentJavaScript = true
-        config.defaultWebpagePreferences = pref
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
 
         let userContent = WKUserContentController()
-        userContent.add(downloadBridge, name: "downloadBlobBridge")
-
-        // 注入 Blob / 前端文件拦截脚本
-        let blobScript = """
-        (function() {
-            var originalClick = HTMLAnchorElement.prototype.click;
-            HTMLAnchorElement.prototype.click = function() {
-                if (this.hasAttribute('download') && this.href && (this.href.startsWith('blob:') || this.href.startsWith('data:'))) {
-                    fetch(this.href).then(r => r.blob()).then(blob => {
-                        var reader = new FileReader();
-                        reader.onloadend = function() {
-                            var base64data = reader.result.split(',')[1];
-                            window.webkit.messageHandlers.downloadBlobBridge.postMessage({
-                                filename: this.download || 'downloaded_file',
-                                base64: base64data
-                            });
-                        };
-                        reader.readAsDataURL(blob);
-                    });
-                    return;
-                }
-                originalClick.apply(this, arguments);
-            };
-        })();
-        """
-        let userScript = WKUserScript(source: blobScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-        userContent.addUserScript(userScript)
         config.userContentController = userContent
 
-        webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
-        webView.allowsBackForwardNavigationGestures = true
-        webView.customUserAgent = UserAgentStore.shared.activeItem.userAgent
+        let wv = WKWebView(frame: .zero, configuration: config)
+        self.webView = wv
+        super.init()
 
-        progressObserver = webView.observe(\.estimatedProgress, options: .new) { [weak self] _, _ in
-            guard let self = self else { return }
-            self.delegate?.tabDidUpdate(self)
-        }
+        userContent.add(self, name: "DownloadBridge")
+
+        wv.navigationDelegate = self
+        wv.uiDelegate = self
+        wv.allowsBackForwardNavigationGestures = true
+
+        applyUserAgent()
+    }
+
+    func applyUserAgent() {
+        let ua = UserAgentStore.shared.currentUA(isDesktop: isDesktopMode)
+        webView.customUserAgent = ua
+    }
+
+    func setDesktopMode(_ desktop: Bool) {
+        self.isDesktopMode = desktop
+        applyUserAgent()
+        webView.reload()
+    }
+
+    func setAdBlockEnabled(_ enabled: Bool) {
+        // 预留 AdBlock 编译规则绑定
     }
 
     func load(url: URL) {
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 30
+        applyUserAgent()
+        let req = URLRequest(url: url)
         webView.load(req)
     }
 
     func reload() {
+        applyUserAgent()
         webView.reload()
     }
 
@@ -180,41 +137,50 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func goBack() {
-        webView.goBack()
+        if webView.canGoBack {
+            webView.goBack()
+        }
     }
 
     func goForward() {
-        webView.goForward()
-    }
-
-    func setAdBlockEnabled(_ enabled: Bool) {
-        self.isAdBlockEnabled = enabled
+        if webView.canGoForward {
+            webView.goForward()
+        }
     }
 
     func startRealDownload(url: URL, filename: String) {
+        NotificationCenter.default.post(name: NSNotification.Name("DownloadStartedNotification"), object: nil)
         let req = URLRequest(url: url)
         webView.startDownload(using: req) { download in
             download.delegate = DownloadCoordinator.shared
         }
     }
 
-    // MARK: - WKNavigationDelegate (保留完整上下文与 Headers 跳转)
+    // MARK: - WKNavigationDelegate
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences, decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
-        if let targetURL = navigationAction.request.url {
-            let ext = targetURL.pathExtension.lowercased()
-            let knownDownloadExts: Set<String> = ["ipa", "apk", "zip", "rar", "7z", "tar", "gz", "dmg", "pkg", "deb", "torrent"]
-            if knownDownloadExts.contains(ext) {
-                decisionHandler(.cancel, preferences)
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("PromptDownloadConfirmationNotification"),
-                    object: nil,
-                    userInfo: ["url": targetURL, "filename": targetURL.lastPathComponent]
-                )
-                return
-            }
+
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.allow, preferences)
+            return
         }
 
-        // 新窗口直接在当前窗口继承加载，保留 POST 数据与 Headers，杜绝跳回
+        // 识别常见文件直接下载类型
+        let pathExt = url.pathExtension.lowercased()
+        let fileExtensions: Set<String> = [
+            "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "bz2", "dmg", "pkg", "deb", "torrent", "pdf", "mp3", "mp4"
+        ]
+
+        if fileExtensions.contains(pathExt) && navigationAction.navigationType == .linkActivated {
+            decisionHandler(.cancel, preferences)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("PromptDownloadConfirmationNotification"),
+                object: nil,
+                userInfo: ["url": url, "filename": url.lastPathComponent]
+            )
+            return
+        }
+
+        // 解决前端动态跳转跳回问题：继承原 request 打开
         if navigationAction.targetFrame == nil {
             webView.load(navigationAction.request)
             decisionHandler(.cancel, preferences)
@@ -225,17 +191,19 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        if let response = navigationResponse.response as? HTTPURLResponse {
-            let disposition = response.allHeaderFields["Content-Disposition"] as? String ?? ""
-            if disposition.lowercased().contains("attachment") {
+        if let http = navigationResponse.response as? HTTPURLResponse,
+           let disposition = http.allHeaderFields["Content-Disposition"] as? String,
+           disposition.lowercased().contains("attachment") {
+
+            if let url = http.url {
+                var suggested = navigationResponse.response.suggestedFilename ?? url.lastPathComponent
+                if suggested.isEmpty { suggested = "downloaded_file" }
                 decisionHandler(.cancel)
-                if let url = response.url {
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("PromptDownloadConfirmationNotification"),
-                        object: nil,
-                        userInfo: ["url": url, "filename": response.suggestedFilename ?? url.lastPathComponent]
-                    )
-                }
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("PromptDownloadConfirmationNotification"),
+                    object: nil,
+                    userInfo: ["url": url, "filename": suggested]
+                )
                 return
             }
         }
@@ -247,13 +215,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        delegate?.tabDidUpdate(self)
         if let host = webView.url?.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
+        delegate?.tabDidUpdate(self)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        delegate?.tabDidFail(self, error: error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         delegate?.tabDidFail(self, error: error)
     }
 
@@ -267,5 +239,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate {
             webView.load(navigationAction.request)
         }
         return nil
+    }
+
+    // MARK: - WKScriptMessageHandler
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        // 前端脚本桥接预留
     }
 }
