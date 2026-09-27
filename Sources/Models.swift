@@ -1173,17 +1173,19 @@ final class UserScriptStore {
             guard components.count >= 2 else { continue }
 
             let tag = components[0]
-            let val = components.dropFirst().joined(separator: " ")
+            let val = components.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespaces)
 
             if tag.hasPrefix("@name") {
                 nameMap[tag] = val
             } else if tag == "@match" || tag == "@include" {
-                matches.append(val)
+                if !val.isEmpty && !matches.contains(val) {
+                    matches.append(val)
+                }
             }
         }
 
         let preferredName = nameMap["@name:zh-CN"] ?? nameMap["@name:zh"] ?? nameMap["@name:zh-TW"] ?? nameMap["@name"] ?? "未命名脚本"
-        let preferredMatch = matches.first ?? "*"
+        let preferredMatch = matches.isEmpty ? "*" : matches.joined(separator: ", ")
 
         return (preferredName, preferredMatch)
     }
@@ -1196,16 +1198,54 @@ final class UserScriptStore {
             if !scriptEnabled { return false }
         }
 
-        if script.matchPattern == "*" || script.matchPattern.isEmpty { return true }
-        guard let url = URL(string: urlString), let host = url.host?.lowercased() else { return true }
-        let pattern = script.matchPattern.lowercased()
-            .replacingOccurrences(of: "*://", with: "")
-            .replacingOccurrences(of: "http://", with: "")
-            .replacingOccurrences(of: "https://", with: "")
-            .components(separatedBy: "/").first ?? script.matchPattern
-        let domainPattern = pattern.replacingOccurrences(of: "*.", with: "").replacingOccurrences(of: "*", with: "")
-        if domainPattern.isEmpty { return true }
-        return host == domainPattern || host.hasSuffix("." + domainPattern)
+        let rawPatterns = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if rawPatterns.isEmpty || rawPatterns.contains("*") || rawPatterns.contains("<all_urls>") {
+            return true
+        }
+
+        guard let url = URL(string: urlString), let host = url.host?.lowercased() else {
+            return false
+        }
+
+        for pattern in rawPatterns {
+            if pattern == "*" || pattern == "<all_urls>" {
+                return true
+            }
+
+            var p = pattern.lowercased()
+            if let schemeRange = p.range(of: "://") {
+                p = String(p[schemeRange.upperBound...])
+            }
+            if let slashIndex = p.firstIndex(of: "/") {
+                p = String(p[..<slashIndex])
+            }
+            p = p.trimmingCharacters(in: .whitespaces)
+
+            if p == "*" || p.isEmpty {
+                return true
+            }
+
+            if p.hasPrefix("*.") {
+                let suffix = String(p.dropFirst(2))
+                if host == suffix || host.hasSuffix("." + suffix) {
+                    return true
+                }
+            } else if p.hasPrefix("*") {
+                let suffix = String(p.dropFirst(1))
+                if host.hasSuffix(suffix) {
+                    return true
+                }
+            } else {
+                if host == p || host.hasSuffix("." + p) {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 }
 
