@@ -9,7 +9,7 @@ protocol TabItemDelegate: AnyObject {
     func tabRequestGoBack(_ tab: TabItem)
 }
 
-final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate {
+final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloadDelegate {
     static let shared = DownloadCoordinator()
 
     private lazy var session: URLSession = {
@@ -93,6 +93,65 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate {
             )
         }
     }
+
+    // MARK: - WKDownloadDelegate (原生支持带Cookie/鉴权的全特性下载)
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        let filename = suggestedFilename.isEmpty ? "download_\(Int(Date().timeIntervalSince1970))" : suggestedFilename
+        let host = response.url?.host ?? response.url?.absoluteString ?? "未知来源"
+
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("PromptDownloadNotification"),
+                object: response.url,
+                userInfo: [
+                    "filename": filename,
+                    "host": host,
+                    "onConfirm": { (shouldDownload: Bool) in
+                        if shouldDownload {
+                            let destDir = Self.getDownloadsDirectory()
+                            var targetURL = destDir.appendingPathComponent(filename)
+                            let nameWithoutExt = (filename as NSString).deletingPathExtension
+                            let ext = (filename as NSString).pathExtension
+                            var counter = 1
+                            let fm = FileManager.default
+                            while fm.fileExists(atPath: targetURL.path) {
+                                let newName = ext.isEmpty ? "\(nameWithoutExt)_\(counter)" : "\(nameWithoutExt)_\(counter).\(ext)"
+                                targetURL = destDir.appendingPathComponent(newName)
+                                counter += 1
+                            }
+
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("DownloadStartedNotification"),
+                                object: filename
+                            )
+                            completionHandler(targetURL)
+                        } else {
+                            completionHandler(nil)
+                        }
+                    } as (Bool) -> Void
+                ]
+            )
+        }
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("DownloadFinishedNotification"),
+            object: nil
+        )
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("DownloadFailedNotification"),
+            object: error.localizedDescription
+        )
+    }
 }
 
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -133,6 +192,89 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let userContentController = WKUserContentController()
         configuration.userContentController = userContentController
 
+        // 注入网页前端生成文件(Blob/Data URL)下载拦截器
+        let downloadBridgeSource = """
+        (function() {
+            if (window.__simple_download_hooked__) return;
+            window.__simple_download_hooked__ = true;
+
+            function sendBlobData(url, filename) {
+                if (!url) return;
+                if (url.startsWith('data:')) {
+                    try {
+                        window.webkit.messageHandlers.DownloadBridge.postMessage({
+                            filename: filename || 'file',
+                            dataUrl: url
+                        });
+                    } catch(e) {}
+                    return;
+                }
+                if (url.startsWith('blob:')) {
+                    fetch(url).then(function(res) {
+                        return res.blob();
+                    }).then(function(blob) {
+                        var reader = new FileReader();
+                        reader.onloadend = function() {
+                            try {
+                                window.webkit.messageHandlers.DownloadBridge.postMessage({
+                                    filename: filename || 'file',
+                                    dataUrl: reader.result
+                                });
+                            } catch(e) {}
+                        };
+                        reader.readAsDataURL(blob);
+                    }).catch(function(err) {
+                        console.log('[DownloadBridge] fetch blob failed', err);
+                    });
+                    return;
+                }
+            }
+
+            var origClick = HTMLAnchorElement.prototype.click;
+            HTMLAnchorElement.prototype.click = function() {
+                var href = this.href || '';
+                var dl = this.getAttribute('download');
+                if (dl !== null || href.startsWith('blob:') || href.startsWith('data:')) {
+                    var name = dl || this.download || 'downloaded_file';
+                    sendBlobData(href, name);
+                    return;
+                }
+                return origClick.apply(this, arguments);
+            };
+
+            document.addEventListener('click', function(e) {
+                var el = e.target;
+                while (el && el.tagName !== 'A') {
+                    el = el.parentElement;
+                }
+                if (!el) return;
+                var href = el.href || el.getAttribute('href') || '';
+                var dl = el.getAttribute('download');
+                if (dl !== null || href.startsWith('blob:') || href.startsWith('data:')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var name = dl || el.download || 'downloaded_file';
+                    sendBlobData(href, name);
+                }
+            }, true);
+
+            var origOpen = window.open;
+            window.open = function(url) {
+                if (typeof url === 'string' && (url.startsWith('blob:') || url.startsWith('data:'))) {
+                    sendBlobData(url, 'downloaded_file');
+                    return null;
+                }
+                return origOpen.apply(this, arguments);
+            };
+        })();
+        """
+        let downloadScript = WKUserScript(
+            source: downloadBridgeSource,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        userContentController.addUserScript(downloadScript)
+
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
 
@@ -140,6 +282,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         AdBlockManager.shared.attach(to: webView)
         userContentController.add(self, name: "GM")
+        userContentController.add(self, name: "DownloadBridge")
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -174,6 +317,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         })();
         """, completionHandler: nil)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "GM")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
         webView.load(URLRequest(url: URL(string: "about:blank")!))
         webView.removeFromSuperview()
         snapshot = nil
@@ -210,6 +354,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "DownloadBridge",
+           let body = message.body as? [String: Any],
+           let dataUrl = body["dataUrl"] as? String {
+            let filename = (body["filename"] as? String) ?? "downloaded_file"
+            handleBlobDataURL(dataUrl, filename: filename)
+            return
+        }
+
         guard let body = message.body as? [String: Any], let action = body["action"] as? String else { return }
 
         if action == "goBackAction" {
@@ -259,6 +411,49 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             }
             task.resume()
+        }
+    }
+
+    private func handleBlobDataURL(_ dataUrlString: String, filename: String) {
+        guard let commaIndex = dataUrlString.firstIndex(of: ",") else { return }
+        let base64Part = String(dataUrlString[dataUrlString.index(after: commaIndex)...])
+        guard let data = Data(base64Encoded: base64Part, options: .ignoreUnknownCharacters) else { return }
+
+        let destDir = DownloadCoordinator.getDownloadsDirectory()
+        var cleanName = (filename as NSString).lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanName.isEmpty { cleanName = "download_\(Int(Date().timeIntervalSince1970))" }
+
+        let fm = FileManager.default
+        var targetURL = destDir.appendingPathComponent(cleanName)
+        var counter = 1
+        let nameWithoutExt = (cleanName as NSString).deletingPathExtension
+        let ext = (cleanName as NSString).pathExtension
+
+        while fm.fileExists(atPath: targetURL.path) {
+            let newName = ext.isEmpty ? "\(nameWithoutExt)_\(counter)" : "\(nameWithoutExt)_\(counter).\(ext)"
+            targetURL = destDir.appendingPathComponent(newName)
+            counter += 1
+        }
+
+        do {
+            try data.write(to: targetURL)
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("PromptBlobExportNotification"),
+                    object: targetURL,
+                    userInfo: [
+                        "filename": targetURL.lastPathComponent,
+                        "fileSize": data.count
+                    ]
+                )
+            }
+        } catch {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("DownloadFailedNotification"),
+                    object: error.localizedDescription
+                )
+            }
         }
     }
 
@@ -623,6 +818,15 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         delegate?.tabDidFail(self, error: error)
     }
 
+    // MARK: - WKDownload 生命周期托管
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = DownloadCoordinator.shared
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = DownloadCoordinator.shared
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
@@ -657,22 +861,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             return
         }
 
-        if #available(iOS 14.5, *) {
-            let ext = targetURL.pathExtension.lowercased()
-            let knownDownloadExtensions: Set<String> = [
-                "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "dmg", "pkg", "deb",
-                "torrent", "iso"
-            ]
-            if navigationAction.shouldPerformDownload || knownDownloadExtensions.contains(ext) {
-                decisionHandler(.cancel, preferences)
-                let name = targetURL.lastPathComponent.isEmpty ? "download_\(Int(Date().timeIntervalSince1970))" : targetURL.lastPathComponent
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("PromptDownloadNotification"),
-                    object: targetURL,
-                    userInfo: ["filename": name]
-                )
-                return
-            }
+        let ext = targetURL.pathExtension.lowercased()
+        let knownDownloadExtensions: Set<String> = [
+            "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz",
+            "dmg", "pkg", "deb", "torrent", "iso", "bin", "exe", "msi"
+        ]
+        if navigationAction.shouldPerformDownload || knownDownloadExtensions.contains(ext) {
+            decisionHandler(.download, preferences)
+            return
         }
 
         if ["http", "https", "about", "data", "blob"].contains(scheme) {
@@ -701,21 +897,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         decidePolicyFor navigationResponse: WKNavigationResponse,
         decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
     ) {
-        if #available(iOS 14.5, *) {
-            if let httpResponse = navigationResponse.response as? HTTPURLResponse {
-                let disposition = (httpResponse.allHeaderFields["Content-Disposition"] as? String ?? httpResponse.allHeaderFields["content-disposition"] as? String ?? "").lowercased()
-                if disposition.contains("attachment") || !navigationResponse.canShowMIMEType {
-                    decisionHandler(.cancel)
-                    let suggested = navigationResponse.response.suggestedFilename ?? navigationResponse.response.url?.lastPathComponent ?? "file"
-                    if let downloadURL = navigationResponse.response.url {
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("PromptDownloadNotification"),
-                            object: downloadURL,
-                            userInfo: ["filename": suggested]
-                        )
-                    }
-                    return
-                }
+        if let httpResponse = navigationResponse.response as? HTTPURLResponse {
+            let disposition = (httpResponse.allHeaderFields["Content-Disposition"] as? String ?? httpResponse.allHeaderFields["content-disposition"] as? String ?? "").lowercased()
+            if disposition.contains("attachment") || !navigationResponse.canShowMIMEType {
+                decisionHandler(.download)
+                return
             }
         }
 
