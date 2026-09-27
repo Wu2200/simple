@@ -4485,6 +4485,8 @@ public final class AddressCalloutMenuView: UIView {
 ```text
 import UIKit
 
+public typealias CleanDataViewController = CleanDataSelectionViewController
+
 final class CleanDataSelectionViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private var selectedOptions: Set<CleanOption> = [.cache]
     private let savedOptionsKey = "browser_saved_clean_options_v1"
@@ -4548,9 +4550,25 @@ final class CleanDataSelectionViewController: UIViewController, UITableViewDataS
         alert.addAction(UIAlertAction(title: "确定清理", style: .default) { [weak self] _ in
             guard let self = self else { return }
             let opts = self.selectedOptions
-            self.onConfirmClean?(opts) { [weak self] in
-                guard let self = self else { return }
-                self.dismiss(animated: true)
+            if let customHandler = self.onConfirmClean {
+                customHandler(opts) { [weak self] in
+                    self?.dismiss(animated: true)
+                }
+            } else {
+                var cleanDataTypes = Set<CleanDataType>()
+                for opt in opts {
+                    switch opt {
+                    case .cache: cleanDataTypes.insert(.cache)
+                    case .searchHistory: cleanDataTypes.insert(.history)
+                    case .loginAndData: cleanDataTypes.insert(.loginAndData)
+                    case .scriptData: cleanDataTypes.insert(.scriptData)
+                    }
+                }
+                WebsiteCleaner.clean(options: cleanDataTypes) {
+                    DispatchQueue.main.async {
+                        self.dismiss(animated: true)
+                    }
+                }
             }
         })
         present(alert, animated: true)
@@ -4624,7 +4642,12 @@ final class CleanDataSelectionViewController: UIViewController, UITableViewDataS
             requestCleanConfirmation()
         } else {
             dismiss(animated: true) { [weak self] in
-                self?.onOpenWebsiteDataManager?()
+                if let handler = self?.onOpenWebsiteDataManager {
+                    handler()
+                } else if let topVC = UIApplication.shared.windows.first?.rootViewController {
+                    let vc = WebsiteDataManagerViewController()
+                    topVC.present(UINavigationController(rootViewController: vc), animated: true)
+                }
             }
         }
     }
