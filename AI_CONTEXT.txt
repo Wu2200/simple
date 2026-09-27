@@ -9841,7 +9841,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         })();
         """
 
-        webView.evaluateJavaScript(js) { [weak self] result, _ in
+        webView.evaluateJavaScript(js) { result, _ in
             let iconURLString = (result as? String) ?? "https://\(currentHost)/favicon.ico"
             guard let iconURL = URL(string: iconURLString) else { return }
 
