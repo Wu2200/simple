@@ -9634,8 +9634,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     var sizes = el.getAttribute('sizes') || '';
                     var match = sizes.match(/(\\d+)x(\\d+)/i);
                     if (match) {
-                        var w = parseInt(match[1], 10);
-                        score += w;
+                        score += parseInt(match[1], 10);
+                    } else if (rel.indexOf('icon') !== -1) {
+                        score += 50;
                     }
 
                     if (score > bestScore) {
@@ -9643,25 +9644,31 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         bestHref = href;
                     }
                 }
+                if (!bestHref) {
+                    bestHref = window.location.origin + '/favicon.ico';
+                }
                 return bestHref;
             } catch(e) {
-                return null;
+                return window.location.origin + '/favicon.ico';
             }
         })();
         """
 
-        webView.evaluateJavaScript(js) { result, _ in
-            guard let iconURLString = result as? String, let iconURL = URL(string: iconURLString) else { return }
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            let iconURLString = (result as? String) ?? "https://\(currentHost)/favicon.ico"
+            guard let iconURL = URL(string: iconURLString) else { return }
 
-            var req = URLRequest(url: iconURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 5)
+            var req = URLRequest(url: iconURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 4.0)
             req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
 
             URLSession.shared.dataTask(with: req) { data, response, _ in
                 if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
                    let data = data, data.count > 100,
-                   let img = UIImage(data: data), img.size.width >= 24 {
+                   let img = UIImage(data: data), img.size.width >= 16 {
                     FaviconLoader.shared.saveHighResIcon(data: data, for: currentHost)
-                    NotificationCenter.default.post(name: NSNotification.Name("FaviconUpdatedNotification"), object: currentHost)
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: NSNotification.Name("FaviconUpdatedNotification"), object: currentHost)
+                    }
                 }
             }.resume()
         }
