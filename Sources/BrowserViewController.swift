@@ -89,7 +89,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private var progressObservation: NSKeyValueObservation?
 
     private var activeTab: TabItem {
-        tabs[activeTabIndex]
+        if tabs.indices.contains(activeTabIndex) {
+            return tabs[activeTabIndex]
+        }
+        if let first = tabs.first {
+            return first
+        }
+        let fallback = TabItem()
+        fallback.delegate = self
+        tabs.append(fallback)
+        activeTabIndex = 0
+        return fallback
     }
 
     private let webContainer = UIView()
@@ -1002,8 +1012,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             navigationStack.heightAnchor.constraint(equalToConstant: 40)
         ])
-
-        updateAddressRightButtons()
     }
 
     @objc private func handleMoreButtonLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -1110,7 +1118,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         if tabs.indices.contains(activeTabIndex) {
-            activeTab.webView.removeFromSuperview()
+            tabs[activeTabIndex].webView.removeFromSuperview()
         }
 
         resetProgress()
@@ -1173,6 +1181,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
             updateUIState()
             persistCurrentSession()
+            updateAddressRightButtons()
         }
     }
 
@@ -1192,6 +1201,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] observedWebView, _ in
             DispatchQueue.main.async {
                 guard let self = self,
+                      self.tabs.indices.contains(self.activeTabIndex),
                       observedWebView == self.activeTab.webView,
                       observedWebView.isLoading,
                       self.homeView.alpha < 0.5,
@@ -1246,7 +1256,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private func showFailureUI(for tab: TabItem) {
         homeView.alpha = 0
         webContainer.alpha = 1
-        failureOverlayView.isHidden = true
+        failureOverlayView.isHidden = false
         let targetURL = tab.failedURL ?? tab.url
         failureURLLabel.text = targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? ""
         if let err = tab.failureError as NSError? {
@@ -1261,7 +1271,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func updateUIState() {
-        guard !tabs.isEmpty else {
+        guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex) else {
             return
         }
 
@@ -1274,6 +1284,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func updateAddressRightButtons() {
+        guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex) else {
+            reloadButton.isHidden = true
+            reloadButton.alpha = 0
+            clearButton.isHidden = true
+            clearButton.alpha = 0
+            return
+        }
+
+        let currentTab = tabs[activeTabIndex]
         let isEditing = addressField.isFirstResponder
         let isHome = homeView.alpha > 0.5
         let hasText = !(addressField.text?.isEmpty ?? true)
@@ -1287,10 +1306,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         } else {
             clearButton.isHidden = true
             clearButton.alpha = 0
-            let showReload = !isHome && (activeTab.url != nil || activeTab.isDisplayingFailurePage)
+            let showReload = !isHome && (currentTab.url != nil || currentTab.isDisplayingFailurePage)
             reloadButton.isHidden = !showReload
             reloadButton.alpha = showReload ? 1 : 0
-            let iconName = activeTab.isLoading ? "xmark" : "arrow.clockwise"
+            let iconName = currentTab.isLoading ? "xmark" : "arrow.clockwise"
             reloadButton.setImage(
                 UIImage(
                     systemName: iconName,
