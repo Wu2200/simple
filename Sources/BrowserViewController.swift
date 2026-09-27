@@ -504,6 +504,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         updateNavigationButtons()
     }
 
+    func loadInputText(_ url: URL) {
+        loadInputText(url.absoluteString)
+    }
+
     func loadInputText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -738,7 +742,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
             CustomBottomSheetItem(iconName: "star", title: "书签/历史", action: { [weak self] in
                 let histVC = BrowserHistoryViewController()
                 histVC.onSelectURL = { url in
-                    self?.loadInputText(url)
+                    self?.loadInputText(url.absoluteString)
                 }
                 self?.present(UINavigationController(rootViewController: histVC), animated: true)
             }),
@@ -1047,7 +1051,7 @@ final class HalfSheetURLEditorViewController: UIViewController, UITextViewDelega
 
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
-        textView.font = .systemFont(ofSize: 15.5, weight: .regular)
+        textView.font = .monospacedSystemFont(ofSize: 15.5, weight: .regular)
         textView.textColor = .label
         textView.text = initialText
         textView.keyboardType = .webSearch
