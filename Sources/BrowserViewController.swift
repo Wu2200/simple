@@ -451,6 +451,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     private var isShowingLongPressMenu = false
     private weak var activeCalloutOverlay: UIView?
+    private weak var currentToastView: UIView?
 
     private var gentleToolbarIconColor: UIColor {
         UIColor { trait in
@@ -1707,6 +1708,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func showToastNotice(_ text: String) {
+        currentToastView?.layer.removeAllAnimations()
+        currentToastView?.removeFromSuperview()
+
         let toast = UIView()
         toast.translatesAutoresizingMaskIntoConstraints = false
         toast.backgroundColor = .white
@@ -1728,6 +1732,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         toast.addSubview(label)
 
         view.addSubview(toast)
+        currentToastView = toast
+
         NSLayoutConstraint.activate([
             label.topAnchor.constraint(equalTo: toast.topAnchor, constant: 8),
             label.bottomAnchor.constraint(equalTo: toast.bottomAnchor, constant: -8),
@@ -1740,7 +1746,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         toast.alpha = 0
         UIView.animate(withDuration: 0.18) { toast.alpha = 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak toast] in
+            guard let toast = toast else { return }
             UIView.animate(withDuration: 0.2, animations: { toast.alpha = 0 }) { _ in
                 toast.removeFromSuperview()
             }
@@ -2733,17 +2740,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 2. 下载管理 (放在原电脑版位置)
-        items.append(CustomBottomSheetItem(
-            title: "下载管理",
-            iconName: "arrow.down.circle",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showDownloadManager()
-            }
-        ))
-
-        // 3. 电脑版 (放在原扩展脚本位置，长按进入标识设置)
+        // 2. 电脑版 (与下载管理互换位置，长按进入标识设置)
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
             title: isDesktop ? "移动版" : "电脑版",
@@ -2762,6 +2759,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             },
             longPressHandler: { [weak self] in
                 self?.showUserAgentManager()
+            }
+        ))
+
+        // 3. 下载管理 (与电脑版互换位置)
+        items.append(CustomBottomSheetItem(
+            title: "下载管理",
+            iconName: "arrow.down.circle",
+            dismissOnTap: true,
+            handler: { [weak self] in
+                self?.showDownloadManager()
             }
         ))
 
