@@ -204,37 +204,20 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         grabber.clipsToBounds = true
         view.addSubview(grabber)
 
-        let scrollView = UIScrollView()
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.alwaysBounceVertical = true
-        scrollView.showsVerticalScrollIndicator = false
-
         let itemsStack = UIStackView()
         itemsStack.translatesAutoresizingMaskIntoConstraints = false
         itemsStack.axis = .vertical
+        itemsStack.alignment = .fill
+        itemsStack.distribution = .fillEqually
         itemsStack.spacing = 0
 
         for (idx, item) in items.enumerated() {
-            let row = createCleanRowButton(item: item, tag: idx)
+            let showSeparator = (idx < items.count - 1)
+            let row = createCleanRowButton(item: item, tag: idx, showSeparator: showSeparator)
             itemsStack.addArrangedSubview(row)
-
-            if idx < items.count - 1 {
-                let separator = UIView()
-                separator.translatesAutoresizingMaskIntoConstraints = false
-                separator.backgroundColor = UIColor { trait in
-                    trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor(red: 0.93, green: 0.93, blue: 0.94, alpha: 1.0)
-                }
-                itemsStack.addArrangedSubview(separator)
-                NSLayoutConstraint.activate([
-                    separator.heightAnchor.constraint(equalToConstant: 0.5),
-                    separator.leadingAnchor.constraint(equalTo: itemsStack.leadingAnchor, constant: 58),
-                    separator.trailingAnchor.constraint(equalTo: itemsStack.trailingAnchor, constant: -20)
-                ])
-            }
         }
 
-        scrollView.addSubview(itemsStack)
-        view.addSubview(scrollView)
+        view.addSubview(itemsStack)
 
         if hasTitle {
             let headerContainer = UIView()
@@ -280,10 +263,10 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
                 closeButton.widthAnchor.constraint(equalToConstant: 30),
                 closeButton.heightAnchor.constraint(equalToConstant: 30),
 
-                scrollView.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 6),
-                scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+                itemsStack.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 6),
+                itemsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                itemsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                itemsStack.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
             ])
         } else {
             NSLayoutConstraint.activate([
@@ -292,22 +275,15 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
                 grabber.widthAnchor.constraint(equalToConstant: 36),
                 grabber.heightAnchor.constraint(equalToConstant: 5),
 
-                scrollView.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 14),
-                scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+                itemsStack.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 14),
+                itemsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                itemsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                itemsStack.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
             ])
         }
-
-        NSLayoutConstraint.activate([
-            itemsStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
-            itemsStack.leadingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.leadingAnchor),
-            itemsStack.trailingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.trailingAnchor),
-            itemsStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -10)
-        ])
     }
 
-    private func createCleanRowButton(item: CustomBottomSheetItem, tag: Int) -> TouchButton {
+    private func createCleanRowButton(item: CustomBottomSheetItem, tag: Int, showSeparator: Bool) -> TouchButton {
         let row = TouchButton()
         row.translatesAutoresizingMaskIntoConstraints = false
         row.tag = tag
@@ -389,6 +365,21 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             chevron.widthAnchor.constraint(equalToConstant: 12),
             chevron.heightAnchor.constraint(equalToConstant: 16)
         ])
+
+        if showSeparator {
+            let separator = UIView()
+            separator.translatesAutoresizingMaskIntoConstraints = false
+            separator.backgroundColor = UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor(red: 0.93, green: 0.93, blue: 0.94, alpha: 1.0)
+            }
+            row.addSubview(separator)
+            NSLayoutConstraint.activate([
+                separator.heightAnchor.constraint(equalToConstant: 0.5),
+                separator.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 58),
+                separator.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -20),
+                separator.bottomAnchor.constraint(equalTo: row.bottomAnchor)
+            ])
+        }
 
         return row
     }
