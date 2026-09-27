@@ -1,8 +1,3 @@
-//
-//  BrowserViewController.swift
-//  SimpleBrowser
-//
-
 import UIKit
 import WebKit
 import SafariServices
@@ -40,7 +35,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     private let homeSearchCard = UIView()
     private let homeSearchField = UITextField()
     private let shortcutsLabel = UILabel()
-    private var shortcutButtons: [UIView] = []
     private let shortcutsContainer = UIStackView()
 
     // 标签页管理
@@ -66,7 +60,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         setupHomeView()
         setupNotifications()
 
-        // 默认初始化首个标签页
         createNewTab(url: nil)
     }
 
@@ -149,7 +142,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         progressView.alpha = 0
         addressContentView.addSubview(progressView)
 
-        // 底部工具栏五键
         bottomToolbar.translatesAutoresizingMaskIntoConstraints = false
         bottomToolbar.axis = .horizontal
         bottomToolbar.distribution = .equalSpacing
@@ -158,7 +150,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
 
         let tintColor = UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0)
         let cfg = UIImage.SymbolConfiguration(pointSize: 16.5, weight: .medium)
-        let smallCfg = UIImage.SymbolConfiguration(pointSize: 15.0, weight: .medium)
+        let smallCfg = UIImage.SymbolConfiguration(pointSize: 14.8, weight: .medium)
 
         backButton.setImage(UIImage(systemName: "chevron.left", withConfiguration: cfg), for: .normal)
         forwardButton.setImage(UIImage(systemName: "chevron.right", withConfiguration: cfg), for: .normal)
@@ -221,7 +213,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         addressContentView.addGestureRecognizer(longPress)
     }
 
-    // MARK: - 主页组件
+    // MARK: - 主页视图
     private func setupHomeView() {
         homeSearchCard.translatesAutoresizingMaskIntoConstraints = false
         homeSearchCard.backgroundColor = .secondarySystemGroupedBackground
@@ -370,7 +362,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleShortcutTap(_:)))
         container.addGestureRecognizer(tap)
         container.isUserInteractionEnabled = true
-        container.tag = item.id.hashValue
         objc_setAssociatedObject(container, "shortcut_item", item, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleShortcutLongPress(_:)))
@@ -448,8 +439,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
 
         let currentText = addressField.text ?? ""
         let menu = AddressCalloutMenuView(
-            onCopy: { [weak self] in
-                guard let self = self else { return }
+            onCopy: {
                 UIPasteboard.general.string = currentText
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             },
@@ -510,7 +500,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
             homeContainerView.isHidden = false
             addressField.text = ""
         }
-        updateAddressRightButtons()
+        updateAddressBar()
+        updateNavigationButtons()
     }
 
     func loadInputText(_ text: String) {
@@ -531,10 +522,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
 
         addressField.text = targetURL.absoluteString
         activeTab?.load(url: targetURL)
-        updateAddressRightButtons()
+        updateAddressBar()
+        updateNavigationButtons()
     }
 
-    // MARK: - UITextFieldDelegate (点击自动全选)
+    // MARK: - UITextFieldDelegate
     func textFieldDidBeginEditing(_ textField: UITextField) {
         calloutMenu?.dismissAnimated()
         rightActionBtn.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
@@ -551,6 +543,24 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         textField.resignFirstResponder()
         loadInputText(textField.text ?? "")
         return true
+    }
+
+    private func updateAddressBar() {
+        if let url = activeTab?.currentURL {
+            homeContainerView.isHidden = true
+            addressField.text = url.absoluteString
+        } else {
+            homeContainerView.isHidden = false
+            addressField.text = ""
+        }
+        updateAddressRightButtons()
+    }
+
+    private func updateNavigationButtons() {
+        backButton.isEnabled = activeTab?.canGoBack ?? false
+        forwardButton.isEnabled = activeTab?.canGoForward ?? false
+        backButton.alpha = backButton.isEnabled ? 1.0 : 0.4
+        forwardButton.alpha = forwardButton.isEnabled ? 1.0 : 0.4
     }
 
     private func updateAddressRightButtons() {
@@ -579,32 +589,61 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     }
 
     @objc private func handleLockTapped() {
-        let host = activeTab?.currentURL?.host ?? "当前网站"
-        let alert = UIAlertController(title: "网站设置与安全", message: host, preferredStyle: .actionSheet)
-        alert.addAction(UIAlertAction(title: "查看网站存储数据", style: .default, handler: { [weak self] _ in
-            let vc = WebsiteDataViewController()
-            self?.present(UINavigationController(rootViewController: vc), animated: true)
-        }))
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
+        let vc = WebsiteDataViewController()
+        present(UINavigationController(rootViewController: vc), animated: true)
     }
 
-    // MARK: - TabItemDelegate 核心实现 (内部协议方法)
-    func tabDidUpdate(_ tab: TabItem) {
-        guard tab == activeTab else { return }
+    // MARK: - TabItemDelegate 回调
+    func tabItemDidStartLoading(_ item: TabItem) {
+        guard item == activeTab else { return }
+        progressView.alpha = 1.0
+        progressView.setProgress(0.15, animated: true)
         updateAddressRightButtons()
-        if let url = tab.currentURL {
-            addressField.text = url.absoluteString
-            BrowserHistoryStore.shared.record(title: tab.title, url: url.absoluteString)
+        updateNavigationButtons()
+    }
+
+    func tabItem(_ item: TabItem, didUpdateProgress progress: Double) {
+        guard item == activeTab else { return }
+        progressView.setProgress(Float(progress), animated: true)
+        if progress >= 1.0 {
+            UIView.animate(withDuration: 0.25, delay: 0.1, options: .curveEaseOut, animations: {
+                self.progressView.alpha = 0
+            }) { _ in
+                self.progressView.setProgress(0, animated: false)
+            }
+        }
+    }
+
+    func tabItemDidFinishLoading(_ item: TabItem) {
+        guard item == activeTab else { return }
+        updateAddressBar()
+        updateNavigationButtons()
+        if let url = item.currentURL {
+            BrowserHistoryStore.shared.record(title: item.title, url: url.absoluteString)
+        }
+    }
+
+    func tabItem(_ item: TabItem, didFailLoadingWithError error: Error) {
+        guard item == activeTab else { return }
+        updateAddressBar()
+        updateNavigationButtons()
+    }
+
+    func tabDidUpdate(_ tab: TabItem) {
+        if tab === activeTab {
+            updateAddressBar()
+            updateNavigationButtons()
         }
     }
 
     func tabDidFail(_ tab: TabItem, error: Error) {
-        guard tab == activeTab else { return }
-        updateAddressRightButtons()
+        if tab === activeTab {
+            updateAddressBar()
+            updateNavigationButtons()
+        }
     }
 
-    func tabRequestNewTab(url: URL) {
+    func tabRequestNewTab(_ tab: TabItem, url: URL?) {
         createNewTab(url: url)
     }
 
@@ -613,7 +652,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     }
 
     func tabRequestGoBack(_ tab: TabItem) {
-        handleBack()
+        if tab === activeTab {
+            handleBack()
+        }
     }
 
     // MARK: - 底部导航事件
@@ -655,14 +696,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
             tab.webView.bottomAnchor.constraint(equalTo: webContainerView.bottomAnchor)
         ])
 
-        if let url = tab.currentURL {
-            homeContainerView.isHidden = true
-            addressField.text = url.absoluteString
-        } else {
-            homeContainerView.isHidden = false
-            addressField.text = ""
-        }
-        updateAddressRightButtons()
+        updateAddressBar()
+        updateNavigationButtons()
     }
 
     private func closeTab(at index: Int) {
@@ -676,7 +711,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         }
     }
 
-    // MARK: - 扩展插件与悬浮菜单
+    // MARK: - 扩展插件
     @objc private func handlePlugin() {
         let vc = CustomBottomSheetViewController(title: nil, isGrid: false)
         let items = [
@@ -702,8 +737,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         let page1: [CustomBottomSheetItem] = [
             CustomBottomSheetItem(iconName: "star", title: "书签/历史", action: { [weak self] in
                 let histVC = BrowserHistoryViewController()
-                histVC.onSelectURL = { [weak self] url in
-                    self?.loadInputText(url.absoluteString)
+                histVC.onSelectURL = { url in
+                    self?.loadInputText(url)
                 }
                 self?.present(UINavigationController(rootViewController: histVC), animated: true)
             }),
@@ -755,7 +790,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
                     self.activeTab?.setAdBlockEnabled(self.isAdBlockEnabled)
                 },
                 longPressAction: { [weak self] in
-                    let adVC = AdBlockerViewController()
+                    let adVC = AdBlockManagerViewController()
                     self?.present(UINavigationController(rootViewController: adVC), animated: true)
                 }
             ),
@@ -842,7 +877,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     private func createAddBookmarkVectorIcon() -> UIImage {
         let sz = CGSize(width: 24, height: 24)
         let renderer = UIGraphicsImageRenderer(size: sz)
-        return renderer.image { ctx in
+        return renderer.image { _ in
             let star = UIImage(systemName: "star")?.withTintColor(UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0))
             star?.draw(in: CGRect(x: 1, y: 1, width: 18, height: 18))
             let plus = UIImage(systemName: "plus.circle.fill")?.withTintColor(UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0))
@@ -851,7 +886,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     }
 
     // MARK: - 纯白卡片式无堆叠 Toast 提示
-    func showToastNotice(_ msg: String) {
+    public func showToastNotice(_ msg: String) {
         currentToastView?.layer.removeAllAnimations()
         currentToastView?.removeFromSuperview()
 
@@ -972,7 +1007,7 @@ final class HalfSheetURLEditorViewController: UIViewController, UITextViewDelega
     private func setupSheetPresentation() {
         view.backgroundColor = .systemGroupedBackground
         if let sheet = sheetPresentationController {
-            sheet.detents = [.medium()] // 严格半屏高度
+            sheet.detents = [.medium()]
             sheet.prefersGrabberVisible = true
             sheet.preferredCornerRadius = 24
         }
@@ -1055,7 +1090,6 @@ final class HalfSheetURLEditorViewController: UIViewController, UITextViewDelega
         }
     }
 
-    // 回车直接触发前往
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
         if text == "\n" {
             handleGo()
@@ -1065,7 +1099,7 @@ final class HalfSheetURLEditorViewController: UIViewController, UITextViewDelega
     }
 }
 
-// MARK: - 浏览器标识（User-Agent）设置控制器（手机版与电脑版独立默认选择，无括号注释）
+// MARK: - 浏览器标识设置控制器（手机版与电脑版独立打勾）
 final class UserAgentSettingsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
@@ -1081,7 +1115,7 @@ final class UserAgentSettingsViewController: UIViewController, UITableViewDataSo
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.rowHeight = 54
+        tableView.rowHeight = 52
         view.addSubview(tableView)
 
         NSLayoutConstraint.activate([
@@ -1096,20 +1130,19 @@ final class UserAgentSettingsViewController: UIViewController, UITableViewDataSo
         dismiss(animated: true)
     }
 
-    // MARK: - UITableViewDataSource
     func numberOfSections(in tableView: UITableView) -> Int {
-        return 2 // Section 0: 手机版; Section 1: 电脑版
+        return 2
     }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return section == 0 ? "手机版标识 (MOBILE)" : "电脑版标识 (DESKTOP)"
+        return section == 0 ? "手机版标识 (Mobile)" : "电脑版标识 (Desktop)"
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         if section == 0 {
-            return store.presetMobileItems.count + store.customMobileItems.count + 1 // 末尾为添加行
+            return store.presetMobileItems.count + store.customMobileItems.count + 1
         } else {
-            return store.presetDesktopItems.count + store.customDesktopItems.count + 1 // 末尾为添加行
+            return store.presetDesktopItems.count + store.customDesktopItems.count + 1
         }
     }
 
@@ -1122,7 +1155,6 @@ final class UserAgentSettingsViewController: UIViewController, UITableViewDataSo
         let customs = isMobile ? store.customMobileItems : store.customDesktopItems
         let allInGroup = presets + customs
 
-        // 最后一行：添加自定义行
         if indexPath.row == allInGroup.count {
             cell.textLabel?.text = isMobile ? "+ 添加自定义手机版标识" : "+ 添加自定义电脑版标识"
             cell.textLabel?.textColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
@@ -1136,6 +1168,7 @@ final class UserAgentSettingsViewController: UIViewController, UITableViewDataSo
 
         let item = allInGroup[indexPath.row]
         cell.textLabel?.text = item.name
+        cell.textLabel?.textColor = .label
         cell.textLabel?.font = .systemFont(ofSize: 15, weight: .regular)
         cell.detailTextLabel?.text = item.ua
         cell.detailTextLabel?.textColor = .secondaryLabel
@@ -1143,15 +1176,13 @@ final class UserAgentSettingsViewController: UIViewController, UITableViewDataSo
         cell.imageView?.image = UIImage(systemName: isMobile ? "iphone" : "laptopcomputer")
         cell.imageView?.tintColor = .secondaryLabel
 
-        // 手机版和电脑版各有一个独立的当前默认选中打勾
-        let isSelected = isMobile ? (item.id == store.activeMobilePresetId) : (item.id == store.activeDesktopPresetId)
-        if isSelected {
+        let activeId = isMobile ? store.activeMobilePresetId : store.activeDesktopPresetId
+        if item.id == activeId {
             cell.accessoryType = .checkmark
             cell.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
             cell.textLabel?.textColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
         } else {
             cell.accessoryType = .none
-            cell.textLabel?.textColor = .label
         }
 
         return cell
@@ -1165,7 +1196,6 @@ final class UserAgentSettingsViewController: UIViewController, UITableViewDataSo
         let customs = isMobile ? store.customMobileItems : store.customDesktopItems
         let allInGroup = presets + customs
 
-        // 点击最后一行添加
         if indexPath.row == allInGroup.count {
             promptAddCustomUA(isDesktop: !isMobile)
             return
@@ -1177,7 +1207,6 @@ final class UserAgentSettingsViewController: UIViewController, UITableViewDataSo
         } else {
             store.setActiveDesktopUA(id: item.id)
         }
-
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         tableView.reloadSections(IndexSet(integer: indexPath.section), with: .none)
     }
@@ -1224,9 +1253,10 @@ final class UserAgentSettingsViewController: UIViewController, UITableViewDataSo
 
 // MARK: - 下载管理器视图控制器
 final class DownloadManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentInteractionControllerDelegate {
+
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private var downloadFiles: [URL] = []
-    private var documentInteractionController: UIDocumentInteractionController?
+    private var docInteraction: UIDocumentInteractionController?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -1239,7 +1269,7 @@ final class DownloadManagerViewController: UIViewController, UITableViewDataSour
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "DownloadFileCell")
+        tableView.rowHeight = 60
         view.addSubview(tableView)
 
         NSLayoutConstraint.activate([
@@ -1252,11 +1282,29 @@ final class DownloadManagerViewController: UIViewController, UITableViewDataSour
         loadFiles()
     }
 
+    @objc private func handleDone() {
+        dismiss(animated: true)
+    }
+
+    @objc private func handleClearAll() {
+        guard !downloadFiles.isEmpty else { return }
+        let alert = UIAlertController(title: "清空下载记录", message: "将删除所有已下载的本地文件，此操作不可恢复。", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "清空", style: .destructive, handler: { [weak self] _ in
+            guard let self = self else { return }
+            for url in self.downloadFiles {
+                try? FileManager.default.removeItem(at: url)
+            }
+            self.loadFiles()
+        }))
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
     private func loadFiles() {
-        let destDir = DownloadCoordinator.getDownloadsDirectory()
-        let fm = FileManager.default
-        if let urls = try? fm.contentsOfDirectory(at: destDir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: .skipsHiddenFiles) {
-            downloadFiles = urls.sorted { (u1, u2) in
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let downloadsDir = docs.appendingPathComponent("Downloads", isDirectory: true)
+        if let urls = try? FileManager.default.contentsOfDirectory(at: downloadsDir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: .skipsHiddenFiles) {
+            downloadFiles = urls.sorted { (u1, u2) -> Bool in
                 let d1 = (try? u1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
                 let d2 = (try? u2.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
                 return d1 > d2
@@ -1267,63 +1315,34 @@ final class DownloadManagerViewController: UIViewController, UITableViewDataSour
         tableView.reloadData()
     }
 
-    @objc private func handleDone() {
-        dismiss(animated: true)
-    }
-
-    @objc private func handleClearAll() {
-        guard !downloadFiles.isEmpty else { return }
-        let alert = UIAlertController(title: "清空下载记录", message: "确定要删除所有已下载的文件吗？", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
-            let fm = FileManager.default
-            for u in self?.downloadFiles ?? [] {
-                try? fm.removeItem(at: u)
-            }
-            self?.loadFiles()
-        })
-        present(alert, animated: true)
-    }
-
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         return downloadFiles.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "DownloadFileCell")
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "DLCell")
         cell.backgroundColor = .secondarySystemGroupedBackground
 
-        let fileURL = downloadFiles[indexPath.row]
-        let filename = fileURL.lastPathComponent
-        let attr = (try? fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]))
-        let size = attr?.fileSize ?? 0
-        let date = attr?.contentModificationDate ?? Date()
-
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        let sizeString = formatter.string(fromByteCount: Int64(size))
-
-        let dateFmt = DateFormatter()
-        dateFmt.dateFormat = "yyyy-MM-dd HH:mm"
-
-        cell.textLabel?.text = filename
+        let url = downloadFiles[indexPath.row]
+        cell.textLabel?.text = url.lastPathComponent
         cell.textLabel?.font = .systemFont(ofSize: 15, weight: .medium)
-        cell.textLabel?.lineBreakMode = .byTruncatingMiddle
-        cell.detailTextLabel?.text = "\(sizeString)  •  \(dateFmt.string(from: date))"
-        cell.detailTextLabel?.textColor = .secondaryLabel
-        cell.imageView?.image = UIImage(systemName: "doc.fill")
-        cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-        cell.accessoryType = .disclosureIndicator
 
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        let formattedSize = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        cell.detailTextLabel?.text = formattedSize
+        cell.detailTextLabel?.textColor = .secondaryLabel
+
+        cell.imageView?.image = UIImage(systemName: "doc")
+        cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let fileURL = downloadFiles[indexPath.row]
-        documentInteractionController = UIDocumentInteractionController(url: fileURL)
-        documentInteractionController?.delegate = self
-        documentInteractionController?.presentPreview(animated: true)
+        docInteraction = UIDocumentInteractionController(url: fileURL)
+        docInteraction?.delegate = self
+        docInteraction?.presentPreview(animated: true)
     }
 
     func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
@@ -1335,8 +1354,7 @@ final class DownloadManagerViewController: UIViewController, UITableViewDataSour
 
         let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
             try? FileManager.default.removeItem(at: fileURL)
-            self?.downloadFiles.remove(at: indexPath.row)
-            tableView.deleteRows(at: [indexPath], with: .automatic)
+            self?.loadFiles()
             completion(true)
         }
 

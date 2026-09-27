@@ -1,33 +1,34 @@
 import UIKit
+import WebKit
 
-typealias CleanDataViewController = CleanDataSelectionViewController
-
-final class CleanDataSelectionViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
-    private var selectedOptions: Set<CleanOption> = [.cache]
-    private let savedOptionsKey = "browser_saved_clean_options_v1"
-
-    var onConfirmClean: ((Set<CleanOption>, @escaping () -> Void) -> Void)?
-    var onOpenWebsiteDataManager: (() -> Void)?
+// MARK: - 清理数据选择控制器
+final class CleanDataViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private var selectedOptions: Set<CleanDataType> = Set(CleanDataType.allCases)
+
+    private let optionsList: [CleanDataType] = [
+        .cache,
+        .history,
+        .loginAndData,
+        .scriptData
+    ]
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "清除数据"
+        title = "清除浏览数据"
         view.backgroundColor = .systemGroupedBackground
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(handleCancel))
 
-        setupInterface()
-        loadSavedOptions()
-    }
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(handleCancel))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "确定清理", style: .done, target: self, action: #selector(handleConfirmClean))
+        navigationItem.rightBarButtonItem?.tintColor = .systemRed
 
-    private func setupInterface() {
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.register(CleanOptionRowCell.self, forCellReuseIdentifier: "CleanOptionRowCell")
-
+        tableView.rowHeight = 56
         view.addSubview(tableView)
+
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -36,99 +37,58 @@ final class CleanDataSelectionViewController: UIViewController, UITableViewDataS
         ])
     }
 
-    private func loadSavedOptions() {
-        if let saved = UserDefaults.standard.array(forKey: savedOptionsKey) as? [Int] {
-            let opts = saved.compactMap { CleanOption(rawValue: $0) }
-            selectedOptions = Set(opts)
-        }
-    }
-
-    private func saveOptions() {
-        let rawValues = selectedOptions.map { $0.rawValue }
-        UserDefaults.standard.set(rawValues, forKey: savedOptionsKey)
-    }
-
     @objc private func handleCancel() {
         dismiss(animated: true)
     }
 
-    @objc private func requestCleanConfirmation() {
-        guard !selectedOptions.isEmpty else { return }
-
-        var message = "确定要执行清理操作吗？"
-        if selectedOptions.contains(.loginAndData) {
-            message = "勾选了“登录与本地数据”，未受保护网站的 Cookies 和本地数据库将被清除。"
+    @objc private func handleConfirmClean() {
+        guard !selectedOptions.isEmpty else {
+            dismiss(animated: true)
+            return
         }
 
-        let alert = UIAlertController(title: "确认清理", message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel, handler: nil))
-        alert.addAction(UIAlertAction(title: "确定清理", style: .default) { [weak self] _ in
-            guard let self = self else { return }
-            let opts = self.selectedOptions
-            if let customHandler = self.onConfirmClean {
-                customHandler(opts) { [weak self] in
-                    self?.dismiss(animated: true)
-                }
-            } else {
-                var cleanDataTypes = Set<CleanDataType>()
-                for opt in opts {
-                    switch opt {
-                    case .cache: cleanDataTypes.insert(.cache)
-                    case .searchHistory: cleanDataTypes.insert(.history)
-                    case .loginAndData: cleanDataTypes.insert(.loginAndData)
-                    case .scriptData: cleanDataTypes.insert(.scriptData)
-                    }
-                }
-                WebsiteCleaner.clean(options: cleanDataTypes) {
-                    DispatchQueue.main.async {
-                        self.dismiss(animated: true)
-                    }
-                }
+        WebsiteCleaner.clean(options: selectedOptions) { [weak self] in
+            DispatchQueue.main.async {
+                self?.dismiss(animated: true)
             }
-        })
-        present(alert, animated: true)
-    }
-
-    func numberOfSections(in tableView: UITableView) -> Int {
-        return 3
+        }
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 { return 4 }
-        return 1
-    }
-
-    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-        return 52
+        return optionsList.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "CleanOptionRowCell", for: indexPath) as! CleanOptionRowCell
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "CleanOptionCell")
+        cell.backgroundColor = .secondarySystemGroupedBackground
 
-        if indexPath.section == 0 {
-            let option: CleanOption
-            let titleText: String
-            switch indexPath.row {
-            case 0:
-                titleText = "网页缓存文件"
-                option = .cache
-            case 1:
-                titleText = "搜索与浏览历史记录"
-                option = .searchHistory
-            case 2:
-                titleText = "登录与本地数据"
-                option = .loginAndData
-            default:
-                titleText = "用户脚本缓存数据"
-                option = .scriptData
-            }
+        let option = optionsList[indexPath.row]
+        cell.textLabel?.text = option.rawValue
+        cell.textLabel?.font = .systemFont(ofSize: 16, weight: .regular)
 
-            let isChecked = selectedOptions.contains(option)
-            cell.configure(title: titleText, isChecked: isChecked, isActionButton: false)
-        } else if indexPath.section == 1 {
-            cell.configure(title: "确认清理", isChecked: false, isActionButton: true, textColor: .systemBlue)
+        switch option {
+        case .cache:
+            cell.detailTextLabel?.text = "临时文件、已缓存的图片和网页资源"
+            cell.imageView?.image = UIImage(systemName: "internaldrive")
+        case .history:
+            cell.detailTextLabel?.text = "访问过的网页记录与地址栏搜索词"
+            cell.imageView?.image = UIImage(systemName: "clock")
+        case .loginAndData:
+            cell.detailTextLabel?.text = "Cookie 与本地数据库（已锁定的网站数据除外）"
+            cell.imageView?.image = UIImage(systemName: "person.crop.circle.badge.checkmark")
+        case .scriptData:
+            cell.detailTextLabel?.text = "油猴脚本存储在本地的数据缓存"
+            cell.imageView?.image = UIImage(systemName: "puzzlepiece.extension")
+        }
+
+        cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+        cell.detailTextLabel?.textColor = .secondaryLabel
+
+        if selectedOptions.contains(option) {
+            cell.accessoryType = .checkmark
+            cell.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
         } else {
-            cell.configure(title: "管理网站数据", isChecked: false, isActionButton: true, textColor: .systemBlue)
+            cell.accessoryType = .none
         }
 
         return cell
@@ -136,95 +96,12 @@ final class CleanDataSelectionViewController: UIViewController, UITableViewDataS
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-
-        if indexPath.section == 0 {
-            let option: CleanOption
-            switch indexPath.row {
-            case 0: option = .cache
-            case 1: option = .searchHistory
-            case 2: option = .loginAndData
-            default: option = .scriptData
-            }
-
-            if selectedOptions.contains(option) {
-                selectedOptions.remove(option)
-            } else {
-                selectedOptions.insert(option)
-            }
-            saveOptions()
-            tableView.reloadRows(at: [indexPath], with: .automatic)
-        } else if indexPath.section == 1 {
-            requestCleanConfirmation()
+        let option = optionsList[indexPath.row]
+        if selectedOptions.contains(option) {
+            selectedOptions.remove(option)
         } else {
-            dismiss(animated: true) { [weak self] in
-                if let handler = self?.onOpenWebsiteDataManager {
-                    handler()
-                } else if let topVC = UIApplication.shared.windows.first?.rootViewController {
-                    let vc = WebsiteDataManagerViewController()
-                    topVC.present(UINavigationController(rootViewController: vc), animated: true)
-                }
-            }
+            selectedOptions.insert(option)
         }
-    }
-}
-
-final class CleanOptionRowCell: UITableViewCell {
-    private let titleLabel = UILabel()
-    private let checkIcon = UIImageView()
-    private var regularConstraints: [NSLayoutConstraint] = []
-    private var centeredConstraints: [NSLayoutConstraint] = []
-
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
-        backgroundColor = .secondarySystemGroupedBackground
-
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
-
-        checkIcon.translatesAutoresizingMaskIntoConstraints = false
-        checkIcon.image = UIImage(systemName: "checkmark")
-        checkIcon.tintColor = .systemBlue
-
-        contentView.addSubview(titleLabel)
-        contentView.addSubview(checkIcon)
-
-        regularConstraints = [
-            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            titleLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: checkIcon.leadingAnchor, constant: -8),
-            checkIcon.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            checkIcon.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            checkIcon.widthAnchor.constraint(equalToConstant: 18),
-            checkIcon.heightAnchor.constraint(equalToConstant: 18)
-        ]
-
-        centeredConstraints = [
-            titleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-            titleLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
-        ]
-
-        NSLayoutConstraint.activate(regularConstraints)
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    func configure(title: String, isChecked: Bool, isActionButton: Bool, textColor: UIColor? = nil) {
-        titleLabel.text = title
-
-        if isActionButton {
-            titleLabel.textColor = textColor ?? .label
-            titleLabel.textAlignment = .center
-            titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-            checkIcon.isHidden = true
-            NSLayoutConstraint.deactivate(regularConstraints)
-            NSLayoutConstraint.activate(centeredConstraints)
-        } else {
-            titleLabel.textColor = .label
-            titleLabel.textAlignment = .left
-            titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
-            checkIcon.isHidden = !isChecked
-            NSLayoutConstraint.deactivate(centeredConstraints)
-            NSLayoutConstraint.activate(regularConstraints)
-        }
+        tableView.reloadRows(at: [indexPath], with: .automatic)
     }
 }

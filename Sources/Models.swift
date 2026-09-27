@@ -1,32 +1,6 @@
-//
-//  Models.swift
-//  SimpleBrowser
-//
-
 import Foundation
 import UIKit
 import WebKit
-
-// MARK: - 自定义轻触反馈按钮
-open class TouchButton: UIButton {
-    public var hitTestInsets = UIEdgeInsets.zero
-
-    open override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        if hitTestInsets == .zero {
-            return super.point(inside: point, with: event)
-        }
-        let hitFrame = bounds.inset(by: hitTestInsets)
-        return hitFrame.contains(point)
-    }
-
-    public override init(frame: CGRect) {
-        super.init(frame: frame)
-    }
-
-    public required init?(coder: NSCoder) {
-        super.init(coder: coder)
-    }
-}
 
 // MARK: - 书签模型（支持多级目录树）
 public struct BookmarkItem: Codable, Equatable {
@@ -36,10 +10,6 @@ public struct BookmarkItem: Codable, Equatable {
     public var parentId: String?
     public var isFolder: Bool
     public var createdAt: Date
-
-    public var urlString: String {
-        return url
-    }
 
     public init(id: String = UUID().uuidString, title: String, url: String = "", parentId: String? = nil, isFolder: Bool = false, createdAt: Date = Date()) {
         self.id = id
@@ -88,14 +58,6 @@ public final class BookmarkStore {
         }
     }
 
-    public func getNodes(inParent parentId: String?) -> [BookmarkItem] {
-        return getItems(in: parentId)
-    }
-
-    public func loadAllNodes() -> [BookmarkItem] {
-        return bookmarks
-    }
-
     public func getAllFolders() -> [BookmarkItem] {
         return bookmarks.filter { $0.isFolder }
     }
@@ -111,17 +73,11 @@ public final class BookmarkStore {
         }
     }
 
-    public func addBookmark(title: String, urlString: String, parentId: String? = nil) {
-        addBookmark(title: title, url: urlString, parentId: parentId)
-    }
-
-    @discardableResult
-    public func createFolder(title: String, parentId: String? = nil) -> BookmarkItem {
+    public func createFolder(title: String, parentId: String? = nil) {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "新建文件夹" : title
         let item = BookmarkItem(title: cleanTitle, url: "", parentId: parentId, isFolder: true)
         bookmarks.append(item)
         saveBookmarks()
-        return item
     }
 
     public func updateItem(id: String, title: String, url: String) {
@@ -136,10 +92,6 @@ public final class BookmarkStore {
         saveBookmarks()
     }
 
-    public func updateNode(id: String, title: String, urlString: String?) {
-        updateItem(id: id, title: title, url: urlString ?? "")
-    }
-
     public func deleteItem(id: String) {
         var idsToDelete = Set<String>([id])
         var queue = [id]
@@ -150,15 +102,6 @@ public final class BookmarkStore {
             queue.append(contentsOf: children)
         }
         bookmarks.removeAll { idsToDelete.contains($0.id) }
-        saveBookmarks()
-    }
-
-    public func deleteNode(id: String) {
-        deleteItem(id: id)
-    }
-
-    public func clearBookmarks() {
-        bookmarks.removeAll()
         saveBookmarks()
     }
 
@@ -191,6 +134,7 @@ public final class BookmarkStore {
         return html
     }
 
+    @discardableResult
     public func importFromAlookHTML(_ html: String) -> Int {
         let lines = html.components(separatedBy: .newlines)
         var count = 0
@@ -319,9 +263,6 @@ public struct HistoryItem: Codable, Equatable {
     public let url: String
     public let timestamp: Date
 
-    public var urlString: String { url }
-    public var visitedAt: Date { timestamp }
-
     public init(id: String = UUID().uuidString, title: String, url: String, timestamp: Date = Date()) {
         self.id = id
         self.title = title
@@ -330,15 +271,13 @@ public struct HistoryItem: Codable, Equatable {
     }
 }
 
-public typealias BrowserHistoryItem = HistoryItem
-
 public final class BrowserHistoryStore {
     public static let shared = BrowserHistoryStore()
     private let key = "SimpleBrowserHistoryList"
     public private(set) var history: [HistoryItem] = []
 
     private init() {
-        loadHistoryData()
+        loadHistory()
     }
 
     public func record(title: String, url: String) {
@@ -357,26 +296,14 @@ public final class BrowserHistoryStore {
         }
     }
 
-    public func loadHistory() -> [HistoryItem] {
-        return history
-    }
-
     public func clearAll() {
         history.removeAll()
         saveHistory()
     }
 
-    public func clearHistory() {
-        clearAll()
-    }
-
     public func deleteItem(id: String) {
         history.removeAll { $0.id == id }
         saveHistory()
-    }
-
-    public func delete(id: String) {
-        deleteItem(id: id)
     }
 
     private func saveHistory() {
@@ -385,7 +312,7 @@ public final class BrowserHistoryStore {
         }
     }
 
-    private func loadHistoryData() {
+    private func loadHistory() {
         if let data = UserDefaults.standard.data(forKey: key),
            let list = try? JSONDecoder().decode([HistoryItem].self, from: data) {
             history = list
@@ -437,21 +364,6 @@ public final class FaviconLoader {
 
     private init() {
         memCache.countLimit = 200
-    }
-
-    public func cachedFavicon(for host: String) -> UIImage? {
-        let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !clean.isEmpty else { return nil }
-        if let img = memCache.object(forKey: clean as NSString) {
-            return img
-        }
-        let fileURL = diskPath.appendingPathComponent("\(clean.hashValue).png")
-        if FileManager.default.fileExists(atPath: fileURL.path),
-           let img = UIImage(contentsOfFile: fileURL.path) {
-            memCache.setObject(img, forKey: clean as NSString)
-            return img
-        }
-        return nil
     }
 
     public func preloadFavicon(for host: String) {
@@ -514,31 +426,9 @@ public final class FaviconLoader {
     }
 }
 
-// MARK: - 网站数据清除操作类型
-public enum CleanOption: Int, CaseIterable {
-    case cache = 0
-    case searchHistory = 1
-    case loginAndData = 2
-    case scriptData = 3
-}
-
-public enum CleanDataType: String, CaseIterable {
-    case cache = "网页缓存文件"
-    case history = "搜索与浏览历史记录"
-    case loginAndData = "登录与本地数据"
-    case scriptData = "用户脚本缓存数据"
-}
-
 // MARK: - 网站数据原子清除引擎
-public final class WebsiteCleaner {
-    public static let shared = WebsiteCleaner()
-    private init() {}
-
+public enum WebsiteCleaner {
     public static func clean(options: Set<CleanDataType>, completion: @escaping () -> Void) {
-        shared.clean(options: options, completion: completion)
-    }
-
-    public func clean(options: Set<CleanDataType>, completion: @escaping () -> Void) {
         var dataTypesToRemove = Set<String>()
 
         if options.contains(.cache) {
@@ -571,7 +461,7 @@ public final class WebsiteCleaner {
         if !dataTypesToRemove.isEmpty {
             let store = WKWebsiteDataStore.default()
             store.fetchDataRecords(ofTypes: dataTypesToRemove) { records in
-                let targetRecords = records.filter { !CookieLockStore.shared.isLocked(host: $0.displayName) }
+                let targetRecords = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
                 if targetRecords.isEmpty {
                     completion()
                     return
@@ -584,28 +474,13 @@ public final class WebsiteCleaner {
             completion()
         }
     }
+}
 
-    public func cleanUnprotectedLoginAndData(completion: @escaping () -> Void) {
-        let types = WKWebsiteDataStore.allWebsiteDataTypes()
-        let store = WKWebsiteDataStore.default()
-        store.fetchDataRecords(ofTypes: types) { records in
-            let unprotected = records.filter { !CookieLockStore.shared.isLocked(host: $0.displayName) }
-            if unprotected.isEmpty {
-                completion()
-                return
-            }
-            store.removeData(ofTypes: types, for: unprotected) {
-                completion()
-            }
-        }
-    }
-
-    public func cleanSingleDomain(record: WKWebsiteDataRecord, cacheOnly: Bool, completion: @escaping () -> Void) {
-        let types = cacheOnly ? Set([WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache]) : record.dataTypes
-        WKWebsiteDataStore.default().removeData(ofTypes: types, for: [record]) {
-            completion()
-        }
-    }
+public enum CleanDataType: String, CaseIterable {
+    case cache = "网页缓存文件"
+    case history = "搜索与浏览历史记录"
+    case loginAndData = "登录与本地数据"
+    case scriptData = "用户脚本缓存数据"
 }
 
 // MARK: - 域名独立加锁持久化管理器
@@ -625,18 +500,15 @@ public final class CookieLockStore {
 
     private init() {}
 
-    public func isLocked(host: String) -> Bool {
-        let clean = host.lowercased()
+    public func isLocked(domain: String) -> Bool {
+        let clean = domain.lowercased()
         return lockedHosts.contains(clean)
     }
 
-    public func isLocked(domain: String) -> Bool {
-        return isLocked(host: domain)
-    }
-
-    public func toggleLock(host: String) -> Bool {
+    @discardableResult
+    public func toggleLock(domain: String) -> Bool {
         var set = lockedHosts
-        let clean = host.lowercased()
+        let clean = domain.lowercased()
         let result: Bool
         if set.contains(clean) {
             set.remove(clean)
@@ -649,168 +521,25 @@ public final class CookieLockStore {
         return result
     }
 
-    public func toggleLock(domain: String) -> Bool {
-        return toggleLock(host: domain)
-    }
-
-    public func lock(host: String) {
+    public func lock(domain: String) {
         var set = lockedHosts
-        set.insert(host.lowercased())
+        set.insert(domain.lowercased())
         lockedHosts = set
     }
 
-    public func unlock(host: String) {
+    public func unlock(domain: String) {
         var set = lockedHosts
-        set.remove(host.lowercased())
+        set.remove(domain.lowercased())
         lockedHosts = set
     }
 }
 
-// MARK: - 域名自定义设置管理
-public final class DomainSettingsStore {
-    public static let shared = DomainSettingsStore()
-    private let keyPrefix = "domain_settings_"
-
-    private init() {}
-
-    public func getBool(domain: String, setting: String, defaultVal: Bool) -> Bool {
-        let host = domain.lowercased()
-        let key = "\(keyPrefix)\(host)_\(setting)"
-        if UserDefaults.standard.object(forKey: key) == nil {
-            return defaultVal
-        }
-        return UserDefaults.standard.bool(forKey: key)
-    }
-
-    public func setBool(domain: String, setting: String, val: Bool) {
-        let host = domain.lowercased()
-        let key = "\(keyPrefix)\(host)_\(setting)"
-        UserDefaults.standard.set(val, forKey: key)
-    }
-}
-
-// MARK: - 用户脚本模型与存储
-public struct UserScript: Codable, Equatable {
-    public var id: String
-    public var name: String
-    public var matchPattern: String
-    public var code: String
-    public var isEnabled: Bool
-
-    public init(id: String = UUID().uuidString, name: String, matchPattern: String, code: String, isEnabled: Bool = true) {
-        self.id = id
-        self.name = name
-        self.matchPattern = matchPattern
-        self.code = code
-        self.isEnabled = isEnabled
-    }
-}
-
-public struct RegisteredMenuCommand {
-    public let scriptId: String
-    public let cmdId: Int
-    public let caption: String
-
-    public init(scriptId: String, cmdId: Int, caption: String) {
-        self.scriptId = scriptId
-        self.cmdId = cmdId
-        self.caption = caption
-    }
-}
-
-public final class UserScriptStore {
-    public static let shared = UserScriptStore()
-    private let key = "SimpleBrowserUserScripts_V2"
-
-    private init() {}
-
-    public func loadScripts() -> [UserScript] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let list = try? JSONDecoder().decode([UserScript].self, from: data) else {
-            return []
-        }
-        return list
-    }
-
-    public func saveScripts(_ scripts: [UserScript]) {
-        if let data = try? JSONEncoder().encode(scripts) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
-    }
-
-    public func isScriptMatching(script: UserScript, urlString: String) -> Bool {
-        guard script.isEnabled else { return false }
-        let pattern = script.matchPattern.trimmingCharacters(in: .whitespacesAndNewlines)
-        if pattern == "*" || pattern == "*://*/*" || pattern.isEmpty {
-            return true
-        }
-        if pattern.hasPrefix("*://") {
-            let hostAndPath = String(pattern.dropFirst(4))
-            let parts = hostAndPath.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
-            let hostPart = String(parts[0]).replacingOccurrences(of: "*.", with: "")
-            if let targetHost = URL(string: urlString)?.host?.lowercased() {
-                return targetHost == hostPart || targetHost.hasSuffix("." + hostPart)
-            }
-        }
-        return urlString.contains(pattern)
-    }
-}
-
-public final class ScriptDataStore {
-    public static let shared = ScriptDataStore()
-    private let prefix = "GM_DATA_"
-
-    private init() {}
-
-    public func setValue(scriptId: String, name: String, value: Any) {
-        let key = "\(prefix)\(scriptId)_\(name)"
-        UserDefaults.standard.set(value, forKey: key)
-    }
-
-    public func deleteValue(scriptId: String, name: String) {
-        let key = "\(prefix)\(scriptId)_\(name)"
-        UserDefaults.standard.removeObject(forKey: key)
-    }
-
-    public func getAllValuesJSON(scriptId: String) -> String {
-        let defaults = UserDefaults.standard.dictionaryRepresentation()
-        var values: [String: Any] = [:]
-        let targetPrefix = "\(prefix)\(scriptId)_"
-        for (k, v) in defaults where k.hasPrefix(targetPrefix) {
-            let name = String(k.dropFirst(targetPrefix.count))
-            values[name] = v
-        }
-        if let data = try? JSONSerialization.data(withJSONObject: values, options: []),
-           let json = String(data: data, encoding: .utf8) {
-            return json
-        }
-        return "{}"
-    }
-
-    public func clearDataForScript(scriptId: String) {
-        let defaults = UserDefaults.standard
-        let targetPrefix = "\(prefix)\(scriptId)_"
-        for k in defaults.dictionaryRepresentation().keys where k.hasPrefix(targetPrefix) {
-            defaults.removeObject(forKey: k)
-        }
-    }
-}
-
-// MARK: - 浏览器标识（User-Agent）模型与存储（手机版与电脑版独立默认设置）
-public enum UserAgentCategory: String, Codable {
-    case mobile
-    case desktop
-}
-
+// MARK: - 浏览器标识（User-Agent）模型与存储（手机版与电脑版独立管理）
 public struct UserAgentPreset: Codable, Equatable {
     public let id: String
     public var name: String
     public var ua: String
     public var isDesktop: Bool
-
-    public var category: UserAgentCategory {
-        return isDesktop ? .desktop : .mobile
-    }
 
     public init(id: String = UUID().uuidString, name: String, ua: String, isDesktop: Bool) {
         self.id = id
@@ -822,74 +551,64 @@ public struct UserAgentPreset: Codable, Equatable {
 
 public final class UserAgentStore {
     public static let shared = UserAgentStore()
-    private let customUAsKey = "CustomUserAgents_V4"
-    private let activeMobileUAIdKey = "ActiveMobileUAId_V4"
-    private let activeDesktopUAIdKey = "ActiveDesktopUAId_V4"
-    private let isDesktopModeEnabledKey = "IsDesktopModeEnabled_V4"
+    private let customMobileKey = "CustomMobileUserAgents_V4"
+    private let customDesktopKey = "CustomDesktopUserAgents_V4"
+    private let activeMobileKey = "ActiveMobileUAId_V4"
+    private let activeDesktopKey = "ActiveDesktopUAId_V4"
+    private let isDesktopModeKey = "IsDesktopModeEnabled_V4"
 
     public static let defaultMobileSafari = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
     public static let defaultMobileChrome = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/116.0.5845.177 Mobile/15E148 Safari/604.1"
-    public static let defaultiPadSafari = "Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-    public static let defaultAndroidChrome = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
+    public static let defaultMobileIPad = "Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+    public static let defaultMobileAndroid = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
-    public static let defaultMacChrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
-    public static let defaultMacSafari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
-    public static let defaultWindowsChrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
-    public static let defaultWindowsEdge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36 Edg/116.0.1938.81"
+    public static let defaultDesktopChrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    public static let defaultDesktopSafari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
+    public static let defaultDesktopWinChrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    public static let defaultDesktopWinEdge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
 
-    // 纯粹名称，无任何括号注释
     public let presetMobileItems: [UserAgentPreset] = [
         UserAgentPreset(id: "preset_mobile_safari", name: "iOS 16 Safari", ua: defaultMobileSafari, isDesktop: false),
         UserAgentPreset(id: "preset_mobile_chrome", name: "iOS Chrome", ua: defaultMobileChrome, isDesktop: false),
-        UserAgentPreset(id: "preset_mobile_ipad", name: "iPad Safari", ua: defaultiPadSafari, isDesktop: false),
-        UserAgentPreset(id: "preset_mobile_android", name: "Android Chrome", ua: defaultAndroidChrome, isDesktop: false)
+        UserAgentPreset(id: "preset_mobile_ipad", name: "iPad Safari", ua: defaultMobileIPad, isDesktop: false),
+        UserAgentPreset(id: "preset_mobile_android", name: "Android Chrome", ua: defaultMobileAndroid, isDesktop: false)
     ]
 
     public let presetDesktopItems: [UserAgentPreset] = [
-        UserAgentPreset(id: "preset_desktop_chrome", name: "macOS Chrome", ua: defaultMacChrome, isDesktop: true),
-        UserAgentPreset(id: "preset_desktop_safari", name: "macOS Safari", ua: defaultMacSafari, isDesktop: true),
-        UserAgentPreset(id: "preset_desktop_win_chrome", name: "Windows 11 Chrome", ua: defaultWindowsChrome, isDesktop: true),
-        UserAgentPreset(id: "preset_desktop_win_edge", name: "Windows 11 Edge", ua: defaultWindowsEdge, isDesktop: true)
+        UserAgentPreset(id: "preset_desktop_chrome", name: "macOS Chrome", ua: defaultDesktopChrome, isDesktop: true),
+        UserAgentPreset(id: "preset_desktop_safari", name: "macOS Safari", ua: defaultDesktopSafari, isDesktop: true),
+        UserAgentPreset(id: "preset_desktop_win_chrome", name: "Windows 11 Chrome", ua: defaultDesktopWinChrome, isDesktop: true),
+        UserAgentPreset(id: "preset_desktop_win_edge", name: "Windows 11 Edge", ua: defaultDesktopWinEdge, isDesktop: true)
     ]
 
     public private(set) var customMobileItems: [UserAgentPreset] = []
     public private(set) var customDesktopItems: [UserAgentPreset] = []
 
+    public var activeMobilePresetId: String {
+        get { UserDefaults.standard.string(forKey: activeMobileKey) ?? "preset_mobile_safari" }
+        set { UserDefaults.standard.set(newValue, forKey: activeMobileKey) }
+    }
+
+    public var activeDesktopPresetId: String {
+        get { UserDefaults.standard.string(forKey: activeDesktopKey) ?? "preset_desktop_chrome" }
+        set { UserDefaults.standard.set(newValue, forKey: activeDesktopKey) }
+    }
+
     public var isDesktopMode: Bool {
-        get {
-            return UserDefaults.standard.bool(forKey: isDesktopModeEnabledKey)
-        }
+        get { UserDefaults.standard.bool(forKey: isDesktopModeKey) }
         set {
-            UserDefaults.standard.set(newValue, forKey: isDesktopModeEnabledKey)
+            UserDefaults.standard.set(newValue, forKey: isDesktopModeKey)
             NotificationCenter.default.post(name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
         }
     }
 
-    public var activeMobilePresetId: String {
-        return UserDefaults.standard.string(forKey: activeMobileUAIdKey) ?? "preset_mobile_safari"
-    }
-
-    public var activeDesktopPresetId: String {
-        return UserDefaults.standard.string(forKey: activeDesktopUAIdKey) ?? "preset_desktop_chrome"
-    }
-
     public var currentUA: String {
-        return getSelectedUA()
-    }
-
-    public func getSelectedUA() -> String {
-        return getSelectedItem().ua
-    }
-
-    public func getSelectedItem() -> UserAgentPreset {
         if isDesktopMode {
-            let id = activeDesktopPresetId
             let allDesktop = presetDesktopItems + customDesktopItems
-            return allDesktop.first(where: { $0.id == id }) ?? presetDesktopItems[0]
+            return allDesktop.first(where: { $0.id == activeDesktopPresetId })?.ua ?? Self.defaultDesktopChrome
         } else {
-            let id = activeMobilePresetId
             let allMobile = presetMobileItems + customMobileItems
-            return allMobile.first(where: { $0.id == id }) ?? presetMobileItems[0]
+            return allMobile.first(where: { $0.id == activeMobilePresetId })?.ua ?? Self.defaultMobileSafari
         }
     }
 
@@ -898,12 +617,12 @@ public final class UserAgentStore {
     }
 
     public func setActiveMobileUA(id: String) {
-        UserDefaults.standard.set(id, forKey: activeMobileUAIdKey)
+        activeMobilePresetId = id
         NotificationCenter.default.post(name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
     }
 
     public func setActiveDesktopUA(id: String) {
-        UserDefaults.standard.set(id, forKey: activeDesktopUAIdKey)
+        activeDesktopPresetId = id
         NotificationCenter.default.post(name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
     }
 
@@ -915,89 +634,72 @@ public final class UserAgentStore {
         let item = UserAgentPreset(name: trimmedName, ua: trimmedUA, isDesktop: isDesktop)
         if isDesktop {
             customDesktopItems.append(item)
-            saveCustomPresets()
             setActiveDesktopUA(id: item.id)
         } else {
             customMobileItems.append(item)
-            saveCustomPresets()
             setActiveMobileUA(id: item.id)
         }
+        saveCustomPresets()
     }
 
     public func deleteCustomPreset(id: String) {
-        if let idx = customMobileItems.firstIndex(where: { $0.id == id }) {
-            customMobileItems.remove(at: idx)
-            saveCustomPresets()
-            if activeMobilePresetId == id {
-                setActiveMobileUA(id: "preset_mobile_safari")
-            }
-        } else if let idx = customDesktopItems.firstIndex(where: { $0.id == id }) {
-            customDesktopItems.remove(at: idx)
-            saveCustomPresets()
-            if activeDesktopPresetId == id {
-                setActiveDesktopUA(id: "preset_desktop_chrome")
-            }
+        customMobileItems.removeAll { $0.id == id }
+        customDesktopItems.removeAll { $0.id == id }
+        saveCustomPresets()
+
+        if activeMobilePresetId == id {
+            setActiveMobileUA(id: "preset_mobile_safari")
+        }
+        if activeDesktopPresetId == id {
+            setActiveDesktopUA(id: "preset_desktop_chrome")
         }
     }
 
     private func saveCustomPresets() {
-        let all = customMobileItems + customDesktopItems
-        if let data = try? JSONEncoder().encode(all) {
-            UserDefaults.standard.set(data, forKey: customUAsKey)
+        if let d1 = try? JSONEncoder().encode(customMobileItems) {
+            UserDefaults.standard.set(d1, forKey: customMobileKey)
+        }
+        if let d2 = try? JSONEncoder().encode(customDesktopItems) {
+            UserDefaults.standard.set(d2, forKey: customDesktopKey)
         }
     }
 
     private func loadCustomPresets() {
-        guard let data = UserDefaults.standard.data(forKey: customUAsKey),
-              let list = try? JSONDecoder().decode([UserAgentPreset].self, from: data) else { return }
-        customMobileItems = list.filter { !$0.isDesktop }
-        customDesktopItems = list.filter { $0.isDesktop }
+        if let data = UserDefaults.standard.data(forKey: customMobileKey),
+           let list = try? JSONDecoder().decode([UserAgentPreset].self, from: data) {
+            customMobileItems = list
+        }
+        if let data = UserDefaults.standard.data(forKey: customDesktopKey),
+           let list = try? JSONDecoder().decode([UserAgentPreset].self, from: data) {
+            customDesktopItems = list
+        }
+    }
+}
+
+// MARK: - 基础组件
+open class TouchButton: UIButton {
+    public override init(frame: CGRect) {
+        super.init(frame: frame)
+    }
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
     }
 }
 
 // MARK: - 底部 Sheet 菜单模型
-public enum CustomBottomSheetLayout {
-    case list
-    case grid
-}
-
 public struct CustomBottomSheetItem {
-    public let iconName: String?
+    public let iconName: String
     public let customImage: UIImage?
     public let title: String
     public let hasSwitch: Bool
-    public var isSwitchOn: Bool?
+    public var isSwitchOn: Bool
     public let dismissOnTap: Bool
-    public let isDestructive: Bool
-    public let action: (() -> Void)?
+    public let action: () -> Void
     public let longPressAction: (() -> Void)?
-    public var handler: (() -> Void)? { action }
-    public var longPressHandler: (() -> Void)? { longPressAction }
 
     public init(
-        iconName: String? = nil,
+        iconName: String = "",
         customImage: UIImage? = nil,
-        title: String,
-        hasSwitch: Bool = false,
-        isSwitchOn: Bool? = nil,
-        dismissOnTap: Bool = true,
-        isDestructive: Bool = false,
-        action: (() -> Void)? = nil,
-        longPressAction: (() -> Void)? = nil
-    ) {
-        self.iconName = iconName
-        self.customImage = customImage
-        self.title = title
-        self.hasSwitch = hasSwitch
-        self.isSwitchOn = isSwitchOn
-        self.dismissOnTap = dismissOnTap
-        self.isDestructive = isDestructive
-        self.action = action
-        self.longPressAction = longPressAction
-    }
-
-    public init(
-        iconName: String,
         title: String,
         hasSwitch: Bool = false,
         isSwitchOn: Bool = false,
@@ -1006,12 +708,11 @@ public struct CustomBottomSheetItem {
         longPressAction: (() -> Void)? = nil
     ) {
         self.iconName = iconName
-        self.customImage = nil
+        self.customImage = customImage
         self.title = title
         self.hasSwitch = hasSwitch
         self.isSwitchOn = isSwitchOn
         self.dismissOnTap = dismissOnTap
-        self.isDestructive = false
         self.action = action
         self.longPressAction = longPressAction
     }
