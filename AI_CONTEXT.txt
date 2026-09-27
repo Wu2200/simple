@@ -4996,10 +4996,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let panel = CustomBottomSheetViewController(title: "", items: items, layout: .list)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                let cardHeight: CGFloat = 52
-                let spacing: CGFloat = 10
-                let totalHeight: CGFloat = CGFloat(items.count) * (cardHeight + spacing) + 36
-                presentation.detents = [.custom { _ in totalHeight }]
+                let cardHeight: CGFloat = 58
+                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + 40
+                presentation.detents = [.custom { _ in min(totalHeight, 350) }]
                 presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
@@ -5070,9 +5069,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let panel = CustomBottomSheetViewController(title: script.name, items: items, layout: .list)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                let cardHeight: CGFloat = 52
-                let spacing: CGFloat = 10
-                let totalHeight: CGFloat = CGFloat(items.count) * (cardHeight + spacing) + 80
+                let cardHeight: CGFloat = 58
+                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + 80
                 presentation.detents = [.custom { _ in min(totalHeight, 400) }]
                 presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
@@ -5180,8 +5178,26 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let alert = UIAlertController(title: "添加当前网页", message: resolvedTitle, preferredStyle: .actionSheet)
 
         alert.addAction(UIAlertAction(title: "添加到书签", style: .default) { [weak self] _ in
-            BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString)
-            self?.showToastNotice("已添加到书签")
+            guard let self = self else { return }
+            let folders = BookmarkStore.shared.getAllFolders()
+            if folders.isEmpty {
+                BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString, parentId: nil)
+                self.showToastNotice("已添加到书签")
+            } else {
+                let folderAlert = UIAlertController(title: "选择目标文件夹", message: nil, preferredStyle: .actionSheet)
+                folderAlert.addAction(UIAlertAction(title: "书签根目录", style: .default) { _ in
+                    BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString, parentId: nil)
+                    self.showToastNotice("已保存到书签根目录")
+                })
+                for folder in folders {
+                    folderAlert.addAction(UIAlertAction(title: "📁 \(folder.title)", style: .default) { _ in
+                        BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString, parentId: folder.id)
+                        self.showToastNotice("已保存到「\(folder.title)」")
+                    })
+                }
+                folderAlert.addAction(UIAlertAction(title: "取消", style: .cancel))
+                self.present(folderAlert, animated: true)
+            }
         })
 
         alert.addAction(UIAlertAction(title: "添加到主页", style: .default) { [weak self] _ in
