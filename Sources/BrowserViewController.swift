@@ -2054,9 +2054,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             self.load(url: url)
         }
         let nav = UINavigationController(rootViewController: editor)
-        if #available(iOS 15.0, *) {
+        if #available(iOS 16.0, *) {
             if let presentation = nav.sheetPresentationController {
-                presentation.detents = [.medium(), .large()]
+                let halfDetent = UISheetPresentationController.Detent.custom(identifier: .init("smallHalf")) { _ in
+                    return 260
+                }
+                presentation.detents = [halfDetent, .medium()]
+                presentation.selectedDetentIdentifier = halfDetent.identifier
+                presentation.prefersGrabberVisible = true
+                presentation.preferredCornerRadius = 24
+            }
+        } else if #available(iOS 15.0, *) {
+            if let presentation = nav.sheetPresentationController {
+                presentation.detents = [.medium()]
                 presentation.prefersGrabberVisible = true
                 presentation.preferredCornerRadius = 24
             }
@@ -3099,7 +3109,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
     }
 }
 
-final class ExpandedURLEditorViewController: UIViewController {
+final class ExpandedURLEditorViewController: UIViewController, UITextViewDelegate {
     private let initialURL: String
     private let onConfirm: (String) -> Void
     private let textView = UITextView()
@@ -3130,20 +3140,6 @@ final class ExpandedURLEditorViewController: UIViewController {
             action: #selector(handleGo)
         )
 
-        let toolbarStack = UIStackView()
-        toolbarStack.translatesAutoresizingMaskIntoConstraints = false
-        toolbarStack.axis = .horizontal
-        toolbarStack.distribution = .fillEqually
-        toolbarStack.spacing = 10
-
-        let clearBtn = createToolButton(title: "清空", action: #selector(handleClear))
-        let pasteBtn = createToolButton(title: "粘贴", action: #selector(handlePaste))
-        let copyBtn = createToolButton(title: "复制", action: #selector(handleCopy))
-
-        toolbarStack.addArrangedSubview(clearBtn)
-        toolbarStack.addArrangedSubview(pasteBtn)
-        toolbarStack.addArrangedSubview(copyBtn)
-
         let container = UIView()
         container.translatesAutoresizingMaskIntoConstraints = false
         container.backgroundColor = UIColor { trait in
@@ -3162,21 +3158,16 @@ final class ExpandedURLEditorViewController: UIViewController {
         textView.text = initialURL
         textView.keyboardType = .webSearch
         textView.returnKeyType = .go
+        textView.delegate = self
 
         container.addSubview(textView)
-        view.addSubview(toolbarStack)
         view.addSubview(container)
 
         NSLayoutConstraint.activate([
-            toolbarStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            toolbarStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            toolbarStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            toolbarStack.heightAnchor.constraint(equalToConstant: 34),
-
-            container.topAnchor.constraint(equalTo: toolbarStack.bottomAnchor, constant: 12),
+            container.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             container.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             container.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            container.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            container.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -16),
 
             textView.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
             textView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
@@ -3186,19 +3177,18 @@ final class ExpandedURLEditorViewController: UIViewController {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.textView.becomeFirstResponder()
+            if !self.textView.text.isEmpty {
+                self.textView.selectAll(nil)
+            }
         }
     }
 
-    private func createToolButton(title: String, action: Selector) -> TouchButton {
-        let btn = TouchButton()
-        var config = UIButton.Configuration.gray()
-        config.title = title
-        config.cornerStyle = .capsule
-        config.buttonSize = .mini
-        config.baseForegroundColor = .label
-        btn.configuration = config
-        btn.addTarget(self, action: action, for: .touchUpInside)
-        return btn
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        if text == "\n" {
+            handleGo()
+            return false
+        }
+        return true
     }
 
     @objc private func handleCancel() {
@@ -3212,20 +3202,5 @@ final class ExpandedURLEditorViewController: UIViewController {
                 self?.onConfirm(text)
             }
         }
-    }
-
-    @objc private func handleClear() {
-        textView.text = ""
-    }
-
-    @objc private func handlePaste() {
-        if let pasteString = UIPasteboard.general.string {
-            textView.text = pasteString
-        }
-    }
-
-    @objc private func handleCopy() {
-        UIPasteboard.general.string = textView.text
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 }
