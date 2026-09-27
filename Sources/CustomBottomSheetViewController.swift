@@ -193,11 +193,11 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         headerContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(headerContainer)
 
-        let titleLabel = UILabel()
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 16.5, weight: .semibold)
-        titleLabel.textColor = .label
-        titleLabel.text = titleString
+        let headerTitleLabel = UILabel()
+        headerTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerTitleLabel.font = .systemFont(ofSize: 16.5, weight: .semibold)
+        headerTitleLabel.textColor = .label
+        headerTitleLabel.text = titleString
 
         let closeButton = TouchButton()
         closeButton.translatesAutoresizingMaskIntoConstraints = false
@@ -208,7 +208,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         )
         closeButton.addTarget(self, action: #selector(handleDismiss), for: .touchUpInside)
 
-        headerContainer.addSubview(titleLabel)
+        headerContainer.addSubview(headerTitleLabel)
         headerContainer.addSubview(closeButton)
 
         let scrollView = UIScrollView()
@@ -251,8 +251,8 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             headerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
             headerContainer.heightAnchor.constraint(equalToConstant: hasTitle ? 36 : 0),
 
-            titleLabel.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor),
-            titleLabel.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor),
+            headerTitleLabel.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor),
+            headerTitleLabel.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor),
 
             closeButton.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor),
             closeButton.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor),
@@ -281,7 +281,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
 
         if item.isSwitchOn != nil && !item.dismissOnTap {
             let newState = !(item.isSwitchOn ?? false)
-            item.isSwitchOn = newState
+            items[sender.tag].isSwitchOn = newState
             sender.toggleSwitch.setOn(newState, animated: true)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             handler()
@@ -346,7 +346,7 @@ final class FloatingActionCardButton: TouchButton {
     var item: CustomBottomSheetItem
     private let iconCapsule = UIView()
     private let iconImageView = UIImageView()
-    private let titleLabel = UILabel()
+    private let nameLabel = UILabel()
     private let accessoryImageView = UIImageView()
     let toggleSwitch = UISwitch()
 
@@ -429,17 +429,17 @@ final class FloatingActionCardButton: TouchButton {
         }
         iconCapsule.addSubview(iconImageView)
 
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 15.5, weight: .medium)
-        titleLabel.text = item.title
-        titleLabel.isUserInteractionEnabled = false
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        nameLabel.font = .systemFont(ofSize: 15.5, weight: .medium)
+        nameLabel.text = item.title
+        nameLabel.isUserInteractionEnabled = false
 
         if isDestructive {
-            titleLabel.textColor = .systemRed
+            nameLabel.textColor = .systemRed
         } else if !isActionable {
-            titleLabel.textColor = .secondaryLabel
+            nameLabel.textColor = .secondaryLabel
         } else {
-            titleLabel.textColor = .label
+            nameLabel.textColor = .label
         }
 
         accessoryImageView.translatesAutoresizingMaskIntoConstraints = false
@@ -461,7 +461,7 @@ final class FloatingActionCardButton: TouchButton {
         }
 
         addSubview(iconCapsule)
-        addSubview(titleLabel)
+        addSubview(nameLabel)
         addSubview(accessoryImageView)
         addSubview(toggleSwitch)
 
@@ -484,9 +484,9 @@ final class FloatingActionCardButton: TouchButton {
             toggleSwitch.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             toggleSwitch.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            titleLabel.leadingAnchor.constraint(equalTo: iconCapsule.trailingAnchor, constant: 14),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleLabel.trailingAnchor.constraint(equalTo: (item.isSwitchOn != nil) ? toggleSwitch.leadingAnchor : accessoryImageView.leadingAnchor, constant: -10)
+            nameLabel.leadingAnchor.constraint(equalTo: iconCapsule.trailingAnchor, constant: 14),
+            nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            nameLabel.trailingAnchor.constraint(equalTo: (item.isSwitchOn != nil) ? toggleSwitch.leadingAnchor : accessoryImageView.leadingAnchor, constant: -10)
         ])
     }
 
@@ -499,5 +499,156 @@ final class FloatingActionCardButton: TouchButton {
 
     @objc private func handleSwitch(_ sender: UISwitch) {
         onSwitchChanged?(sender.isOn)
+    }
+}
+
+// MARK: - 更多菜单网格项按钮
+
+final class GridItemButton: TouchButton {
+    var item: CustomBottomSheetItem
+    private(set) var switchPill: UIView?
+    private(set) var knob: UIView?
+    private var knobLeadingConstraint: NSLayoutConstraint?
+    private var knobTrailingConstraint: NSLayoutConstraint?
+
+    init(item: CustomBottomSheetItem, tag: Int) {
+        self.item = item
+        super.init(frame: .zero)
+        self.tag = tag
+        setupContent()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func setupContent() {
+        let iconColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
+        }
+        let textColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.26, green: 0.26, blue: 0.28, alpha: 1.0)
+        }
+
+        let iconContainer = UIView()
+        iconContainer.translatesAutoresizingMaskIntoConstraints = false
+        iconContainer.isUserInteractionEnabled = false
+
+        let iconImageView = UIImageView()
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        iconImageView.contentMode = .scaleAspectFit
+        if let img = item.customImage {
+            iconImageView.image = img
+        } else if let iconName = item.iconName {
+            iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular))
+        } else {
+            iconImageView.image = UIImage(systemName: "circle.grid.2x2", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular))
+        }
+        iconImageView.tintColor = iconColor
+        iconImageView.isUserInteractionEnabled = false
+        iconContainer.addSubview(iconImageView)
+
+        let hasSwitch = (item.isSwitchOn != nil)
+
+        NSLayoutConstraint.activate([
+            iconImageView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor, constant: hasSwitch ? -6 : 0),
+            iconImageView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
+            iconImageView.widthAnchor.constraint(equalToConstant: 24),
+            iconImageView.heightAnchor.constraint(equalToConstant: 24)
+        ])
+
+        if let isOn = item.isSwitchOn {
+            let pill = UIView()
+            pill.translatesAutoresizingMaskIntoConstraints = false
+            pill.backgroundColor = isOn ? .systemBlue : UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(white: 0.35, alpha: 1.0) : UIColor(red: 0.84, green: 0.84, blue: 0.86, alpha: 1.0)
+            }
+            pill.layer.cornerRadius = 4.75
+            pill.clipsToBounds = true
+            pill.isUserInteractionEnabled = false
+            self.switchPill = pill
+
+            let knobView = UIView()
+            knobView.translatesAutoresizingMaskIntoConstraints = false
+            knobView.backgroundColor = .white
+            knobView.layer.cornerRadius = 3.5
+            knobView.layer.shadowColor = UIColor.black.cgColor
+            knobView.layer.shadowOpacity = 0.12
+            knobView.layer.shadowRadius = 1
+            knobView.layer.shadowOffset = CGSize(width: 0, height: 1)
+            knobView.clipsToBounds = false
+            knobView.isUserInteractionEnabled = false
+            pill.addSubview(knobView)
+            self.knob = knobView
+
+            iconContainer.addSubview(pill)
+
+            let leadingCon = knobView.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 1)
+            let trailingCon = knobView.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -1)
+            self.knobLeadingConstraint = leadingCon
+            self.knobTrailingConstraint = trailingCon
+
+            if isOn {
+                trailingCon.isActive = true
+            } else {
+                leadingCon.isActive = true
+            }
+
+            NSLayoutConstraint.activate([
+                pill.widthAnchor.constraint(equalToConstant: 16),
+                pill.heightAnchor.constraint(equalToConstant: 9.5),
+                pill.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 3),
+                pill.bottomAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: -0.5),
+
+                knobView.widthAnchor.constraint(equalToConstant: 7),
+                knobView.heightAnchor.constraint(equalToConstant: 7),
+                knobView.centerYAnchor.constraint(equalTo: pill.centerYAnchor)
+            ])
+        }
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 11.5, weight: .regular)
+        label.textColor = textColor
+        label.text = item.title
+        label.textAlignment = .center
+        label.numberOfLines = 1
+        label.isUserInteractionEnabled = false
+
+        addSubview(iconContainer)
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            iconContainer.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            iconContainer.centerXAnchor.constraint(equalTo: centerXAnchor),
+            iconContainer.heightAnchor.constraint(equalToConstant: 32),
+            iconContainer.widthAnchor.constraint(equalToConstant: 48),
+
+            label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 5),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            label.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -2)
+        ])
+    }
+
+    func updateSwitchVisual(isOn: Bool, animated: Bool = true) {
+        item.isSwitchOn = isOn
+        let block = {
+            self.switchPill?.backgroundColor = isOn ? .systemBlue : UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(white: 0.35, alpha: 1.0) : UIColor(red: 0.84, green: 0.84, blue: 0.86, alpha: 1.0)
+            }
+            if isOn {
+                self.knobLeadingConstraint?.isActive = false
+                self.knobTrailingConstraint?.isActive = true
+            } else {
+                self.knobTrailingConstraint?.isActive = false
+                self.knobLeadingConstraint?.isActive = true
+            }
+            self.switchPill?.layoutIfNeeded()
+        }
+
+        if animated {
+            UIView.animate(withDuration: 0.18, delay: 0, options: .curveEaseInOut, animations: block)
+        } else {
+            block()
+        }
     }
 }
