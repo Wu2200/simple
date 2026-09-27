@@ -7,6 +7,10 @@ public struct BookmarkItem: Codable, Equatable {
     public let id: String
     public var title: String
     public var url: String
+    public var urlString: String {
+        get { return url }
+        set { url = newValue }
+    }
     public var parentId: String?
     public var isFolder: Bool
     public var createdAt: Date
@@ -18,6 +22,10 @@ public struct BookmarkItem: Codable, Equatable {
         self.parentId = parentId
         self.isFolder = isFolder
         self.createdAt = createdAt
+    }
+
+    public init(id: String = UUID().uuidString, title: String, urlString: String, parentId: String? = nil, isFolder: Bool = false, createdAt: Date = Date()) {
+        self.init(id: id, title: title, url: urlString, parentId: parentId, isFolder: isFolder, createdAt: createdAt)
     }
 }
 
@@ -58,6 +66,14 @@ public final class BookmarkStore {
         }
     }
 
+    public func getNodes(inParent parentId: String?) -> [BookmarkItem] {
+        return getItems(in: parentId)
+    }
+
+    public func loadAllNodes() -> [BookmarkItem] {
+        return bookmarks
+    }
+
     public func getAllFolders() -> [BookmarkItem] {
         return bookmarks.filter { $0.isFolder }
     }
@@ -71,6 +87,10 @@ public final class BookmarkStore {
         if let host = URL(string: url)?.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
+    }
+
+    public func addBookmark(title: String, urlString: String, parentId: String? = nil) {
+        addBookmark(title: title, url: urlString, parentId: parentId)
     }
 
     public func createFolder(title: String, parentId: String? = nil) {
@@ -92,6 +112,10 @@ public final class BookmarkStore {
         saveBookmarks()
     }
 
+    public func updateNode(id: String, title: String, urlString: String? = nil) {
+        updateItem(id: id, title: title, url: urlString ?? "")
+    }
+
     public func deleteItem(id: String) {
         var idsToDelete = Set<String>([id])
         var queue = [id]
@@ -102,6 +126,15 @@ public final class BookmarkStore {
             queue.append(contentsOf: children)
         }
         bookmarks.removeAll { idsToDelete.contains($0.id) }
+        saveBookmarks()
+    }
+
+    public func deleteNode(id: String) {
+        deleteItem(id: id)
+    }
+
+    public func clearBookmarks() {
+        bookmarks.removeAll()
         saveBookmarks()
     }
 
@@ -257,66 +290,109 @@ public final class HomeShortcutStore {
 }
 
 // MARK: - 浏览器历史记录
-public struct HistoryItem: Codable, Equatable {
-    public let id: String
-    public let title: String
-    public let url: String
-    public let timestamp: Date
+public struct BrowserHistoryItem: Codable, Equatable {
+    public var id: String
+    public var title: String
+    public var urlString: String
+    public var visitedAt: Date
+
+    public var url: String {
+        get { urlString }
+        set { urlString = newValue }
+    }
+    public var timestamp: Date {
+        get { visitedAt }
+        set { visitedAt = newValue }
+    }
+
+    public init(id: String = UUID().uuidString, title: String, urlString: String, visitedAt: Date = Date()) {
+        self.id = id
+        self.title = title
+        self.urlString = urlString
+        self.visitedAt = visitedAt
+    }
 
     public init(id: String = UUID().uuidString, title: String, url: String, timestamp: Date = Date()) {
         self.id = id
         self.title = title
-        self.url = url
-        self.timestamp = timestamp
+        self.urlString = url
+        self.visitedAt = timestamp
     }
 }
 
+public typealias HistoryItem = BrowserHistoryItem
+
 public final class BrowserHistoryStore {
     public static let shared = BrowserHistoryStore()
-    private let key = "SimpleBrowserHistoryList"
-    public private(set) var history: [HistoryItem] = []
+    private let key = "browser_visit_history_v1"
+    private let maximumCount = 500
+
+    public private(set) var history: [BrowserHistoryItem] = []
 
     private init() {
-        loadHistory()
+        history = loadHistory()
+    }
+
+    public func loadHistory() -> [BrowserHistoryItem] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let items = try? JSONDecoder().decode([BrowserHistoryItem].self, from: data) else {
+            return []
+        }
+        return items
+    }
+
+    public func record(url: URL, title: String) {
+        let scheme = url.scheme?.lowercased() ?? ""
+        guard scheme == "http" || scheme == "https" else { return }
+        record(title: title, url: url.absoluteString)
     }
 
     public func record(title: String, url: String) {
         guard !url.isEmpty, !url.starts(with: "about:") else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? url : title
-        history.removeAll { $0.url == url }
-        let item = HistoryItem(title: cleanTitle, url: url, timestamp: Date())
-        history.insert(item, at: 0)
-        if history.count > 1000 {
-            history = Array(history.prefix(1000))
+        var items = loadHistory()
+        items.removeAll { $0.urlString == url }
+        let item = BrowserHistoryItem(
+            id: UUID().uuidString,
+            title: cleanTitle,
+            urlString: url,
+            visitedAt: Date()
+        )
+        items.insert(item, at: 0)
+        if items.count > maximumCount {
+            items = Array(items.prefix(maximumCount))
         }
-        saveHistory()
+        history = items
+        saveHistory(items)
 
         if let host = URL(string: url)?.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
     }
 
-    public func clearAll() {
-        history.removeAll()
-        saveHistory()
+    public func delete(id: String) {
+        var items = loadHistory()
+        items.removeAll { $0.id == id }
+        history = items
+        saveHistory(items)
     }
 
     public func deleteItem(id: String) {
-        history.removeAll { $0.id == id }
-        saveHistory()
+        delete(id: id)
     }
 
-    private func saveHistory() {
-        if let data = try? JSONEncoder().encode(history) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+    public func clearHistory() {
+        history.removeAll()
+        UserDefaults.standard.removeObject(forKey: key)
     }
 
-    private func loadHistory() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let list = try? JSONDecoder().decode([HistoryItem].self, from: data) {
-            history = list
-        }
+    public func clearAll() {
+        clearHistory()
+    }
+
+    private func saveHistory(_ items: [BrowserHistoryItem]) {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 }
 
@@ -330,6 +406,10 @@ public final class SearchHistoryStore {
         history = UserDefaults.standard.stringArray(forKey: key) ?? []
     }
 
+    public func getHistory() -> [String] {
+        return history
+    }
+
     public func addHistory(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -339,6 +419,10 @@ public final class SearchHistoryStore {
             history = Array(history.prefix(50))
         }
         UserDefaults.standard.set(history, forKey: key)
+    }
+
+    public func clearHistory() {
+        clearAll()
     }
 
     public func clearAll() {
@@ -366,20 +450,28 @@ public final class FaviconLoader {
         memCache.countLimit = 200
     }
 
+    public func cachedFavicon(for host: String) -> UIImage? {
+        let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty else { return nil }
+        if let cached = memCache.object(forKey: clean as NSString) {
+            return cached
+        }
+        let fileURL = diskPath.appendingPathComponent("\(clean.hashValue).png")
+        if FileManager.default.fileExists(atPath: fileURL.path),
+           let img = UIImage(contentsOfFile: fileURL.path) {
+            memCache.setObject(img, forKey: clean as NSString)
+            return img
+        }
+        return nil
+    }
+
     public func preloadFavicon(for host: String) {
         let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !clean.isEmpty else { return }
 
-        if memCache.object(forKey: clean as NSString) != nil { return }
+        if cachedFavicon(for: clean) != nil { return }
 
         let fileURL = diskPath.appendingPathComponent("\(clean.hashValue).png")
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            if let img = UIImage(contentsOfFile: fileURL.path) {
-                memCache.setObject(img, forKey: clean as NSString)
-                return
-            }
-        }
-
         diskQueue.async {
             guard let url = URL(string: "https://www.google.com/s2/favicons?domain=\(clean)&sz=64") else { return }
             if let data = try? Data(contentsOf: url), let img = UIImage(data: data) {
@@ -396,7 +488,7 @@ public final class FaviconLoader {
             return
         }
 
-        if let cached = memCache.object(forKey: clean as NSString) {
+        if let cached = cachedFavicon(for: clean) {
             completion(cached)
             return
         }
@@ -678,42 +770,258 @@ public final class UserAgentStore {
 
 // MARK: - 基础组件
 open class TouchButton: UIButton {
+    public var hitTestInsets: UIEdgeInsets = .zero
+
     public override init(frame: CGRect) {
         super.init(frame: frame)
     }
+
     public required init?(coder: NSCoder) {
         super.init(coder: coder)
     }
+
+    open override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if hitTestInsets == .zero {
+            return super.point(inside: point, with: event)
+        }
+        let hitFrame = bounds.inset(by: hitTestInsets)
+        return hitFrame.contains(point)
+    }
 }
 
-// MARK: - 底部 Sheet 菜单模型
+// MARK: - 底部 Sheet 布局与模型
+public enum CustomBottomSheetLayout {
+    case grid
+    case list
+}
+
 public struct CustomBottomSheetItem {
-    public let iconName: String
-    public let customImage: UIImage?
-    public let title: String
-    public let hasSwitch: Bool
-    public var isSwitchOn: Bool
-    public let dismissOnTap: Bool
-    public let action: () -> Void
-    public let longPressAction: (() -> Void)?
+    public var title: String
+    public var iconName: String?
+    public var customImage: UIImage?
+    public var isDestructive: Bool
+    public var hasSwitch: Bool
+    public var isSwitchOn: Bool?
+    public var dismissOnTap: Bool
+    public var handler: (() -> Void)?
+    public var longPressHandler: (() -> Void)?
+
+    public var action: (() -> Void)? {
+        get { handler }
+        set { handler = newValue }
+    }
+    public var longPressAction: (() -> Void)? {
+        get { longPressHandler }
+        set { longPressHandler = newValue }
+    }
 
     public init(
-        iconName: String = "",
-        customImage: UIImage? = nil,
         title: String,
+        iconName: String? = nil,
+        customImage: UIImage? = nil,
+        isDestructive: Bool = false,
         hasSwitch: Bool = false,
-        isSwitchOn: Bool = false,
+        isSwitchOn: Bool? = nil,
         dismissOnTap: Bool = true,
-        action: @escaping () -> Void,
-        longPressAction: (() -> Void)? = nil
+        handler: (() -> Void)? = nil,
+        longPressHandler: (() -> Void)? = nil
     ) {
+        self.title = title
         self.iconName = iconName
         self.customImage = customImage
-        self.title = title
+        self.isDestructive = isDestructive
         self.hasSwitch = hasSwitch
         self.isSwitchOn = isSwitchOn
         self.dismissOnTap = dismissOnTap
-        self.action = action
-        self.longPressAction = longPressAction
+        self.handler = handler
+        self.longPressHandler = longPressHandler
+    }
+
+    public init(
+        iconName: String? = nil,
+        customImage: UIImage? = nil,
+        title: String,
+        isDestructive: Bool = false,
+        hasSwitch: Bool = false,
+        isSwitchOn: Bool? = nil,
+        dismissOnTap: Bool = true,
+        action: (() -> Void)? = nil,
+        longPressAction: (() -> Void)? = nil
+    ) {
+        self.title = title
+        self.iconName = iconName
+        self.customImage = customImage
+        self.isDestructive = isDestructive
+        self.hasSwitch = hasSwitch
+        self.isSwitchOn = isSwitchOn
+        self.dismissOnTap = dismissOnTap
+        self.handler = action
+        self.longPressHandler = longPressAction
+    }
+}
+
+// MARK: - 用户脚本模型与存储
+public struct UserScript: Codable, Equatable {
+    public var id: String
+    public var name: String
+    public var matchPattern: String
+    public var code: String
+    public var isEnabled: Bool
+
+    public init(id: String = UUID().uuidString, name: String, matchPattern: String = "*", code: String = "", isEnabled: Bool = true) {
+        self.id = id
+        self.name = name
+        self.matchPattern = matchPattern
+        self.code = code
+        self.isEnabled = isEnabled
+    }
+}
+
+public final class UserScriptStore {
+    public static let shared = UserScriptStore()
+    private let key = "user_tampermonkey_scripts_v5"
+
+    private init() {}
+
+    public func loadScripts() -> [UserScript] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let scripts = try? JSONDecoder().decode([UserScript].self, from: data) else {
+            return []
+        }
+        return scripts
+    }
+
+    public func saveScripts(_ scripts: [UserScript]) {
+        if let data = try? JSONEncoder().encode(scripts) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    public func parseMetadata(from code: String) -> (name: String, match: String) {
+        var nameMap: [String: String] = [:]
+        var matches: [String] = []
+
+        let lines = code.components(separatedBy: .newlines)
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("//") else { continue }
+            let content = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            guard content.hasPrefix("@") else { continue }
+
+            let components = content.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            guard components.count >= 2 else { continue }
+
+            let tag = components[0]
+            let val = components.dropFirst().joined(separator: " ")
+
+            if tag.hasPrefix("@name") {
+                nameMap[tag] = val
+            } else if tag == "@match" || tag == "@include" {
+                matches.append(val)
+            }
+        }
+
+        let preferredName = nameMap["@name:zh-CN"] ?? nameMap["@name:zh"] ?? nameMap["@name:zh-TW"] ?? nameMap["@name"] ?? "未命名脚本"
+        let preferredMatch = matches.first ?? "*"
+
+        return (preferredName, preferredMatch)
+    }
+
+    public func isScriptMatching(script: UserScript, urlString: String) -> Bool {
+        guard script.isEnabled else { return false }
+
+        if let url = URL(string: urlString), let host = url.host {
+            let scriptEnabled = DomainSettingsStore.shared.getBool(domain: host, setting: "userScripts", defaultVal: true)
+            if !scriptEnabled { return false }
+        }
+
+        if script.matchPattern == "*" || script.matchPattern.isEmpty { return true }
+        guard let url = URL(string: urlString), let host = url.host?.lowercased() else { return true }
+        let pattern = script.matchPattern.lowercased()
+            .replacingOccurrences(of: "*://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "https://", with: "")
+            .components(separatedBy: "/").first ?? script.matchPattern
+        let domainPattern = pattern.replacingOccurrences(of: "*.", with: "").replacingOccurrences(of: "*", with: "")
+        if domainPattern.isEmpty { return true }
+        return host == domainPattern || host.hasSuffix("." + domainPattern)
+    }
+}
+
+// MARK: - 用户脚本本地存储管理器
+public final class ScriptDataStore {
+    public static let shared = ScriptDataStore()
+    private init() {}
+
+    private func makeKey(_ scriptId: String, _ name: String) -> String {
+        return "GM_DATA_\(scriptId)_\(name)"
+    }
+
+    public func getValue(scriptId: String, name: String) -> Any? {
+        return UserDefaults.standard.object(forKey: makeKey(scriptId, name))
+    }
+
+    public func setValue(scriptId: String, name: String, value: Any) {
+        UserDefaults.standard.set(value, forKey: makeKey(scriptId, name))
+    }
+
+    public func deleteValue(scriptId: String, name: String) {
+        UserDefaults.standard.removeObject(forKey: makeKey(scriptId, name))
+    }
+
+    public func clearDataForScript(scriptId: String) {
+        let prefix = "GM_DATA_\(scriptId)_"
+        for (k, _) in UserDefaults.standard.dictionaryRepresentation() {
+            if k.hasPrefix(prefix) {
+                UserDefaults.standard.removeObject(forKey: k)
+            }
+        }
+    }
+
+    public func clearAllScriptData() {
+        let prefix = "GM_DATA_"
+        for (k, _) in UserDefaults.standard.dictionaryRepresentation() {
+            if k.hasPrefix(prefix) {
+                UserDefaults.standard.removeObject(forKey: k)
+            }
+        }
+    }
+
+    public func getAllValuesJSON(scriptId: String) -> String {
+        let prefix = "GM_DATA_\(scriptId)_"
+        var dict: [String: Any] = [:]
+        for (k, v) in UserDefaults.standard.dictionaryRepresentation() {
+            if k.hasPrefix(prefix) {
+                let name = String(k.dropFirst(prefix.count))
+                dict[name] = v
+            }
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
+           let str = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return "{}"
+    }
+}
+
+// MARK: - 域名单独配置持久化管理器
+public final class DomainSettingsStore {
+    public static let shared = DomainSettingsStore()
+    private init() {}
+
+    private func makeKey(_ domain: String, _ setting: String) -> String {
+        return "DOMAIN_SETTING_\(domain.lowercased())_\(setting)"
+    }
+
+    public func getBool(domain: String, setting: String, defaultVal: Bool = true) -> Bool {
+        let k = makeKey(domain, setting)
+        if UserDefaults.standard.object(forKey: k) == nil {
+            return defaultVal
+        }
+        return UserDefaults.standard.bool(forKey: k)
+    }
+
+    public func setBool(domain: String, setting: String, value: Bool) {
+        UserDefaults.standard.set(value, forKey: makeKey(domain, setting))
     }
 }
