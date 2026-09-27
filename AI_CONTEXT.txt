@@ -7106,6 +7106,160 @@ final class GridItemButton: TouchButton {
 import UIKit
 import WebKit
 
+// MARK: - 主域名聚合数据模型
+
+struct MainDomainGroup {
+    let mainDomain: String
+    var records: [WKWebsiteDataRecord]
+
+    var allDataTypes: Set<String> {
+        var types = Set<String>()
+        for r in records {
+            types.formUnion(r.dataTypes)
+        }
+        return types
+    }
+
+    var hasLocked: Bool {
+        return records.contains { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+    }
+
+    var allLocked: Bool {
+        return !records.isEmpty && records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+    }
+
+    var hasCookies: Bool {
+        return records.contains { $0.dataTypes.contains(WKWebsiteDataTypeCookies) }
+    }
+}
+
+// MARK: - 关联域名拓扑识别引擎
+
+enum DomainRelationEngine {
+    static let companionMap: [(keyword: String, targetRoot: String)] = [
+        ("oaistatic.com", "chatgpt.com"),
+        ("oaiusercontent.com", "chatgpt.com"),
+        ("githubassets.com", "github.com"),
+        ("githubusercontent.com", "github.com"),
+        ("hdslb.com", "bilibili.com"),
+        ("bilivideo.com", "bilibili.com"),
+        ("bdstatic.com", "baidu.com"),
+        ("baidupcs.com", "baidu.com"),
+        ("gstatic.com", "google.com"),
+        ("googleusercontent.com", "google.com"),
+        ("googleapis.com", "google.com"),
+        ("googlevideo.com", "youtube.com"),
+        ("ytimg.com", "youtube.com"),
+        ("zhimg.com", "zhihu.com"),
+        ("uxengine.net", "v2ex.com")
+    ]
+
+    static func rootDomain(of domain: String) -> String {
+        let clean = domain.trimmingCharacters(in: .whitespaces).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let parts = clean.split(separator: ".").map(String.init)
+        guard parts.count >= 2 else { return clean }
+
+        if parts.allSatisfy({ Int($0) != nil }) && parts.count == 4 {
+            return clean
+        }
+        if clean.contains(":") {
+            return clean
+        }
+
+        let multiSuffixes: Set<String> = [
+            "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn",
+            "co.uk", "org.uk", "me.uk", "co.jp", "ne.jp",
+            "com.hk", "org.hk", "com.tw", "com.au", "co.nz"
+        ]
+
+        if parts.count >= 3 {
+            let lastTwo = "\(parts[parts.count - 2]).\(parts[parts.count - 1])"
+            if multiSuffixes.contains(lastTwo) {
+                return "\(parts[parts.count - 3]).\(lastTwo)"
+            }
+        }
+
+        return "\(parts[parts.count - 2]).\(parts[parts.count - 1])"
+    }
+
+    static func areDomainsAssociated(_ d1: String, _ d2: String) -> Bool {
+        let r1 = rootDomain(of: d1)
+        let r2 = rootDomain(of: d2)
+        if !r1.isEmpty && r1 == r2 { return true }
+
+        for item in companionMap {
+            let itemKeyRoot = rootDomain(of: item.keyword)
+            let itemTarRoot = rootDomain(of: item.targetRoot)
+
+            let match1 = (r1 == itemKeyRoot || r1 == itemTarRoot)
+            let match2 = (r2 == itemKeyRoot || r2 == itemTarRoot)
+            if match1 && match2 {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func groupRecordsIntoMainDomains(_ records: [WKWebsiteDataRecord]) -> [MainDomainGroup] {
+        var dict: [String: [WKWebsiteDataRecord]] = [:]
+
+        for record in records {
+            let host = record.displayName.trimmingCharacters(in: .whitespaces).lowercased()
+            let root = rootDomain(of: host)
+            dict[root, default: []].append(record)
+        }
+
+        for item in companionMap {
+            let compRoot = rootDomain(of: item.keyword)
+            let targetRoot = rootDomain(of: item.targetRoot)
+            if let compRecs = dict[compRoot], dict[targetRoot] != nil {
+                dict[targetRoot]?.append(contentsOf: compRecs)
+                dict.removeValue(forKey: compRoot)
+            }
+        }
+
+        var groups: [MainDomainGroup] = []
+        for (mainDomain, groupRecords) in dict {
+            var seen = Set<String>()
+            var uniqueRecords: [WKWebsiteDataRecord] = []
+            for r in groupRecords {
+                if !seen.contains(r.displayName) {
+                    seen.insert(r.displayName)
+                    uniqueRecords.append(r)
+                }
+            }
+
+            let sortedRecords = uniqueRecords.sorted { r1, r2 in
+                let h1 = r1.displayName.lowercased()
+                let h2 = r2.displayName.lowercased()
+                if h1 == mainDomain { return true }
+                if h2 == mainDomain { return false }
+                let lock1 = CookieLockStore.shared.isLocked(domain: r1.displayName)
+                let lock2 = CookieLockStore.shared.isLocked(domain: r2.displayName)
+                if lock1 != lock2 { return lock1 && !lock2 }
+                let c1 = r1.dataTypes.contains(WKWebsiteDataTypeCookies)
+                let c2 = r2.dataTypes.contains(WKWebsiteDataTypeCookies)
+                if c1 != c2 { return c1 && !c2 }
+                return h1 < h2
+            }
+
+            groups.append(MainDomainGroup(mainDomain: mainDomain, records: sortedRecords))
+        }
+
+        return groups.sorted { g1, g2 in
+            let lock1 = g1.hasLocked
+            let lock2 = g2.hasLocked
+            if lock1 != lock2 { return lock1 && !lock2 }
+            let cookie1 = g1.hasCookies
+            let cookie2 = g2.hasCookies
+            if cookie1 != cookie2 { return cookie1 && !cookie2 }
+            return g1.mainDomain.localizedCaseInsensitiveCompare(g2.mainDomain) == .orderedAscending
+        }
+    }
+}
+
+// MARK: - 基础模型定义
+
 struct UserScript: Codable {
     var id: String
     var name: String
@@ -7842,6 +7996,8 @@ final class DomainSettingsStore {
     }
 }
 
+// MARK: - Cookie 与网站数据锁定管理器 (全面支持主根域与全子域凭据保护)
+
 final class CookieLockStore {
     static let shared = CookieLockStore()
     private let key = "locked_cookie_domains_v1"
@@ -7854,22 +8010,79 @@ final class CookieLockStore {
 
     func isLocked(domain: String) -> Bool {
         let locked = getLockedDomains()
+        if locked.isEmpty { return false }
+        let clean = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        guard !clean.isEmpty else { return false }
+
+        let cleanRoot = DomainRelationEngine.rootDomain(of: clean)
+
+        for lockedDomain in locked {
+            let lockedClean = lockedDomain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            guard !lockedClean.isEmpty else { continue }
+            let lockedRoot = DomainRelationEngine.rootDomain(of: lockedClean)
+
+            // 1. 完全精确匹配
+            if clean == lockedClean { return true }
+
+            // 2. 当前待查域名为锁定域名的子域名 (如 accounts.google.com 包含在 google.com 保护下)
+            if clean.hasSuffix("." + lockedClean) { return true }
+
+            // 3. 锁定域名为当前待查域名的子域名 (如锁定了 accounts.google.com，父域 google.com 的 Cookie 同样需保护以维持登录)
+            if lockedClean.hasSuffix("." + clean) { return true }
+
+            // 4. 根域名相同且非空 (如 accounts.google.com 与 google.com、myaccount.google.com)
+            if !cleanRoot.isEmpty && !lockedRoot.isEmpty && cleanRoot == lockedRoot {
+                return true
+            }
+
+            // 5. 跨域伴随认证域名关联 (如 gstatic.com / googleusercontent.com 与 google.com)
+            if DomainRelationEngine.areDomainsAssociated(clean, lockedClean) {
+                return true
+            }
+        }
+        return false
+    }
+
+    func lock(domain: String) {
+        var locked = getLockedDomains()
         let cleanDomain = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        return locked.contains { lockedDomain in
-            let cleanLocked = lockedDomain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            return cleanDomain == cleanLocked
+        if !cleanDomain.isEmpty && !locked.contains(cleanDomain) {
+            locked.append(cleanDomain)
+            UserDefaults.standard.set(locked, forKey: key)
         }
     }
 
-    func toggleLock(domain: String) {
+    func unlock(domain: String) {
         var locked = getLockedDomains()
         let cleanDomain = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        if locked.contains(cleanDomain) {
-            locked.removeAll { $0 == cleanDomain }
+        locked.removeAll { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == cleanDomain }
+        UserDefaults.standard.set(locked, forKey: key)
+    }
+
+    func toggleLock(domain: String) {
+        let cleanDomain = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        guard !cleanDomain.isEmpty else { return }
+        var locked = getLockedDomains()
+        if locked.contains(where: { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == cleanDomain }) {
+            locked.removeAll { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == cleanDomain }
         } else {
             locked.append(cleanDomain)
         }
         UserDefaults.standard.set(locked, forKey: key)
+    }
+
+    func lockMainGroup(mainDomain: String, allRecords: [WKWebsiteDataRecord]) {
+        lock(domain: mainDomain)
+        for r in allRecords {
+            lock(domain: r.displayName)
+        }
+    }
+
+    func unlockMainGroup(mainDomain: String, allRecords: [WKWebsiteDataRecord]) {
+        unlock(domain: mainDomain)
+        for r in allRecords {
+            unlock(domain: r.displayName)
+        }
     }
 }
 
@@ -8148,6 +8361,8 @@ final class ScriptDataStore {
     }
 }
 
+// MARK: - 严密网站数据清理引擎 (精确锁定保护)
+
 final class WebsiteCleaner {
     static let shared = WebsiteCleaner()
     private init() {}
@@ -8162,7 +8377,13 @@ final class WebsiteCleaner {
         var types: Set<String> = []
         if loginAndData {
             types.formUnion(WKWebsiteDataStore.allWebsiteDataTypes())
-            HTTPCookieStorage.shared.removeCookies(since: .distantPast)
+            if let sharedCookies = HTTPCookieStorage.shared.cookies {
+                for c in sharedCookies {
+                    if !CookieLockStore.shared.isLocked(domain: c.domain) {
+                        HTTPCookieStorage.shared.deleteCookie(c)
+                    }
+                }
+            }
         } else if cache {
             types.formUnion([
                 WKWebsiteDataTypeDiskCache,
@@ -8259,7 +8480,8 @@ final class WebsiteCleaner {
             if !cacheOnly {
                 store.httpCookieStore.getAllCookies { cookies in
                     let group = DispatchGroup()
-                    for c in cookies where c.domain.contains(record.displayName) || record.displayName.contains(c.domain) {
+                    for c in cookies where CookieLockStore.shared.isLocked(domain: c.domain) == false &&
+                                          (c.domain.contains(record.displayName) || record.displayName.contains(c.domain)) {
                         group.enter()
                         store.httpCookieStore.delete(c) {
                             group.leave()
@@ -8278,6 +8500,8 @@ final class WebsiteCleaner {
     }
 }
 
+// MARK: - 高画质网站图标引擎 (原生 Apple Touch Icon 与多级高清拉取)
+
 final class FaviconLoader {
     static let shared = FaviconLoader()
     private let cache = NSCache<NSString, UIImage>()
@@ -8290,7 +8514,9 @@ final class FaviconLoader {
         return dir
     }()
 
-    private init() {}
+    private init() {
+        cache.countLimit = 200
+    }
 
     private func diskPath(for cleanDomain: String) -> URL {
         let safeName = cleanDomain.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
@@ -8314,24 +8540,16 @@ final class FaviconLoader {
         return nil
     }
 
-    func preloadFavicon(for domain: String) {
+    func saveHighResIcon(data: Data, for domain: String) {
         let cleanDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !cleanDomain.isEmpty else { return }
+        guard !cleanDomain.isEmpty, let image = UIImage(data: data) else { return }
+        cache.setObject(image, forKey: cleanDomain as NSString)
+        let fileURL = diskPath(for: cleanDomain)
+        try? data.write(to: fileURL)
+    }
 
-        if cachedFavicon(for: cleanDomain) != nil {
-            return
-        }
-
-        guard let url = URL(string: "https://www.google.com/s2/favicons?sz=64&domain=\(cleanDomain)") else {
-            return
-        }
-
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let self = self, let data = data, let image = UIImage(data: data) else { return }
-            self.cache.setObject(image, forKey: cleanDomain as NSString)
-            let fileURL = self.diskPath(for: cleanDomain)
-            try? data.write(to: fileURL)
-        }.resume()
+    func preloadFavicon(for domain: String) {
+        loadFavicon(for: domain) { _ in }
     }
 
     func loadFavicon(for domain: String, completion: @escaping (UIImage?) -> Void) {
@@ -8346,22 +8564,51 @@ final class FaviconLoader {
             return
         }
 
-        guard let url = URL(string: "https://www.google.com/s2/favicons?sz=64&domain=\(cleanDomain)") else {
-            completion(nil)
+        let root = DomainRelationEngine.rootDomain(of: cleanDomain)
+
+        // 高清图标候选源 (优先网站原生 Apple Touch Icon，清晰度通常为 180x180 或更大)
+        var candidateURLs: [URL] = []
+        if let u1 = URL(string: "https://\(cleanDomain)/apple-touch-icon.png") { candidateURLs.append(u1) }
+        if root != cleanDomain, let u2 = URL(string: "https://\(root)/apple-touch-icon.png") { candidateURLs.append(u2) }
+        if let u3 = URL(string: "https://icon.horse/icon/\(cleanDomain)") { candidateURLs.append(u3) }
+        if let u4 = URL(string: "https://www.google.com/s2/favicons?sz=256&domain=\(cleanDomain)") { candidateURLs.append(u4) }
+        if let u5 = URL(string: "https://\(cleanDomain)/favicon.ico") { candidateURLs.append(u5) }
+
+        fetchFirstValidImage(urls: candidateURLs, index: 0) { [weak self] image, data in
+            guard let self = self else {
+                completion(image)
+                return
+            }
+            if let image = image, let data = data {
+                self.cache.setObject(image, forKey: cleanDomain as NSString)
+                let fileURL = self.diskPath(for: cleanDomain)
+                try? data.write(to: fileURL)
+                DispatchQueue.main.async { completion(image) }
+            } else {
+                DispatchQueue.main.async { completion(nil) }
+            }
+        }
+    }
+
+    private func fetchFirstValidImage(urls: [URL], index: Int, completion: @escaping (UIImage?, Data?) -> Void) {
+        guard index < urls.count else {
+            completion(nil, nil)
             return
         }
 
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let self = self, let data = data, let image = UIImage(data: data) else {
-                DispatchQueue.main.async { completion(nil) }
+        let targetURL = urls[index]
+        var request = URLRequest(url: targetURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 4.5)
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let data = data, data.count > 100,
+               let img = UIImage(data: data), img.size.width >= 16 {
+                completion(img, data)
                 return
             }
-            self.cache.setObject(image, forKey: cleanDomain as NSString)
-            let fileURL = self.diskPath(for: cleanDomain)
-            try? data.write(to: fileURL)
-            DispatchQueue.main.async {
-                completion(image)
-            }
+
+            self?.fetchFirstValidImage(urls: urls, index: index + 1, completion: completion)
         }.resume()
     }
 }
