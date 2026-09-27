@@ -171,6 +171,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private var webBottomPanelConstraint: NSLayoutConstraint?
     private var webBottomFullscreenConstraint: NSLayoutConstraint?
 
+    private var isShowingLongPressMenu = false
+
     private var gentleToolbarIconColor: UIColor {
         UIColor { trait in
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
@@ -1167,20 +1169,58 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard gesture.state == .began else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
-        let menu = UIMenuController.shared
-        guard !menu.isMenuVisible else { return }
+        isShowingLongPressMenu = true
 
-        addressField.becomeFirstResponder()
+        let currentText: String
+        if let url = activeTab.url {
+            let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+            currentText = (raw == "about:blank") ? "" : raw
+        } else {
+            currentText = addressField.text ?? ""
+        }
 
-        let copyItem = UIMenuItem(title: "拷贝", action: #selector(AddressTextField.customCopyAction))
-        let pasteItem = UIMenuItem(title: "粘贴", action: #selector(AddressTextField.customPasteAction))
-        let editItem = UIMenuItem(title: "编辑", action: #selector(AddressTextField.customEditAction))
-        let pasteAndGoItem = UIMenuItem(title: "粘贴并前往", action: #selector(AddressTextField.customPasteAndGoAction))
+        let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
 
-        menu.menuItems = [copyItem, pasteItem, editItem, pasteAndGoItem]
+        alert.addAction(UIAlertAction(title: "拷贝", style: .default) { [weak self] _ in
+            self?.isShowingLongPressMenu = false
+            if !currentText.isEmpty {
+                UIPasteboard.general.string = currentText
+                self?.showToastNotice("已拷贝网址")
+            }
+        })
 
-        let targetRect = addressContentView.bounds
-        menu.showMenu(from: addressContentView, rect: targetRect)
+        alert.addAction(UIAlertAction(title: "粘贴", style: .default) { [weak self] _ in
+            self?.isShowingLongPressMenu = false
+            if let paste = UIPasteboard.general.string {
+                self?.addressField.text = paste
+                self?.addressField.becomeFirstResponder()
+            }
+        })
+
+        alert.addAction(UIAlertAction(title: "编辑", style: .default) { [weak self] _ in
+            self?.isShowingLongPressMenu = false
+            self?.addressField.becomeFirstResponder()
+            self?.addressField.selectAll(nil)
+        })
+
+        alert.addAction(UIAlertAction(title: "粘贴并前往", style: .default) { [weak self] _ in
+            self?.isShowingLongPressMenu = false
+            guard let self = self,
+                  let paste = UIPasteboard.general.string,
+                  let url = self.destinationURL(from: paste) else { return }
+            self.load(url: url)
+        })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+            self?.isShowingLongPressMenu = false
+        })
+
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = addressContentView
+            popover.sourceRect = addressContentView.bounds
+        }
+
+        present(alert, animated: true)
     }
 
     @objc private func handleMoreButtonLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -1726,6 +1766,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+        if isShowingLongPressMenu {
+            return
+        }
+
         guard addressField.isFirstResponder else {
             if bottomPanelBottomConstraint?.constant != 0 {
                 bottomPanelBottomConstraint?.constant = 0
