@@ -90,50 +90,269 @@ struct BookmarkItem: Codable, Equatable {
     var id: String
     var title: String
     var urlString: String
+    var isFolder: Bool
+    var parentId: String?
     var createdAt: Date
+    var order: Int
+
+    init(
+        id: String = UUID().uuidString,
+        title: String,
+        urlString: String = "",
+        isFolder: Bool = false,
+        parentId: String? = nil,
+        createdAt: Date = Date(),
+        order: Int = 0
+    ) {
+        self.id = id
+        self.title = title
+        self.urlString = urlString
+        self.isFolder = isFolder
+        self.parentId = parentId
+        self.createdAt = createdAt
+        self.order = order
+    }
 }
 
 final class BookmarkStore {
     static let shared = BookmarkStore()
-    private let key = "browser_bookmarks_v1"
-    private init() {}
-
-    func loadBookmarks() -> [BookmarkItem] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let items = try? JSONDecoder().decode([BookmarkItem].self, from: data) else {
-            return []
-        }
-        return items
+    private let keyTree = "browser_bookmarks_tree_v3"
+    private let keyLegacy = "browser_bookmarks_v1"
+    private init() {
+        migrateLegacyIfNeeded()
     }
 
-    func addBookmark(title: String, urlString: String) {
-        var items = loadBookmarks()
-        let resolvedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? urlString : title
-        items.removeAll { $0.urlString == urlString }
-        items.insert(BookmarkItem(id: UUID().uuidString, title: resolvedTitle, urlString: urlString, createdAt: Date()), at: 0)
-        saveBookmarks(items)
+    private func migrateLegacyIfNeeded() {
+        if UserDefaults.standard.data(forKey: keyTree) == nil {
+            if let oldData = UserDefaults.standard.data(forKey: keyLegacy) {
+                struct LegacyBookmarkItem: Codable {
+                    var id: String
+                    var title: String
+                    var urlString: String
+                    var createdAt: Date
+                }
+                if let oldItems = try? JSONDecoder().decode([LegacyBookmarkItem].self, from: oldData), !oldItems.isEmpty {
+                    var newNodes: [BookmarkItem] = []
+                    for (index, old) in oldItems.enumerated() {
+                        newNodes.append(BookmarkItem(
+                            id: old.id,
+                            title: old.title,
+                            urlString: old.urlString,
+                            isFolder: false,
+                            parentId: nil,
+                            createdAt: old.createdAt,
+                            order: index
+                        ))
+                    }
+                    saveNodes(newNodes)
+                }
+            }
+        }
+    }
+
+    func loadAllNodes() -> [BookmarkItem] {
+        guard let data = UserDefaults.standard.data(forKey: keyTree),
+              let nodes = try? JSONDecoder().decode([BookmarkItem].self, from: data) else {
+            return []
+        }
+        return nodes.sorted { $0.order < $1.order }
+    }
+
+    func loadBookmarks() -> [BookmarkItem] {
+        return loadAllNodes()
+    }
+
+    func getNodes(inParent parentId: String?) -> [BookmarkItem] {
+        let all = loadAllNodes()
+        let matching = all.filter { $0.parentId == parentId }
+        return matching.sorted {
+            if $0.isFolder != $1.isFolder {
+                return $0.isFolder && !$1.isFolder
+            }
+            return $0.order < $1.order
+        }
+    }
+
+    func getAllFolders() -> [BookmarkItem] {
+        return loadAllNodes().filter { $0.isFolder }
+    }
+
+    func getNode(id: String) -> BookmarkItem? {
+        return loadAllNodes().first { $0.id == id }
+    }
+
+    func countChildren(of folderId: String) -> Int {
+        return loadAllNodes().filter { $0.parentId == folderId }.count
+    }
+
+    func addBookmark(title: String, urlString: String, parentId: String? = nil) {
+        var all = loadAllNodes()
+        let resolvedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (URL(string: urlString)?.host ?? urlString) : title
+        let maxOrder = all.filter { $0.parentId == parentId }.map { $0.order }.max() ?? -1
+        let item = BookmarkItem(
+            id: UUID().uuidString,
+            title: resolvedTitle,
+            urlString: urlString,
+            isFolder: false,
+            parentId: parentId,
+            createdAt: Date(),
+            order: maxOrder + 1
+        )
+        all.append(item)
+        saveNodes(all)
         if let url = URL(string: urlString), let host = url.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
     }
 
+    func createFolder(title: String, parentId: String? = nil) -> BookmarkItem {
+        var all = loadAllNodes()
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "新建文件夹" : title
+        let maxOrder = all.filter { $0.parentId == parentId }.map { $0.order }.max() ?? -1
+        let folder = BookmarkItem(
+            id: UUID().uuidString,
+            title: cleanTitle,
+            urlString: "",
+            isFolder: true,
+            parentId: parentId,
+            createdAt: Date(),
+            order: maxOrder + 1
+        )
+        all.append(folder)
+        saveNodes(all)
+        return folder
+    }
+
+    func updateNode(id: String, title: String, urlString: String? = nil) {
+        var all = loadAllNodes()
+        if let idx = all.firstIndex(where: { $0.id == id }) {
+            let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleanTitle.isEmpty {
+                all[idx].title = cleanTitle
+            }
+            if let u = urlString, !all[idx].isFolder {
+                all[idx].urlString = u.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            saveNodes(all)
+        }
+    }
+
+    func deleteNode(id: String) {
+        var all = loadAllNodes()
+        var idsToDelete: Set<String> = [id]
+        var queue: [String] = [id]
+        while !queue.isEmpty {
+            let current = queue.removeFirst()
+            let children = all.filter { $0.parentId == current }.map { $0.id }
+            idsToDelete.formUnion(children)
+            queue.append(contentsOf: children)
+        }
+        all.removeAll { idsToDelete.contains($0.id) }
+        saveNodes(all)
+    }
+
     func deleteBookmark(id: String) {
-        var items = loadBookmarks()
-        items.removeAll { $0.id == id }
-        saveBookmarks(items)
+        deleteNode(id: id)
     }
 
     func isBookmarked(urlString: String) -> Bool {
-        return loadBookmarks().contains { $0.urlString == urlString }
+        return loadAllNodes().contains { !$0.isFolder && $0.urlString == urlString }
     }
 
     func clearBookmarks() {
-        UserDefaults.standard.removeObject(forKey: key)
+        UserDefaults.standard.removeObject(forKey: keyTree)
+        UserDefaults.standard.removeObject(forKey: keyLegacy)
     }
 
-    private func saveBookmarks(_ items: [BookmarkItem]) {
+    private func saveNodes(_ items: [BookmarkItem]) {
         guard let data = try? JSONEncoder().encode(items) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+        UserDefaults.standard.set(data, forKey: keyTree)
+    }
+
+    func exportToAlookHTML() -> String {
+        var html = """
+        <!DOCTYPE NETSCAPE-Bookmark-file-1>
+        <!-- This is an automatically generated file.
+             It will be read and overwritten.
+             DO NOT EDIT! -->
+        <META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+        <TITLE>Bookmarks</TITLE>
+        <H1>Bookmarks</H1>
+        <DL><p>
+
+        """
+        html += generateFolderHTML(parentId: nil, indent: 4)
+        html += "</DL><p>\n"
+        return html
+    }
+
+    private func generateFolderHTML(parentId: String?, indent: Int) -> String {
+        let spaces = String(repeating: " ", count: indent)
+        let nodes = getNodes(inParent: parentId)
+        var result = ""
+        for node in nodes {
+            let timestamp = Int(node.createdAt.timeIntervalSince1970)
+            if node.isFolder {
+                result += "\(spaces)<DT><H3 ADD_DATE=\"\(timestamp)\">\(escapeXML(node.title))</H3>\n"
+                result += "\(spaces)<DL><p>\n"
+                result += generateFolderHTML(parentId: node.id, indent: indent + 4)
+                result += "\(spaces)</DL><p>\n"
+            } else {
+                result += "\(spaces)<DT><A HREF=\"\(escapeXML(node.urlString))\" ADD_DATE=\"\(timestamp)\">\(escapeXML(node.title))</A>\n"
+            }
+        }
+        return result
+    }
+
+    private func escapeXML(_ str: String) -> String {
+        return str.replacingOccurrences(of: "&", with: "&amp;")
+                  .replacingOccurrences(of: "<", with: "&lt;")
+                  .replacingOccurrences(of: ">", with: "&gt;")
+                  .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    func importFromAlookHTML(_ html: String) {
+        var parentStack: [String?] = [nil]
+        let lines = html.components(separatedBy: .newlines)
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.contains("</DL>") || trimmed.contains("</dl>") {
+                if parentStack.count > 1 {
+                    parentStack.removeLast()
+                }
+            } else if trimmed.contains("<H3") || trimmed.contains("<h3") {
+                if let title = extractContentBetween(in: trimmed, start: ">", end: "</") {
+                    let clean = title.components(separatedBy: ">").last ?? title
+                    let currentParent = parentStack.last ?? nil
+                    let folder = createFolder(title: clean, parentId: currentParent)
+                    parentStack.append(folder.id)
+                }
+            } else if trimmed.contains("<A ") || trimmed.contains("<a ") {
+                let urlStr = extractAttribute(in: trimmed, attr: "HREF") ?? extractAttribute(in: trimmed, attr: "href") ?? ""
+                let title = extractContentBetween(in: trimmed, start: ">", end: "</") ?? (URL(string: urlStr)?.host ?? urlStr)
+                let cleanTitle = title.components(separatedBy: ">").last ?? title
+                if !urlStr.isEmpty {
+                    let currentParent = parentStack.last ?? nil
+                    addBookmark(title: cleanTitle, urlString: urlStr, parentId: currentParent)
+                }
+            }
+        }
+    }
+
+    private func extractAttribute(in line: String, attr: String) -> String? {
+        guard let range = line.range(of: "\(attr)=\"", options: .caseInsensitive) else { return nil }
+        let sub = line[range.upperBound...]
+        guard let endRange = sub.range(of: "\"") else { return nil }
+        return String(sub[..<endRange.lowerBound])
+    }
+
+    private func extractContentBetween(in line: String, start: String, end: String) -> String? {
+        guard let startRange = line.range(of: start) else { return nil }
+        let sub = line[startRange.upperBound...]
+        guard let endRange = sub.range(of: end) else { return nil }
+        return String(sub[..<endRange.lowerBound])
     }
 }
 
