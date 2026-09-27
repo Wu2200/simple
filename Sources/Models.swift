@@ -181,6 +181,20 @@ final class HomeShortcutStore {
         }
     }
 
+    func updateShortcut(id: String, title: String, urlString: String) {
+        var items = loadShortcuts()
+        if let idx = items.firstIndex(where: { $0.id == id }) {
+            let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedTitle = cleanTitle.isEmpty ? (URL(string: urlString)?.host ?? urlString) : cleanTitle
+            items[idx].title = resolvedTitle
+            items[idx].urlString = urlString
+            saveShortcuts(items)
+            if let url = URL(string: urlString), let host = url.host {
+                FaviconLoader.shared.preloadFavicon(for: host)
+            }
+        }
+    }
+
     func deleteShortcut(id: String) {
         var items = loadShortcuts()
         items.removeAll { $0.id == id }
