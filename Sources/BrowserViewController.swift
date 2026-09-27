@@ -589,12 +589,46 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard shortcuts.indices.contains(btn.tag) else { return }
         let item = shortcuts[btn.tag]
 
-        let alert = UIAlertController(title: "常用站点", message: item.title, preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: "管理站点", message: item.title, preferredStyle: .actionSheet)
+
+        alert.addAction(UIAlertAction(title: "编辑站点", style: .default) { [weak self] _ in
+            self?.showEditShortcutAlert(item: item)
+        })
+
         alert.addAction(UIAlertAction(title: "删除该快捷方式", style: .destructive) { [weak self] _ in
             HomeShortcutStore.shared.deleteShortcut(id: item.id)
             self?.reloadHomeShortcuts()
             self?.showToastNotice("已从主页移除")
         })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func showEditShortcutAlert(item: HomeShortcutItem) {
+        let alert = UIAlertController(title: "编辑常用站点", message: nil, preferredStyle: .alert)
+        alert.addTextField { tf in
+            tf.placeholder = "网站名称"
+            tf.text = item.title
+            tf.clearButtonMode = .whileEditing
+        }
+        alert.addTextField { tf in
+            tf.placeholder = "网站地址 (http:// 或 https://)"
+            tf.text = item.urlString
+            tf.keyboardType = .URL
+            tf.clearButtonMode = .whileEditing
+        }
+
+        alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self, weak alert] _ in
+            guard let name = alert?.textFields?[0].text,
+                  let urlStr = alert?.textFields?[1].text,
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !urlStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            HomeShortcutStore.shared.updateShortcut(id: item.id, title: name, urlString: urlStr)
+            self?.reloadHomeShortcuts()
+            self?.showToastNotice("已更新常用站点")
+        })
+
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         present(alert, animated: true)
     }
