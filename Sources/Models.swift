@@ -12,7 +12,6 @@ struct UserScript: Codable {
 enum UserAgentCategory: String, Codable {
     case mobile
     case desktop
-    case custom
 }
 
 struct UserAgentItem: Codable, Equatable {
@@ -368,7 +367,7 @@ final class HomeShortcutStore {
 
     private let defaultItems: [HomeShortcutItem] = [
         HomeShortcutItem(id: "1", title: "百度", urlString: "https://www.baidu.com"),
-        HomeShortcutItem(id: "2", title: "必应", urlString: "https://www.bing.com"),
+        HomeShortcutItem(id: "2", title: "必应", urlString: "https://cn.bing.com"),
         HomeShortcutItem(id: "3", title: "GitHub", urlString: "https://github.com"),
         HomeShortcutItem(id: "4", title: "哔哩哔哩", urlString: "https://www.bilibili.com"),
         HomeShortcutItem(id: "5", title: "知乎", urlString: "https://www.zhihu.com"),
@@ -459,7 +458,7 @@ struct CustomBottomSheetItem {
 
 final class UserAgentStore {
     static let shared = UserAgentStore()
-    private let keyCustomItems = "browser_ua_custom_items_v5"
+    private let keyCustomItems = "browser_ua_custom_items_v6"
     private let keySelectedMobileId = "browser_ua_selected_mobile_id_v6"
     private let keySelectedDesktopId = "browser_ua_selected_desktop_id_v6"
     private let keyCurrentMode = "browser_ua_current_mode_v6"
@@ -467,14 +466,14 @@ final class UserAgentStore {
     private let defaultMobileItems: [UserAgentItem] = [
         UserAgentItem(
             id: "default_safari",
-            name: "iPhone Safari",
+            name: "iOS 16 Safari (原生官方)",
             uaString: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
             isCustom: false,
             category: .mobile
         ),
         UserAgentItem(
             id: "default_chrome",
-            name: "iPhone Chrome",
+            name: "iOS Chrome",
             uaString: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/125.0.6422.80 Mobile/15E148 Safari/604.1",
             isCustom: false,
             category: .mobile
@@ -498,7 +497,7 @@ final class UserAgentStore {
     private let defaultDesktopItems: [UserAgentItem] = [
         UserAgentItem(
             id: "default_mac",
-            name: "macOS Chrome",
+            name: "macOS Chrome (免验证安全)",
             uaString: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             isCustom: false,
             category: .desktop
@@ -512,14 +511,14 @@ final class UserAgentStore {
         ),
         UserAgentItem(
             id: "default_win_chrome",
-            name: "Windows Chrome",
+            name: "Windows 11 Chrome",
             uaString: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             isCustom: false,
             category: .desktop
         ),
         UserAgentItem(
             id: "default_win_edge",
-            name: "Windows Edge",
+            name: "Windows 11 Edge",
             uaString: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
             isCustom: false,
             category: .desktop
@@ -542,11 +541,13 @@ final class UserAgentStore {
     }
 
     func loadMobileItems() -> [UserAgentItem] {
-        return defaultMobileItems
+        let customs = loadCustomItems().filter { $0.category == .mobile }
+        return defaultMobileItems + customs
     }
 
     func loadDesktopItems() -> [UserAgentItem] {
-        return defaultDesktopItems
+        let customs = loadCustomItems().filter { $0.category == .desktop }
+        return defaultDesktopItems + customs
     }
 
     func loadCustomItems() -> [UserAgentItem] {
@@ -558,41 +559,47 @@ final class UserAgentStore {
     }
 
     func loadAllItems() -> [UserAgentItem] {
-        var items = defaultMobileItems + defaultDesktopItems
-        items.append(contentsOf: loadCustomItems())
-        return items
+        return loadMobileItems() + loadDesktopItems()
     }
 
-    func addCustomItem(name: String, uaString: String, category: UserAgentCategory = .mobile) {
+    func addCustomItem(name: String, uaString: String, category: UserAgentCategory) {
         var customs = loadCustomItems()
-        let newItem = UserAgentItem(id: UUID().uuidString, name: name, uaString: uaString, isCustom: true, category: category)
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanUA = uaString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, !cleanUA.isEmpty else { return }
+
+        let newItem = UserAgentItem(
+            id: UUID().uuidString,
+            name: cleanName,
+            uaString: cleanUA,
+            isCustom: true,
+            category: category
+        )
         customs.append(newItem)
         if let data = try? JSONEncoder().encode(customs) {
             UserDefaults.standard.set(data, forKey: keyCustomItems)
         }
-    }
 
-    func updateCustomItem(id: String, name: String, uaString: String) {
-        var customs = loadCustomItems()
-        if let idx = customs.firstIndex(where: { $0.id == id }) {
-            customs[idx].name = name
-            customs[idx].uaString = uaString
-            if let data = try? JSONEncoder().encode(customs) {
-                UserDefaults.standard.set(data, forKey: keyCustomItems)
-            }
+        if category == .mobile {
+            setSelectedMobileId(newItem.id)
+            currentMode = .mobile
+        } else {
+            setSelectedDesktopId(newItem.id)
+            currentMode = .desktop
         }
     }
 
     func deleteCustomItem(id: String) {
         var customs = loadCustomItems()
+        guard let item = customs.first(where: { $0.id == id }) else { return }
         customs.removeAll { $0.id == id }
         if let data = try? JSONEncoder().encode(customs) {
             UserDefaults.standard.set(data, forKey: keyCustomItems)
         }
-        if getSelectedMobileId() == id {
+        if item.category == .mobile && getSelectedMobileId() == id {
             setSelectedMobileId(defaultMobileItems[0].id)
         }
-        if getSelectedDesktopId() == id {
+        if item.category == .desktop && getSelectedDesktopId() == id {
             setSelectedDesktopId(defaultDesktopItems[0].id)
         }
     }
