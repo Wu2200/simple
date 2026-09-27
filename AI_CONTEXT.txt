@@ -10597,9 +10597,10 @@ final class DomainSettingsViewController: UITableViewController {
 }
 
 final class UserAgentManagerViewController: UITableViewController {
-    private var mobileItems: [UserAgentItem] = []
-    private var desktopItems: [UserAgentItem] = []
-    private var customItems: [UserAgentItem] = []
+    private var presetMobileItems: [UserAgentItem] = []
+    private var customMobileItems: [UserAgentItem] = []
+    private var presetDesktopItems: [UserAgentItem] = []
+    private var customDesktopItems: [UserAgentItem] = []
 
     var onUASelected: ((UserAgentItem) -> Void)?
 
@@ -10615,6 +10616,7 @@ final class UserAgentManagerViewController: UITableViewController {
         tableView.separatorStyle = .none
         tableView.backgroundColor = .systemGroupedBackground
         tableView.register(UserAgentCardCell.self, forCellReuseIdentifier: "UserAgentCardCell")
+        tableView.register(AddUACardCell.self, forCellReuseIdentifier: "AddUACardCell")
 
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "plus"),
@@ -10633,9 +10635,11 @@ final class UserAgentManagerViewController: UITableViewController {
     }
 
     private func loadData() {
-        mobileItems = UserAgentStore.shared.loadMobileItems()
-        desktopItems = UserAgentStore.shared.loadDesktopItems()
-        customItems = UserAgentStore.shared.loadCustomItems()
+        let allCustoms = UserAgentStore.shared.loadCustomItems()
+        presetMobileItems = UserAgentStore.shared.loadMobileItems()
+        customMobileItems = allCustoms.filter { $0.category == .mobile || $0.category == .custom }
+        presetDesktopItems = UserAgentStore.shared.loadDesktopItems()
+        customDesktopItems = allCustoms.filter { $0.category == .desktop }
         tableView.reloadData()
     }
 
@@ -10644,25 +10648,63 @@ final class UserAgentManagerViewController: UITableViewController {
     }
 
     @objc private func handleAddCustomUA() {
-        let alert = UIAlertController(title: "添加自定义标识", message: nil, preferredStyle: .alert)
-        alert.addTextField { tf in tf.placeholder = "标识名称" }
-        alert.addTextField { tf in tf.placeholder = "User-Agent 字符串" }
-
-        alert.addAction(UIAlertAction(title: "保存为移动版", style: .default) { [weak self] _ in
-            guard let name = alert.textFields?[0].text?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
-                  let ua = alert.textFields?[1].text?.trimmingCharacters(in: .whitespaces), !ua.isEmpty else { return }
-
-            UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: .mobile)
-            self?.loadData()
+        let alert = UIAlertController(title: "添加自定义标识", message: nil, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "添加自定义移动版标识", style: .default) { [weak self] _ in
+            self?.promptAddCustomUA(category: .mobile)
         })
-        alert.addAction(UIAlertAction(title: "保存为电脑版", style: .default) { [weak self] _ in
-            guard let name = alert.textFields?[0].text?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
-                  let ua = alert.textFields?[1].text?.trimmingCharacters(in: .whitespaces), !ua.isEmpty else { return }
-
-            UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: .desktop)
-            self?.loadData()
+        alert.addAction(UIAlertAction(title: "添加自定义电脑版标识", style: .default) { [weak self] _ in
+            self?.promptAddCustomUA(category: .desktop)
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let popover = alert.popoverPresentationController {
+            popover.barButtonItem = navigationItem.rightBarButtonItem
+        }
+        present(alert, animated: true)
+    }
+
+    private func promptAddCustomUA(category: UserAgentCategory) {
+        let isMobile = (category == .mobile)
+        let alert = UIAlertController(
+            title: isMobile ? "添加自定义移动版标识" : "添加自定义电脑版标识",
+            message: nil,
+            preferredStyle: .alert
+        )
+        alert.addTextField { tf in
+            tf.placeholder = "标识名称 (例如：Chrome Mobile)"
+            tf.clearButtonMode = .whileEditing
+        }
+        alert.addTextField { tf in
+            tf.placeholder = "User-Agent 字符串"
+            tf.autocapitalizationType = .none
+            tf.autocorrectionType = .no
+            tf.clearButtonMode = .whileEditing
+        }
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "添加", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            guard let name = alert.textFields?[0].text?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+                  let ua = alert.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines), !ua.isEmpty else {
+                return
+            }
+
+            UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: category)
+            self.loadData()
+
+            let targetList = isMobile ? self.customMobileItems : self.customDesktopItems
+            if let newItem = targetList.first(where: { $0.name == name && $0.uaString == ua }) {
+                if isMobile {
+                    UserAgentStore.shared.setSelectedMobileId(newItem.id)
+                    UserAgentStore.shared.currentMode = .mobile
+                } else {
+                    UserAgentStore.shared.setSelectedDesktopId(newItem.id)
+                    UserAgentStore.shared.currentMode = .desktop
+                }
+                self.onUASelected?(newItem)
+            }
+            self.tableView.reloadData()
+        })
+
         present(alert, animated: true)
     }
 
@@ -10694,92 +10736,120 @@ final class UserAgentManagerViewController: UITableViewController {
         present(alert, animated: true)
     }
 
-    private func item(for indexPath: IndexPath) -> UserAgentItem {
-        switch indexPath.section {
-        case 0:
-            return mobileItems[indexPath.row]
-        case 1:
-            return desktopItems[indexPath.row]
-        default:
-            return customItems[indexPath.row]
-        }
-    }
-
     override func numberOfSections(in tableView: UITableView) -> Int {
-        return customItems.isEmpty ? 2 : 3
+        return 2
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        switch section {
-        case 0:
-            return "移动版标识"
-        case 1:
-            return "电脑版标识"
-        default:
-            return "自定义标识"
-        }
+        return section == 0 ? "移动版标识" : "电脑版标识"
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        switch section {
-        case 0:
-            return mobileItems.count
-        case 1:
-            return desktopItems.count
-        default:
-            return customItems.count
+        if section == 0 {
+            return presetMobileItems.count + customMobileItems.count + 1
+        } else {
+            return presetDesktopItems.count + customDesktopItems.count + 1
         }
     }
 
     override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        let isMobile = (indexPath.section == 0)
+        let totalItems = isMobile ? (presetMobileItems.count + customMobileItems.count) : (presetDesktopItems.count + customDesktopItems.count)
+        if indexPath.row == totalItems {
+            return 50
+        }
         return 68
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "UserAgentCardCell", for: indexPath) as! UserAgentCardCell
-        let item = self.item(for: indexPath)
-        let isSelected: Bool
-        if indexPath.section == 0 {
-            isSelected = (item.id == UserAgentStore.shared.getSelectedMobileId())
-        } else if indexPath.section == 1 {
-            isSelected = (item.id == UserAgentStore.shared.getSelectedDesktopId())
-        } else {
-            if item.category == .desktop {
-                isSelected = (item.id == UserAgentStore.shared.getSelectedDesktopId())
-            } else {
-                isSelected = (item.id == UserAgentStore.shared.getSelectedMobileId())
-            }
+        let isMobile = (indexPath.section == 0)
+        let presets = isMobile ? presetMobileItems : presetDesktopItems
+        let customs = isMobile ? customMobileItems : customDesktopItems
+        let selectedId = isMobile ? UserAgentStore.shared.getSelectedMobileId() : UserAgentStore.shared.getSelectedDesktopId()
+
+        if indexPath.row < presets.count {
+            let item = presets[indexPath.row]
+            let cell = tableView.dequeueReusableCell(withIdentifier: "UserAgentCardCell", for: indexPath) as! UserAgentCardCell
+            cell.configure(item: item, isSelected: (item.id == selectedId))
+            return cell
         }
-        cell.configure(item: item, isSelected: isSelected)
-        return cell
+
+        let customIndex = indexPath.row - presets.count
+        if customIndex < customs.count {
+            let item = customs[customIndex]
+            let cell = tableView.dequeueReusableCell(withIdentifier: "UserAgentCardCell", for: indexPath) as! UserAgentCardCell
+            cell.configure(item: item, isSelected: (item.id == selectedId))
+            return cell
+        }
+
+        let addCell = tableView.dequeueReusableCell(withIdentifier: "AddUACardCell", for: indexPath) as! AddUACardCell
+        addCell.configure(title: isMobile ? "添加自定义移动版标识" : "添加自定义电脑版标识")
+        return addCell
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let item = self.item(for: indexPath)
-        if indexPath.section == 0 {
-            UserAgentStore.shared.setSelectedMobileId(item.id)
-            UserAgentStore.shared.currentMode = .mobile
-        } else if indexPath.section == 1 {
-            UserAgentStore.shared.setSelectedDesktopId(item.id)
-            UserAgentStore.shared.currentMode = .desktop
-        } else {
-            if item.category == .desktop {
-                UserAgentStore.shared.setSelectedDesktopId(item.id)
-                UserAgentStore.shared.currentMode = .desktop
-            } else {
+
+        let isMobile = (indexPath.section == 0)
+        let presets = isMobile ? presetMobileItems : presetDesktopItems
+        let customs = isMobile ? customMobileItems : customDesktopItems
+
+        if indexPath.row < presets.count {
+            let item = presets[indexPath.row]
+            if isMobile {
                 UserAgentStore.shared.setSelectedMobileId(item.id)
                 UserAgentStore.shared.currentMode = .mobile
+            } else {
+                UserAgentStore.shared.setSelectedDesktopId(item.id)
+                UserAgentStore.shared.currentMode = .desktop
             }
+            tableView.reloadData()
+            onUASelected?(item)
+            dismiss(animated: true)
+            return
         }
-        tableView.reloadData()
 
-        onUASelected?(item)
-        dismiss(animated: true)
+        let customIndex = indexPath.row - presets.count
+        if customIndex < customs.count {
+            let item = customs[customIndex]
+            if isMobile {
+                UserAgentStore.shared.setSelectedMobileId(item.id)
+                UserAgentStore.shared.currentMode = .mobile
+            } else {
+                UserAgentStore.shared.setSelectedDesktopId(item.id)
+                UserAgentStore.shared.currentMode = .desktop
+            }
+            tableView.reloadData()
+            onUASelected?(item)
+            dismiss(animated: true)
+            return
+        }
+
+        promptAddCustomUA(category: isMobile ? .mobile : .desktop)
+    }
+
+    override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        if indexPath.section == 0 {
+            return indexPath.row < presetMobileItems.count + customMobileItems.count
+        } else {
+            return indexPath.row < presetDesktopItems.count + customDesktopItems.count
+        }
     }
 
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        let item = self.item(for: indexPath)
+        let isMobile = (indexPath.section == 0)
+        let presetCount = isMobile ? presetMobileItems.count : presetDesktopItems.count
+        let customCount = isMobile ? customMobileItems.count : customDesktopItems.count
+
+        guard indexPath.row < presetCount + customCount else { return nil }
+
+        let item: UserAgentItem
+        let isCustom = indexPath.row >= presetCount
+        if isMobile {
+            item = isCustom ? customMobileItems[indexPath.row - presetCount] : presetMobileItems[indexPath.row]
+        } else {
+            item = isCustom ? customDesktopItems[indexPath.row - presetCount] : presetDesktopItems[indexPath.row]
+        }
 
         let editAction = UIContextualAction(style: .normal, title: "编辑") { [weak self] _, _, completion in
             self?.showEditUAAlert(item: item)
@@ -10787,19 +10857,72 @@ final class UserAgentManagerViewController: UITableViewController {
         }
         editAction.backgroundColor = .systemBlue
 
-        if item.isCustom {
-            let deleteAction = UIContextualAction(style: .normal, title: "删除") { [weak self] _, _, completion in
+        if isCustom {
+            let deleteAction = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
                 UserAgentStore.shared.deleteCustomItem(id: item.id)
                 self?.loadData()
                 let currentItem = UserAgentStore.shared.getSelectedItem()
                 self?.onUASelected?(currentItem)
                 completion(true)
             }
-            deleteAction.backgroundColor = .systemRed
             return UISwipeActionsConfiguration(actions: [deleteAction, editAction])
         } else {
             return UISwipeActionsConfiguration(actions: [editAction])
         }
+    }
+}
+
+final class AddUACardCell: UITableViewCell {
+    private let buttonContainer = UIView()
+    private let titleLabel = UILabel()
+    private let iconView = UIImageView()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+        selectionStyle = .none
+
+        buttonContainer.translatesAutoresizingMaskIntoConstraints = false
+        buttonContainer.backgroundColor = .secondarySystemGroupedBackground
+        buttonContainer.layer.cornerRadius = 12
+        buttonContainer.clipsToBounds = true
+
+        let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 8
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.image = UIImage(systemName: "plus.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
+        iconView.tintColor = .systemBlue
+        iconView.contentMode = .scaleAspectFit
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 14.5, weight: .medium)
+        titleLabel.textColor = .systemBlue
+
+        stack.addArrangedSubview(iconView)
+        stack.addArrangedSubview(titleLabel)
+
+        buttonContainer.addSubview(stack)
+        contentView.addSubview(buttonContainer)
+
+        NSLayoutConstraint.activate([
+            buttonContainer.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            buttonContainer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+            buttonContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 4),
+            buttonContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -4),
+
+            stack.centerXAnchor.constraint(equalTo: buttonContainer.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: buttonContainer.centerYAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(title: String) {
+        titleLabel.text = title
     }
 }
 
