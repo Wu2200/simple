@@ -3881,7 +3881,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             DispatchQueue.main.async {
                 let alert = UIAlertController(
                     title: "安装油猴脚本",
-                    message: "脚本名称: \(parsedName)\n匹配域名: \(parsedMatch)\n\n是否确定安装此油猴脚本？",
+                    message: "脚本名称: \(parsedName)\n匹配规则: \(parsedMatch)\n\n是否确定安装此油猴脚本？",
                     preferredStyle: .alert
                 )
 
@@ -5675,9 +5675,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let panel = CustomBottomSheetViewController(title: "", items: items, layout: .list)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                let cardHeight: CGFloat = 52
-                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + 36
-                presentation.detents = [.custom { _ in min(totalHeight, 320) }]
+                let cardHeight: CGFloat = 56
+                let spacing: CGFloat = 10
+                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + CGFloat(max(0, items.count - 1)) * spacing + 48
+                presentation.detents = [.custom { _ in min(totalHeight, 420) }]
                 presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
@@ -5748,9 +5749,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let panel = CustomBottomSheetViewController(title: script.name, items: items, layout: .list)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                let cardHeight: CGFloat = 52
-                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + 70
-                presentation.detents = [.custom { _ in min(totalHeight, 380) }]
+                let cardHeight: CGFloat = 56
+                let spacing: CGFloat = 10
+                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + CGFloat(max(0, items.count - 1)) * spacing + 88
+                presentation.detents = [.custom { _ in min(totalHeight, 460) }]
                 presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
