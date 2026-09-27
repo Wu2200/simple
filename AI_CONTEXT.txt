@@ -3167,7 +3167,19 @@ class TouchButton: UIButton {
 }
 
 final class AddressTextField: UITextField {
+    var onLongPressAction: (() -> Void)?
+
+    override var canBecomeFirstResponder: Bool {
+        true
+    }
+
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(customCopyAction) ||
+           action == #selector(customPasteAction) ||
+           action == #selector(customEditAction) ||
+           action == #selector(customPasteAndGoAction) {
+            return true
+        }
         if action == #selector(copy(_:)) ||
            action == #selector(paste(_:)) ||
            action == #selector(selectAll(_:)) ||
@@ -3175,7 +3187,32 @@ final class AddressTextField: UITextField {
            action == #selector(cut(_:)) {
             return true
         }
-        return super.canPerformAction(action, withSender: sender)
+        return false
+    }
+
+    @objc func customCopyAction() {
+        if let text = text, !text.isEmpty {
+            UIPasteboard.general.string = text
+        }
+    }
+
+    @objc func customPasteAction() {
+        if let paste = UIPasteboard.general.string {
+            text = paste
+            sendActions(for: .editingChanged)
+        }
+    }
+
+    @objc func customEditAction() {
+        becomeFirstResponder()
+        selectAll(nil)
+    }
+
+    @objc func customPasteAndGoAction() {
+        if let paste = UIPasteboard.general.string {
+            text = paste
+            _ = delegate?.textFieldShouldReturn?(self)
+        }
     }
 }
 
@@ -3263,6 +3300,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         configureKeyboardObservers()
         configureKeyboardDismissal()
         configureFullscreenExitGesture()
+        configureAddressLongPressMenu()
         configureInstallerObserver()
         configureSessionObservers()
         restorePreviousSession()
@@ -4221,6 +4259,32 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             navigationStack.heightAnchor.constraint(equalToConstant: 40)
         ])
+    }
+
+    private func configureAddressLongPressMenu() {
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleAddressLongPress(_:)))
+        longPress.minimumPressDuration = 0.45
+        addressContentView.addGestureRecognizer(longPress)
+    }
+
+    @objc private func handleAddressLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
+        let menu = UIMenuController.shared
+        guard !menu.isMenuVisible else { return }
+
+        addressField.becomeFirstResponder()
+
+        let copyItem = UIMenuItem(title: "拷贝", action: #selector(AddressTextField.customCopyAction))
+        let pasteItem = UIMenuItem(title: "粘贴", action: #selector(AddressTextField.customPasteAction))
+        let editItem = UIMenuItem(title: "编辑", action: #selector(AddressTextField.customEditAction))
+        let pasteAndGoItem = UIMenuItem(title: "粘贴并前往", action: #selector(AddressTextField.customPasteAndGoAction))
+
+        menu.menuItems = [copyItem, pasteItem, editItem, pasteAndGoItem]
+
+        let targetRect = addressContentView.bounds
+        menu.showMenu(from: addressContentView, rect: targetRect)
     }
 
     @objc private func handleMoreButtonLongPress(_ gesture: UILongPressGestureRecognizer) {
