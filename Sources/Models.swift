@@ -139,6 +139,7 @@ struct CustomBottomSheetItem {
     var iconName: String? = nil
     var isDestructive: Bool = false
     var isSwitchOn: Bool? = nil
+    var dismissOnTap: Bool = true
     let handler: (() -> Void)?
     let longPressHandler: (() -> Void)?
 
@@ -147,6 +148,7 @@ struct CustomBottomSheetItem {
         iconName: String? = nil,
         isDestructive: Bool = false,
         isSwitchOn: Bool? = nil,
+        dismissOnTap: Bool = true,
         handler: (() -> Void)?,
         longPressHandler: (() -> Void)? = nil
     ) {
@@ -154,6 +156,7 @@ struct CustomBottomSheetItem {
         self.iconName = iconName
         self.isDestructive = isDestructive
         self.isSwitchOn = isSwitchOn
+        self.dismissOnTap = dismissOnTap
         self.handler = handler
         self.longPressHandler = longPressHandler
     }
