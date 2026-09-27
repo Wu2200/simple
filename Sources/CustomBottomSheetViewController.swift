@@ -1,6 +1,6 @@
 import UIKit
 
-final class CustomBottomSheetViewController: UIViewController, UIScrollViewDelegate {
+final class CustomBottomSheetViewController: UIViewController, UIScrollViewDelegate, UITableViewDataSource, UITableViewDelegate {
     private let titleString: String
     private var items: [CustomBottomSheetItem]
     private let layout: CustomBottomSheetLayout
@@ -8,6 +8,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
     private var pageControl: UIPageControl?
     private var pagedScrollView: UIScrollView?
     private var gridButtons: [GridItemButton] = []
+    private var listTableView: UITableView?
 
     init(title: String, items: [CustomBottomSheetItem], layout: CustomBottomSheetLayout = .list) {
         self.titleString = title
@@ -174,7 +175,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         button.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
 
         if item.longPressHandler != nil {
-            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleItemLongPress(_:)))
+            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleGridItemLongPress(_:)))
             longPress.minimumPressDuration = 0.45
             button.addGestureRecognizer(longPress)
         }
@@ -195,8 +196,6 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
     }
 
     private func setupListLayout() {
-        let hasTitle = !titleString.isEmpty
-
         let grabber = UIView()
         grabber.translatesAutoresizingMaskIntoConstraints = false
         grabber.backgroundColor = .tertiaryLabel
@@ -204,20 +203,19 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         grabber.clipsToBounds = true
         view.addSubview(grabber)
 
-        let itemsStack = UIStackView()
-        itemsStack.translatesAutoresizingMaskIntoConstraints = false
-        itemsStack.axis = .vertical
-        itemsStack.alignment = .fill
-        itemsStack.distribution = .fillEqually
-        itemsStack.spacing = 0
+        let hasTitle = !titleString.isEmpty
 
-        for (idx, item) in items.enumerated() {
-            let showSeparator = (idx < items.count - 1)
-            let row = createCleanRowButton(item: item, tag: idx, showSeparator: showSeparator)
-            itemsStack.addArrangedSubview(row)
-        }
-
-        view.addSubview(itemsStack)
+        let tableView = UITableView(frame: .zero, style: .plain)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.backgroundColor = .clear
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "SheetListCell")
+        tableView.separatorInset = UIEdgeInsets(top: 0, left: 56, bottom: 0, right: 16)
+        tableView.isScrollEnabled = false
+        tableView.rowHeight = 52
+        self.listTableView = tableView
+        view.addSubview(tableView)
 
         if hasTitle {
             let headerContainer = UIView()
@@ -225,7 +223,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
 
             let titleLabel = UILabel()
             titleLabel.translatesAutoresizingMaskIntoConstraints = false
-            titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+            titleLabel.font = .systemFont(ofSize: 16.5, weight: .semibold)
             titleLabel.textColor = UIColor { trait in
                 trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.26, green: 0.26, blue: 0.28, alpha: 1.0)
             }
@@ -235,7 +233,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             closeButton.translatesAutoresizingMaskIntoConstraints = false
             closeButton.tintColor = UIColor(red: 0.50, green: 0.50, blue: 0.53, alpha: 1.0)
             closeButton.setImage(
-                UIImage(systemName: "xmark.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)),
+                UIImage(systemName: "xmark.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)),
                 for: .normal
             )
             closeButton.addTarget(self, action: #selector(handleDismiss), for: .touchUpInside)
@@ -253,20 +251,20 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
                 headerContainer.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 6),
                 headerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 headerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                headerContainer.heightAnchor.constraint(equalToConstant: 44),
+                headerContainer.heightAnchor.constraint(equalToConstant: 40),
 
                 titleLabel.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 20),
                 titleLabel.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor),
 
                 closeButton.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -16),
                 closeButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-                closeButton.widthAnchor.constraint(equalToConstant: 30),
-                closeButton.heightAnchor.constraint(equalToConstant: 30),
+                closeButton.widthAnchor.constraint(equalToConstant: 28),
+                closeButton.heightAnchor.constraint(equalToConstant: 28),
 
-                itemsStack.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 6),
-                itemsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                itemsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                itemsStack.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+                tableView.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 4),
+                tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
             ])
         } else {
             NSLayoutConstraint.activate([
@@ -275,35 +273,26 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
                 grabber.widthAnchor.constraint(equalToConstant: 36),
                 grabber.heightAnchor.constraint(equalToConstant: 5),
 
-                itemsStack.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 14),
-                itemsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                itemsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                itemsStack.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+                tableView.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 10),
+                tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
             ])
         }
     }
 
-    private func createCleanRowButton(item: CustomBottomSheetItem, tag: Int, showSeparator: Bool) -> TouchButton {
-        let row = TouchButton()
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.tag = tag
-        row.backgroundColor = .clear
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        items.count
+    }
 
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "SheetListCell", for: indexPath)
+        let item = items[indexPath.row]
         let isActionable = (item.handler != nil)
-        row.isUserInteractionEnabled = isActionable
 
-        if isActionable {
-            row.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
-            if item.longPressHandler != nil {
-                let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleItemLongPress(_:)))
-                longPress.minimumPressDuration = 0.45
-                row.addGestureRecognizer(longPress)
-            }
-        }
-
-        let iconImageView = UIImageView()
-        iconImageView.translatesAutoresizingMaskIntoConstraints = false
-        iconImageView.contentMode = .scaleAspectFit
+        var content = cell.defaultContentConfiguration()
+        content.text = item.title
+        content.textProperties.font = .systemFont(ofSize: 16, weight: .regular)
 
         let defaultIconColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
@@ -312,79 +301,43 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.58, alpha: 1.0) : UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
         }
 
-        let resolvedIconColor = isActionable ? defaultIconColor : disabledColor
-
-        if let img = item.customImage {
-            iconImageView.image = img
-        } else {
-            let iconName = item.iconName ?? "doc.plaintext"
-            iconImageView.image = UIImage(
-                systemName: iconName,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular)
-            )
+        if let customImg = item.customImage {
+            content.image = customImg
+        } else if let iconName = item.iconName {
+            content.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .regular))
         }
-        iconImageView.tintColor = resolvedIconColor
+        content.imageProperties.tintColor = isActionable ? defaultIconColor : disabledColor
+        content.imageProperties.maximumSize = CGSize(width: 24, height: 24)
 
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 16.5, weight: .regular)
-        label.textColor = item.isDestructive ? .systemRed : (isActionable ? UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.90, alpha: 1.0) : UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0)
-        } : disabledColor)
-        label.text = item.title
-        label.numberOfLines = 1
-
-        let chevron = UIImageView(
-            image: UIImage(
-                systemName: "chevron.right",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-            )
-        )
-        chevron.translatesAutoresizingMaskIntoConstraints = false
-        chevron.tintColor = UIColor(red: 0.72, green: 0.72, blue: 0.74, alpha: 1.0)
-        chevron.isHidden = !isActionable
-
-        row.addSubview(iconImageView)
-        row.addSubview(label)
-        row.addSubview(chevron)
-
-        NSLayoutConstraint.activate([
-            row.heightAnchor.constraint(equalToConstant: 58),
-
-            iconImageView.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 20),
-            iconImageView.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 24),
-            iconImageView.heightAnchor.constraint(equalToConstant: 24),
-
-            label.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 14),
-            label.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -10),
-            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-
-            chevron.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -20),
-            chevron.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            chevron.widthAnchor.constraint(equalToConstant: 12),
-            chevron.heightAnchor.constraint(equalToConstant: 16)
-        ])
-
-        if showSeparator {
-            let separator = UIView()
-            separator.translatesAutoresizingMaskIntoConstraints = false
-            separator.backgroundColor = UIColor { trait in
-                trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor(red: 0.93, green: 0.93, blue: 0.94, alpha: 1.0)
+        if item.isDestructive {
+            content.textProperties.color = .systemRed
+        } else if isActionable {
+            content.textProperties.color = UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(white: 0.90, alpha: 1.0) : UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0)
             }
-            row.addSubview(separator)
-            NSLayoutConstraint.activate([
-                separator.heightAnchor.constraint(equalToConstant: 0.5),
-                separator.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 58),
-                separator.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -20),
-                separator.bottomAnchor.constraint(equalTo: row.bottomAnchor)
-            ])
+        } else {
+            content.textProperties.color = disabledColor
         }
 
-        return row
+        cell.contentConfiguration = content
+        cell.backgroundColor = .clear
+        cell.selectionStyle = isActionable ? .default : .none
+        cell.accessoryType = isActionable ? .disclosureIndicator : .none
+
+        return cell
     }
 
-    @objc private func handleItemLongPress(_ gesture: UILongPressGestureRecognizer) {
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row < items.count else { return }
+        let item = items[indexPath.row]
+        guard let handler = item.handler else { return }
+        dismiss(animated: true) {
+            handler()
+        }
+    }
+
+    @objc private func handleGridItemLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
 
         let tag = gesture.view?.tag ?? 0
