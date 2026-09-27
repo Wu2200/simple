@@ -795,15 +795,13 @@ final class EyeProtectionManager {
         case high = 2
 
         var alpha: CGFloat {
-            switch self.lowLevelAlpha(for: self)
-            }
-        }
-
-        private func lowLevelAlpha(for l: Level) -> CGFloat {
-            switch l {
-            case .low: return 0.245
-            case .medium: return 0.35
-            case .high: return 0.455
+            switch self {
+            case .low:
+                return 0.245
+            case .medium:
+                return 0.35
+            case .high:
+                return 0.455
             }
         }
 
