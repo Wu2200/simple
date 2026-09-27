@@ -1,7 +1,7 @@
 import UIKit
 import WebKit
 
-public typealias WebsiteDataViewController = WebsiteDataManagerViewController
+typealias WebsiteDataViewController = WebsiteDataManagerViewController
 
 // MARK: - 主域名聚合数据模型
 
