@@ -12,21 +12,23 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
     private var sections: [HistorySection] = []
 
     private var currentSegment: Int = 0 // 0: 书签, 1: 历史
-    private var currentFolderId: String? = nil
-    private var folderStack: [(id: String?, title: String)] = []
+    private let folderId: String?
+    private let folderTitle: String?
 
     private let searchController = UISearchController(searchResultsController: nil)
     private let segmentedControl = UISegmentedControl(items: ["书签", "历史"])
 
     var onSelectURL: ((URL) -> Void)?
 
-    init(initialSegment: Int = 0) {
+    init(initialSegment: Int = 0, folderId: String? = nil, folderTitle: String? = nil) {
         self.currentSegment = initialSegment
+        self.folderId = folderId
+        self.folderTitle = folderTitle
         super.init(style: .insetGrouped)
     }
 
     convenience init() {
-        self.init(initialSegment: 0)
+        self.init(initialSegment: 0, folderId: nil, folderTitle: nil)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -50,29 +52,48 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
         loadData()
     }
 
-    private func updateNavigationBars() {
-        if currentSegment == 0 {
-            if let currentFolder = folderStack.last {
-                navigationItem.titleView = nil
-                title = currentFolder.title
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        loadData()
+    }
 
-                let backBtn = UIBarButtonItem(
-                    image: UIImage(systemName: "chevron.backward"),
-                    style: .plain,
-                    target: self,
-                    action: #selector(handleFolderBack)
-                )
-                navigationItem.leftBarButtonItem = backBtn
-            } else {
-                title = nil
-                navigationItem.titleView = segmentedControl
-                navigationItem.leftBarButtonItem = UIBarButtonItem(
-                    title: "完成",
-                    style: .done,
-                    target: self,
-                    action: #selector(handleClose)
-                )
-            }
+    private func updateNavigationBars() {
+        if let folderTitle = folderTitle {
+            // 子文件夹视图：原生系统导航推进
+            title = folderTitle
+            navigationItem.titleView = nil
+
+            let addMenu = UIMenu(title: "", children: [
+                UIAction(title: "新建子文件夹", image: UIImage(systemName: "folder.badge.plus")) { [weak self] _ in
+                    self?.promptCreateFolder()
+                },
+                UIAction(title: "添加书签", image: UIImage(systemName: "bookmark.circle")) { [weak self] _ in
+                    self?.promptAddBookmark()
+                }
+            ])
+            let addButtonItem = UIBarButtonItem(image: UIImage(systemName: "plus"), menu: addMenu)
+
+            let moreMenu = UIMenu(title: "", children: [
+                UIAction(title: "导出 HTML 书签", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
+                    self?.exportAlookBookmarks()
+                },
+                UIAction(title: "清空此文件夹", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+                    self?.confirmClearCurrentFolder()
+                }
+            ])
+            let moreButtonItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: moreMenu)
+
+            navigationItem.rightBarButtonItems = [moreButtonItem, addButtonItem]
+        } else if currentSegment == 0 {
+            // 书签根视图
+            title = nil
+            navigationItem.titleView = segmentedControl
+            navigationItem.leftBarButtonItem = UIBarButtonItem(
+                title: "完成",
+                style: .done,
+                target: self,
+                action: #selector(handleClose)
+            )
 
             let addMenu = UIMenu(title: "", children: [
                 UIAction(title: "新建文件夹", image: UIImage(systemName: "folder.badge.plus")) { [weak self] _ in
@@ -99,6 +120,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
 
             navigationItem.rightBarButtonItems = [moreButtonItem, addButtonItem]
         } else {
+            // 历史根视图
             title = nil
             navigationItem.titleView = segmentedControl
             navigationItem.leftBarButtonItem = UIBarButtonItem(
@@ -118,14 +140,6 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
         }
     }
 
-    @objc private func handleFolderBack() {
-        guard !folderStack.isEmpty else { return }
-        folderStack.removeLast()
-        currentFolderId = folderStack.last?.id
-        updateNavigationBars()
-        loadData()
-    }
-
     @objc private func handleSegmentChange(_ sender: UISegmentedControl) {
         currentSegment = sender.selectedSegmentIndex
         searchController.searchBar.placeholder = currentSegment == 0 ? "搜索书签" : "搜索历史记录"
@@ -140,7 +154,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
 
         if currentSegment == 0 {
             if query.isEmpty {
-                currentFolderNodes = BookmarkStore.shared.getNodes(inParent: currentFolderId)
+                currentFolderNodes = BookmarkStore.shared.getNodes(inParent: folderId)
             } else {
                 currentFolderNodes = BookmarkStore.shared.loadAllNodes().filter {
                     $0.title.lowercased().contains(query) || $0.urlString.lowercased().contains(query)
@@ -200,7 +214,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
     }
 
     private func promptCreateFolder() {
-        let alert = UIAlertController(title: "新建文件夹", message: nil, preferredStyle: .alert)
+        let alert = UIAlertController(title: folderId == nil ? "新建文件夹" : "新建子文件夹", message: nil, preferredStyle: .alert)
         alert.addTextField { tf in
             tf.placeholder = "文件夹名称"
             tf.clearButtonMode = .whileEditing
@@ -208,7 +222,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "创建", style: .default) { [weak self, weak alert] _ in
             guard let name = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return }
-            _ = BookmarkStore.shared.createFolder(title: name, parentId: self?.currentFolderId)
+            _ = BookmarkStore.shared.createFolder(title: name, parentId: self?.folderId)
             self?.loadData()
         })
         present(alert, animated: true)
@@ -231,7 +245,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
                   let urlStr = alert?.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !urlStr.isEmpty else { return }
             let resolvedUrl = (urlStr.hasPrefix("http://") || urlStr.hasPrefix("https://")) ? urlStr : "https://" + urlStr
-            BookmarkStore.shared.addBookmark(title: name, urlString: resolvedUrl, parentId: self?.currentFolderId)
+            BookmarkStore.shared.addBookmark(title: name, urlString: resolvedUrl, parentId: self?.folderId)
             self?.loadData()
         })
         present(alert, animated: true)
@@ -286,9 +300,20 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
             BookmarkStore.shared.clearBookmarks()
-            self?.folderStack.removeAll()
-            self?.currentFolderId = nil
-            self?.updateNavigationBars()
+            self?.loadData()
+        })
+        present(alert, animated: true)
+    }
+
+    private func confirmClearCurrentFolder() {
+        guard let fId = folderId else { return }
+        let alert = UIAlertController(title: "清空文件夹", message: "确定要删除此文件夹中的所有内容吗？", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
+            let children = BookmarkStore.shared.getNodes(inParent: fId)
+            for child in children {
+                BookmarkStore.shared.deleteNode(id: child.id)
+            }
             self?.loadData()
         })
         present(alert, animated: true)
@@ -324,7 +349,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         if currentSegment == 0 {
-            if !currentFolderNodes.isEmpty && folderStack.isEmpty {
+            if !currentFolderNodes.isEmpty && folderId == nil {
                 return "我的书签"
             }
             return nil
@@ -445,13 +470,22 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
             guard indexPath.row < currentFolderNodes.count else { return }
             let item = currentFolderNodes[indexPath.row]
             if item.isFolder {
-                folderStack.append((id: item.id, title: item.title))
-                currentFolderId = item.id
-                updateNavigationBars()
-                loadData()
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                let subFolderVC = BrowserHistoryViewController(
+                    initialSegment: 0,
+                    folderId: item.id,
+                    folderTitle: item.title
+                )
+                subFolderVC.onSelectURL = onSelectURL
+                if let nav = navigationController {
+                    nav.pushViewController(subFolderVC, animated: true)
+                } else {
+                    let nav = UINavigationController(rootViewController: subFolderVC)
+                    present(nav, animated: true)
+                }
             } else {
                 guard let url = URL(string: item.urlString) else { return }
-                dismiss(animated: true) { [weak self] in
+                (navigationController ?? self).dismiss(animated: true) { [weak self] in
                     self?.onSelectURL?(url)
                 }
             }
@@ -459,7 +493,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
             guard indexPath.section < sections.count, indexPath.row < sections[indexPath.section].items.count else { return }
             let item = sections[indexPath.section].items[indexPath.row]
             guard let url = URL(string: item.urlString) else { return }
-            dismiss(animated: true) { [weak self] in
+            (navigationController ?? self).dismiss(animated: true) { [weak self] in
                 self?.onSelectURL?(url)
             }
         }
