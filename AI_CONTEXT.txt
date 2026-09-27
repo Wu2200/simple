@@ -2651,7 +2651,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
             let addButtonItem = UIBarButtonItem(image: UIImage(systemName: "plus"), menu: addMenu)
 
             let moreMenu = UIMenu(title: "", children: [
-                UIAction(title: "导出 HTML 书签 (Alook格式)", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
+                UIAction(title: "导出 HTML 书签", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
                     self?.exportAlookBookmarks()
                 },
                 UIAction(title: "导入 HTML 书签", image: UIImage(systemName: "square.and.arrow.down")) { [weak self] _ in
