@@ -1814,16 +1814,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let panel = CustomBottomSheetViewController(title: "", items: items, layout: .list)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                let rowHeight: CGFloat = 54
-                let totalHeight: CGFloat = CGFloat(items.count) * rowHeight + 40
+                let cardHeight: CGFloat = 52
+                let spacing: CGFloat = 10
+                let totalHeight: CGFloat = CGFloat(items.count) * (cardHeight + spacing) + 36
                 presentation.detents = [.custom { _ in totalHeight }]
-                presentation.prefersGrabberVisible = true
+                presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
         } else if #available(iOS 15.0, *) {
             if let presentation = panel.sheetPresentationController {
                 presentation.detents = [.medium()]
-                presentation.prefersGrabberVisible = true
+                presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
         }
@@ -1885,10 +1886,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         ))
 
         let panel = CustomBottomSheetViewController(title: script.name, items: items, layout: .list)
-        if #available(iOS 15.0, *) {
+        if #available(iOS 16.0, *) {
+            if let presentation = panel.sheetPresentationController {
+                let cardHeight: CGFloat = 52
+                let spacing: CGFloat = 10
+                let totalHeight: CGFloat = CGFloat(items.count) * (cardHeight + spacing) + 80
+                presentation.detents = [.custom { _ in min(totalHeight, 400) }]
+                presentation.prefersGrabberVisible = false
+                presentation.preferredCornerRadius = 24
+            }
+        } else if #available(iOS 15.0, *) {
             if let presentation = panel.sheetPresentationController {
                 presentation.detents = [.medium(), .large()]
-                presentation.prefersGrabberVisible = true
+                presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
         }
@@ -2081,7 +2091,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 let newState = !AdBlockManager.shared.isEnabled
                 AdBlockManager.shared.isEnabled = newState
                 AdBlockManager.shared.applyRules(to: self.activeTab.webView)
-                self.showToastNotice(newState ? "已开启广告过滤" : "已停用广告过滤")
             },
             longPressHandler: { [weak self] in
                 self?.showAdBlockerManager()
@@ -2223,7 +2232,27 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         group.notify(queue: .main) { [weak self] in
-            self?.activeTab.webView.reload()
+            guard let self = self else {
+                completion()
+                return
+            }
+
+            if options.contains(.loginAndData) {
+                for tab in self.tabs {
+                    if let host = tab.url?.host, !CookieLockStore.shared.isLocked(domain: host) {
+                        tab.webView.load(URLRequest(url: URL(string: "about:blank")!))
+                        tab.url = nil
+                        tab.title = "主页"
+                    }
+                }
+                self.showHomeUI()
+                self.persistCurrentSession()
+            } else if options.contains(.cache) {
+                if !self.activeTab.isDisplayingFailurePage && self.activeTab.url != nil {
+                    self.activeTab.webView.reload()
+                }
+            }
+
             completion()
         }
     }
