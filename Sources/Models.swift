@@ -137,6 +137,62 @@ final class BookmarkStore {
     }
 }
 
+struct HomeShortcutItem: Codable, Equatable {
+    var id: String
+    var title: String
+    var urlString: String
+}
+
+final class HomeShortcutStore {
+    static let shared = HomeShortcutStore()
+    private let key = "browser_home_shortcuts_v2"
+
+    private let defaultItems: [HomeShortcutItem] = [
+        HomeShortcutItem(id: "1", title: "百度", urlString: "https://www.baidu.com"),
+        HomeShortcutItem(id: "2", title: "必应", urlString: "https://www.bing.com"),
+        HomeShortcutItem(id: "3", title: "GitHub", urlString: "https://github.com"),
+        HomeShortcutItem(id: "4", title: "哔哩哔哩", urlString: "https://www.bilibili.com"),
+        HomeShortcutItem(id: "5", title: "知乎", urlString: "https://www.zhihu.com"),
+        HomeShortcutItem(id: "6", title: "掘金", urlString: "https://juejin.cn"),
+        HomeShortcutItem(id: "7", title: "维基百科", urlString: "https://zh.wikipedia.org"),
+        HomeShortcutItem(id: "8", title: "V2EX", urlString: "https://www.v2ex.com")
+    ]
+
+    private init() {}
+
+    func loadShortcuts() -> [HomeShortcutItem] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let items = try? JSONDecoder().decode([HomeShortcutItem].self, from: data),
+              !items.isEmpty else {
+            return defaultItems
+        }
+        return items
+    }
+
+    func addShortcut(title: String, urlString: String) {
+        var items = loadShortcuts()
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = cleanTitle.isEmpty ? (URL(string: urlString)?.host ?? urlString) : cleanTitle
+        items.removeAll { $0.urlString == urlString }
+        items.append(HomeShortcutItem(id: UUID().uuidString, title: resolvedTitle, urlString: urlString))
+        saveShortcuts(items)
+        if let url = URL(string: urlString), let host = url.host {
+            FaviconLoader.shared.preloadFavicon(for: host)
+        }
+    }
+
+    func deleteShortcut(id: String) {
+        var items = loadShortcuts()
+        items.removeAll { $0.id == id }
+        saveShortcuts(items)
+    }
+
+    private func saveShortcuts(_ items: [HomeShortcutItem]) {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+}
+
 struct CustomBottomSheetItem {
     let title: String
     var iconName: String? = nil
@@ -493,7 +549,7 @@ final class SearchHistoryStore {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         var history = getHistory()
-        history.removeAll { $0 == trimmed }
+        history.removeAll { $0.trimmed == trimmed }
         history.insert(trimmed, at: 0)
         if history.count > 100 { history = Array(history.prefix(100)) }
         UserDefaults.standard.set(history, forKey: key)
@@ -758,55 +814,94 @@ final class WebsiteCleaner {
     static let shared = WebsiteCleaner()
     private init() {}
 
-    func cleanCacheOnly(completion: (() -> Void)? = nil) {
+    func clean(
+        cache: Bool,
+        loginAndData: Bool,
+        completion: (() -> Void)? = nil
+    ) {
         URLCache.shared.removeAllCachedResponses()
-        let cacheTypes: Set<String> = [
-            WKWebsiteDataTypeDiskCache,
-            WKWebsiteDataTypeMemoryCache,
-            WKWebsiteDataTypeOfflineWebApplicationCache,
-            WKWebsiteDataTypeFetchCache
-        ]
 
-        if CookieLockStore.shared.getLockedDomains().isEmpty {
-            WKWebsiteDataStore.default().removeData(ofTypes: cacheTypes, modifiedSince: .distantPast) {
-                DispatchQueue.main.async { completion?() }
+        var types: Set<String> = []
+        if loginAndData {
+            types.formUnion(WKWebsiteDataStore.allWebsiteDataTypes())
+            HTTPCookieStorage.shared.removeCookies(since: .distantPast)
+        } else if cache {
+            types.formUnion([
+                WKWebsiteDataTypeDiskCache,
+                WKWebsiteDataTypeMemoryCache,
+                WKWebsiteDataTypeOfflineWebApplicationCache,
+                WKWebsiteDataTypeFetchCache
+            ])
+        }
+
+        guard !types.isEmpty else {
+            completion?()
+            return
+        }
+
+        let store = WKWebsiteDataStore.default()
+        let lockedDomains = CookieLockStore.shared.getLockedDomains()
+
+        if lockedDomains.isEmpty {
+            store.removeData(ofTypes: types, modifiedSince: .distantPast) {
+                if loginAndData {
+                    store.httpCookieStore.getAllCookies { cookies in
+                        let group = DispatchGroup()
+                        for c in cookies {
+                            group.enter()
+                            store.httpCookieStore.delete(c) {
+                                group.leave()
+                            }
+                        }
+                        group.notify(queue: .main) {
+                            completion?()
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async { completion?() }
+                }
             }
         } else {
-            let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-            WKWebsiteDataStore.default().fetchDataRecords(ofTypes: allTypes) { records in
+            store.fetchDataRecords(ofTypes: types) { records in
                 let unprotected = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
-                guard !unprotected.isEmpty else {
-                    DispatchQueue.main.async { completion?() }
-                    return
+                let group = DispatchGroup()
+
+                if !unprotected.isEmpty {
+                    group.enter()
+                    store.removeData(ofTypes: types, for: unprotected) {
+                        group.leave()
+                    }
                 }
-                WKWebsiteDataStore.default().removeData(ofTypes: cacheTypes, for: unprotected) {
-                    DispatchQueue.main.async { completion?() }
+
+                if loginAndData {
+                    group.enter()
+                    store.httpCookieStore.getAllCookies { cookies in
+                        let cookieGroup = DispatchGroup()
+                        for c in cookies where !CookieLockStore.shared.isLocked(domain: c.domain) {
+                            cookieGroup.enter()
+                            store.httpCookieStore.delete(c) {
+                                cookieGroup.leave()
+                            }
+                        }
+                        cookieGroup.notify(queue: .main) {
+                            group.leave()
+                        }
+                    }
+                }
+
+                group.notify(queue: .main) {
+                    completion?()
                 }
             }
         }
     }
 
-    func cleanUnprotectedLoginAndData(completion: (() -> Void)? = nil) {
-        URLCache.shared.removeAllCachedResponses()
-        HTTPCookieStorage.shared.removeCookies(since: .distantPast)
-        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+    func cleanCacheOnly(completion: (() -> Void)? = nil) {
+        clean(cache: true, loginAndData: false, completion: completion)
+    }
 
-        if CookieLockStore.shared.getLockedDomains().isEmpty {
-            WKWebsiteDataStore.default().removeData(ofTypes: allTypes, modifiedSince: .distantPast) {
-                DispatchQueue.main.async { completion?() }
-            }
-        } else {
-            WKWebsiteDataStore.default().fetchDataRecords(ofTypes: allTypes) { records in
-                let unprotected = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
-                guard !unprotected.isEmpty else {
-                    DispatchQueue.main.async { completion?() }
-                    return
-                }
-                WKWebsiteDataStore.default().removeData(ofTypes: allTypes, for: unprotected) {
-                    DispatchQueue.main.async { completion?() }
-                }
-            }
-        }
+    func cleanUnprotectedLoginAndData(completion: (() -> Void)? = nil) {
+        clean(cache: true, loginAndData: true, completion: completion)
     }
 
     func cleanSingleDomain(record: WKWebsiteDataRecord, cacheOnly: Bool, completion: (() -> Void)? = nil) {
@@ -821,9 +916,25 @@ final class WebsiteCleaner {
         } else {
             types = WKWebsiteDataStore.allWebsiteDataTypes()
         }
-        WKWebsiteDataStore.default().removeData(ofTypes: types, for: [record]) {
-            DispatchQueue.main.async {
-                completion?()
+        let store = WKWebsiteDataStore.default()
+        store.removeData(ofTypes: types, for: [record]) {
+            if !cacheOnly {
+                store.httpCookieStore.getAllCookies { cookies in
+                    let group = DispatchGroup()
+                    for c in cookies where c.domain.contains(record.displayName) || record.displayName.contains(c.domain) {
+                        group.enter()
+                        store.httpCookieStore.delete(c) {
+                            group.leave()
+                        }
+                    }
+                    group.notify(queue: .main) {
+                        completion?()
+                    }
+                }
+            } else {
+                DispatchQueue.main.async {
+                    completion?()
+                }
             }
         }
     }
