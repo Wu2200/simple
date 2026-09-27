@@ -7,6 +7,27 @@ import Foundation
 import UIKit
 import WebKit
 
+// MARK: - 自定义轻触反馈按钮
+open class TouchButton: UIButton {
+    public var hitTestInsets = UIEdgeInsets.zero
+
+    open override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if hitTestInsets == .zero {
+            return super.point(inside: point, with: event)
+        }
+        let hitFrame = bounds.inset(by: hitTestInsets)
+        return hitFrame.contains(point)
+    }
+
+    public override init(frame: CGRect) {
+        super.init(frame: frame)
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+}
+
 // MARK: - 书签模型（支持多级目录树）
 public struct BookmarkItem: Codable, Equatable {
     public let id: String
