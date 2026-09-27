@@ -195,35 +195,14 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
     }
 
     private func setupListLayout() {
-        let headerContainer = UIView()
-        headerContainer.translatesAutoresizingMaskIntoConstraints = false
+        let hasTitle = !titleString.isEmpty
 
         let grabber = UIView()
         grabber.translatesAutoresizingMaskIntoConstraints = false
         grabber.backgroundColor = .tertiaryLabel
         grabber.layer.cornerRadius = 2.5
         grabber.clipsToBounds = true
-
-        let titleLabel = UILabel()
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        titleLabel.textColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.26, green: 0.26, blue: 0.28, alpha: 1.0)
-        }
-        titleLabel.text = titleString
-
-        let closeButton = TouchButton()
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.tintColor = UIColor(red: 0.50, green: 0.50, blue: 0.53, alpha: 1.0)
-        closeButton.setImage(
-            UIImage(systemName: "xmark.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)),
-            for: .normal
-        )
-        closeButton.addTarget(self, action: #selector(handleDismiss), for: .touchUpInside)
-
-        headerContainer.addSubview(grabber)
-        headerContainer.addSubview(titleLabel)
-        headerContainer.addSubview(closeButton)
+        view.addSubview(grabber)
 
         let scrollView = UIScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -233,7 +212,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         let itemsStack = UIStackView()
         itemsStack.translatesAutoresizingMaskIntoConstraints = false
         itemsStack.axis = .vertical
-        itemsStack.spacing = 8
+        itemsStack.spacing = 2
 
         for (idx, item) in items.enumerated() {
             let card = createListCardButton(item: item, tag: idx)
@@ -241,33 +220,72 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         }
 
         scrollView.addSubview(itemsStack)
-        view.addSubview(headerContainer)
         view.addSubview(scrollView)
 
+        if hasTitle {
+            let headerContainer = UIView()
+            headerContainer.translatesAutoresizingMaskIntoConstraints = false
+
+            let titleLabel = UILabel()
+            titleLabel.translatesAutoresizingMaskIntoConstraints = false
+            titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+            titleLabel.textColor = UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.26, green: 0.26, blue: 0.28, alpha: 1.0)
+            }
+            titleLabel.text = titleString
+
+            let closeButton = TouchButton()
+            closeButton.translatesAutoresizingMaskIntoConstraints = false
+            closeButton.tintColor = UIColor(red: 0.50, green: 0.50, blue: 0.53, alpha: 1.0)
+            closeButton.setImage(
+                UIImage(systemName: "xmark.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)),
+                for: .normal
+            )
+            closeButton.addTarget(self, action: #selector(handleDismiss), for: .touchUpInside)
+
+            headerContainer.addSubview(titleLabel)
+            headerContainer.addSubview(closeButton)
+            view.addSubview(headerContainer)
+
+            NSLayoutConstraint.activate([
+                grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+                grabber.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                grabber.widthAnchor.constraint(equalToConstant: 36),
+                grabber.heightAnchor.constraint(equalToConstant: 5),
+
+                headerContainer.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 6),
+                headerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                headerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                headerContainer.heightAnchor.constraint(equalToConstant: 44),
+
+                titleLabel.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 20),
+                titleLabel.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor),
+
+                closeButton.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -16),
+                closeButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+                closeButton.widthAnchor.constraint(equalToConstant: 30),
+                closeButton.heightAnchor.constraint(equalToConstant: 30),
+
+                scrollView.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 6),
+                scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+                grabber.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                grabber.widthAnchor.constraint(equalToConstant: 36),
+                grabber.heightAnchor.constraint(equalToConstant: 5),
+
+                scrollView.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 14),
+                scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+            ])
+        }
+
         NSLayoutConstraint.activate([
-            headerContainer.topAnchor.constraint(equalTo: view.topAnchor),
-            headerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            headerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            headerContainer.heightAnchor.constraint(equalToConstant: 54),
-
-            grabber.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: 8),
-            grabber.centerXAnchor.constraint(equalTo: headerContainer.centerXAnchor),
-            grabber.widthAnchor.constraint(equalToConstant: 36),
-            grabber.heightAnchor.constraint(equalToConstant: 5),
-
-            titleLabel.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 20),
-            titleLabel.bottomAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: -8),
-
-            closeButton.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -16),
-            closeButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: 30),
-            closeButton.heightAnchor.constraint(equalToConstant: 30),
-
-            scrollView.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 6),
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-
             itemsStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             itemsStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
             itemsStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
@@ -279,67 +297,84 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
     private func createListCardButton(item: CustomBottomSheetItem, tag: Int) -> TouchButton {
         let card = TouchButton()
         card.translatesAutoresizingMaskIntoConstraints = false
-        card.backgroundColor = .secondarySystemGroupedBackground
-        card.layer.cornerRadius = 14
-        card.layer.cornerCurve = .continuous
-        card.clipsToBounds = true
+        card.backgroundColor = .clear
         card.tag = tag
-        card.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
 
-        if item.longPressHandler != nil {
-            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleItemLongPress(_:)))
-            longPress.minimumPressDuration = 0.45
-            card.addGestureRecognizer(longPress)
+        let isActionable = (item.handler != nil)
+        card.isUserInteractionEnabled = isActionable
+
+        if isActionable {
+            card.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
+            if item.longPressHandler != nil {
+                let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleItemLongPress(_:)))
+                longPress.minimumPressDuration = 0.45
+                card.addGestureRecognizer(longPress)
+            }
         }
 
         let iconImageView = UIImageView()
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.contentMode = .scaleAspectFit
-        let iconColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
+
+        let defaultIconColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
         }
+        let disabledColor: UIColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.70, alpha: 1.0) : UIColor(red: 0.32, green: 0.32, blue: 0.34, alpha: 1.0)
+        }
+
+        let resolvedIconColor = isActionable ? defaultIconColor : disabledColor
+
         if let img = item.customImage {
             iconImageView.image = img
         } else {
             let iconName = item.iconName ?? "doc.plaintext"
-            iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+            iconImageView.image = UIImage(
+                systemName: iconName,
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)
+            )
         }
-        iconImageView.tintColor = iconColor
+        iconImageView.tintColor = resolvedIconColor
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 15, weight: .regular)
-        label.textColor = item.isDestructive ? .systemRed : UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.26, green: 0.26, blue: 0.28, alpha: 1.0)
-        }
+        label.font = .systemFont(ofSize: 16.5, weight: .regular)
+        label.textColor = item.isDestructive ? .systemRed : (isActionable ? UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.90, alpha: 1.0) : UIColor(red: 0.20, green: 0.20, blue: 0.22, alpha: 1.0)
+        } : disabledColor)
         label.text = item.title
         label.numberOfLines = 1
 
-        let chevron = UIImageView(image: UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
+        let chevron = UIImageView(
+            image: UIImage(
+                systemName: "chevron.right",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+            )
+        )
         chevron.translatesAutoresizingMaskIntoConstraints = false
         chevron.tintColor = UIColor(red: 0.65, green: 0.65, blue: 0.68, alpha: 1.0)
-        chevron.isHidden = (item.handler == nil)
+        chevron.isHidden = !isActionable
 
         card.addSubview(iconImageView)
         card.addSubview(label)
         card.addSubview(chevron)
 
         NSLayoutConstraint.activate([
-            card.heightAnchor.constraint(equalToConstant: 48),
+            card.heightAnchor.constraint(equalToConstant: 54),
 
-            iconImageView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            iconImageView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
             iconImageView.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 22),
-            iconImageView.heightAnchor.constraint(equalToConstant: 22),
+            iconImageView.widthAnchor.constraint(equalToConstant: 24),
+            iconImageView.heightAnchor.constraint(equalToConstant: 24),
 
-            label.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 12),
-            label.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
+            label.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 14),
+            label.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -10),
             label.centerYAnchor.constraint(equalTo: card.centerYAnchor),
 
-            chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
             chevron.centerYAnchor.constraint(equalTo: card.centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 12),
-            chevron.heightAnchor.constraint(equalToConstant: 14)
+            chevron.heightAnchor.constraint(equalToConstant: 16)
         ])
 
         return card
