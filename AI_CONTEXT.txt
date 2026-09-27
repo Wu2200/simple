@@ -8402,8 +8402,7 @@ final class WebsiteCleaner {
         WKWebsiteDataTypeFetchCache
     ]
 
-    static let loginDataTypes: Set<String> = [
-        WKWebsiteDataTypeCookies,
+    static let nonCookieLoginDataTypes: Set<String> = [
         WKWebsiteDataTypeLocalStorage,
         WKWebsiteDataTypeIndexedDBDatabases,
         WKWebsiteDataTypeWebSQLDatabases,
@@ -8421,8 +8420,7 @@ final class WebsiteCleaner {
         let store = WKWebsiteDataStore.default()
         let group = DispatchGroup()
 
-        // 2. 勾选了网页缓存：所有网站（无论是否锁定）的网页缓存、图片临时文件全部无差别清空！
-        // 彻底解决锁定网站后缓存无限积攒占用空间的问题！
+        // 2. 勾选了网页缓存：所有网站（无论是否锁定）的网页缓存、图片临时文件全部无差别彻底清空！
         if cache {
             group.enter()
             store.removeData(ofTypes: Self.cacheDataTypes, modifiedSince: .distantPast) {
@@ -8434,7 +8432,7 @@ final class WebsiteCleaner {
         if loginAndData {
             group.enter()
 
-            // 清理系统 HTTPCookieStorage
+            // 清理系统 HTTPCookieStorage（排除锁定的 Cookie）
             if let sharedCookies = HTTPCookieStorage.shared.cookies {
                 for c in sharedCookies {
                     if !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) {
@@ -8443,8 +8441,8 @@ final class WebsiteCleaner {
                 }
             }
 
-            // 获取 WebKit 记录并按锁定状态精准过滤
-            store.fetchDataRecords(ofTypes: Self.loginDataTypes) { records in
+            // 获取 WebKit 记录并按锁定状态精准过滤（绝对不将 WKWebsiteDataTypeCookies 传给 removeData，避免 WebKit 底层级联清空 Cookie Jar）
+            store.fetchDataRecords(ofTypes: Self.nonCookieLoginDataTypes) { records in
                 let unprotectedRecords = records.filter { record in
                     !CookieLockStore.shared.isRecordLoginProtected(recordDisplayName: record.displayName)
                 }
@@ -8453,7 +8451,7 @@ final class WebsiteCleaner {
 
                 if !unprotectedRecords.isEmpty {
                     subGroup.enter()
-                    store.removeData(ofTypes: Self.loginDataTypes, for: unprotectedRecords) {
+                    store.removeData(ofTypes: Self.nonCookieLoginDataTypes, for: unprotectedRecords) {
                         subGroup.leave()
                     }
                 }
@@ -8495,11 +8493,17 @@ final class WebsiteCleaner {
     }
 
     func cleanSingleDomain(record: WKWebsiteDataRecord, cacheOnly: Bool, completion: (() -> Void)? = nil) {
-        let types: Set<String> = cacheOnly ? Self.cacheDataTypes : WKWebsiteDataStore.allWebsiteDataTypes()
         let store = WKWebsiteDataStore.default()
 
-        store.removeData(ofTypes: types, for: [record]) {
-            if !cacheOnly {
+        if cacheOnly {
+            store.removeData(ofTypes: Self.cacheDataTypes, for: [record]) {
+                DispatchQueue.main.async {
+                    completion?()
+                }
+            }
+        } else {
+            let nonCookieTypes = Self.nonCookieLoginDataTypes.union(Self.cacheDataTypes)
+            store.removeData(ofTypes: nonCookieTypes, for: [record]) {
                 store.httpCookieStore.getAllCookies { cookies in
                     let group = DispatchGroup()
                     for c in cookies where !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) &&
@@ -8513,16 +8517,12 @@ final class WebsiteCleaner {
                         completion?()
                     }
                 }
-            } else {
-                DispatchQueue.main.async {
-                    completion?()
-                }
             }
         }
     }
 }
 
-// MARK: - 高画质网站图标引擎 (原生 Apple Touch Icon 与多级高清拉取)
+// MARK: - 高画质网站图标引擎 (原生 Apple Touch Icon、高可用多源并发竞速与双向缓存)
 
 final class FaviconLoader {
     static let shared = FaviconLoader()
@@ -8536,8 +8536,11 @@ final class FaviconLoader {
         return dir
     }()
 
+    private var inFlightMap: [String: [(UIImage?) -> Void]] = [:]
+    private let mapLock = NSLock()
+
     private init() {
-        cache.countLimit = 200
+        cache.countLimit = 300
     }
 
     private func diskPath(for cleanDomain: String) -> URL {
@@ -8546,28 +8549,66 @@ final class FaviconLoader {
     }
 
     func cachedFavicon(for domain: String) -> UIImage? {
-        let cleanDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !cleanDomain.isEmpty else { return nil }
+        let clean = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty else { return nil }
 
-        if let cached = cache.object(forKey: cleanDomain as NSString) {
-            return cached
+        if let img = memoryOrDiskImage(for: clean) {
+            return img
         }
 
-        let fileURL = diskPath(for: cleanDomain)
-        if let data = try? Data(contentsOf: fileURL), let image = UIImage(data: data) {
-            cache.setObject(image, forKey: cleanDomain as NSString)
-            return image
+        if clean.hasPrefix("www.") {
+            let noWww = String(clean.dropFirst(4))
+            if let img = memoryOrDiskImage(for: noWww) {
+                cache.setObject(img, forKey: clean as NSString)
+                return img
+            }
+        } else {
+            let withWww = "www." + clean
+            if let img = memoryOrDiskImage(for: withWww) {
+                cache.setObject(img, forKey: clean as NSString)
+                return img
+            }
+        }
+
+        let root = DomainRelationEngine.rootDomain(of: clean)
+        if root != clean && !root.isEmpty, let img = memoryOrDiskImage(for: root) {
+            cache.setObject(img, forKey: clean as NSString)
+            return img
         }
 
         return nil
     }
 
+    private func memoryOrDiskImage(for domainKey: String) -> UIImage? {
+        if let cached = cache.object(forKey: domainKey as NSString) {
+            return cached
+        }
+        let fileURL = diskPath(for: domainKey)
+        if let data = try? Data(contentsOf: fileURL), let image = UIImage(data: data) {
+            cache.setObject(image, forKey: domainKey as NSString)
+            return image
+        }
+        return nil
+    }
+
     func saveHighResIcon(data: Data, for domain: String) {
-        let cleanDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !cleanDomain.isEmpty, let image = UIImage(data: data) else { return }
-        cache.setObject(image, forKey: cleanDomain as NSString)
-        let fileURL = diskPath(for: cleanDomain)
-        try? data.write(to: fileURL)
+        let clean = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty, let image = UIImage(data: data) else { return }
+
+        var domainsToSave: Set<String> = [clean]
+        let root = DomainRelationEngine.rootDomain(of: clean)
+        if !root.isEmpty { domainsToSave.insert(root) }
+        if clean.hasPrefix("www.") {
+            domainsToSave.insert(String(clean.dropFirst(4)))
+        } else {
+            domainsToSave.insert("www." + clean)
+        }
+
+        for d in domainsToSave {
+            cache.setObject(image, forKey: d as NSString)
+            let fileURL = diskPath(for: d)
+            try? data.write(to: fileURL)
+        }
     }
 
     func preloadFavicon(for domain: String) {
@@ -8586,51 +8627,116 @@ final class FaviconLoader {
             return
         }
 
-        let root = DomainRelationEngine.rootDomain(of: cleanDomain)
-
-        var candidateURLs: [URL] = []
-        if let u1 = URL(string: "https://\(cleanDomain)/apple-touch-icon.png") { candidateURLs.append(u1) }
-        if root != cleanDomain, let u2 = URL(string: "https://\(root)/apple-touch-icon.png") { candidateURLs.append(u2) }
-        if let u3 = URL(string: "https://icon.horse/icon/\(cleanDomain)") { candidateURLs.append(u3) }
-        if let u4 = URL(string: "https://www.google.com/s2/favicons?sz=256&domain=\(cleanDomain)") { candidateURLs.append(u4) }
-        if let u5 = URL(string: "https://\(cleanDomain)/favicon.ico") { candidateURLs.append(u5) }
-
-        fetchFirstValidImage(urls: candidateURLs, index: 0) { [weak self] image, data in
-            guard let self = self else {
-                completion(image)
-                return
-            }
-            if let image = image, let data = data {
-                self.cache.setObject(image, forKey: cleanDomain as NSString)
-                let fileURL = self.diskPath(for: cleanDomain)
-                try? data.write(to: fileURL)
-                DispatchQueue.main.async { completion(image) }
-            } else {
-                DispatchQueue.main.async { completion(nil) }
-            }
-        }
-    }
-
-    private func fetchFirstValidImage(urls: [URL], index: Int, completion: @escaping (UIImage?, Data?) -> Void) {
-        guard index < urls.count else {
-            completion(nil, nil)
+        mapLock.lock()
+        if inFlightMap[cleanDomain] != nil {
+            inFlightMap[cleanDomain]?.append(completion)
+            mapLock.unlock()
             return
         }
+        inFlightMap[cleanDomain] = [completion]
+        mapLock.unlock()
 
-        let targetURL = urls[index]
-        var request = URLRequest(url: targetURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 4.5)
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+        let root = DomainRelationEngine.rootDomain(of: cleanDomain)
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-               let data = data, data.count > 100,
-               let img = UIImage(data: data), img.size.width >= 16 {
-                completion(img, data)
+        var candidateURLs: [String] = []
+        candidateURLs.append("https://\(cleanDomain)/apple-touch-icon.png")
+        candidateURLs.append("https://\(cleanDomain)/favicon.ico")
+        if root != cleanDomain && !root.isEmpty {
+            candidateURLs.append("https://\(root)/apple-touch-icon.png")
+            candidateURLs.append("https://\(root)/favicon.ico")
+        }
+        // 高速国内免翻墙 CDN 聚合源（优先极速返回高质量图标）
+        candidateURLs.append("https://api.iowen.cn/favicon/\(cleanDomain).png")
+        candidateURLs.append("https://favicon.im/\(cleanDomain)?larger=true")
+        if root != cleanDomain && !root.isEmpty {
+            candidateURLs.append("https://api.iowen.cn/favicon/\(root).png")
+        }
+        // 国际备用源
+        candidateURLs.append("https://www.google.com/s2/favicons?sz=128&domain=\(cleanDomain)")
+
+        performConcurrentFetch(cleanDomain: cleanDomain, urls: candidateURLs)
+    }
+
+    private func performConcurrentFetch(cleanDomain: String, urls: [String]) {
+        var isFinished = false
+        var bestImage: UIImage?
+        var bestData: Data?
+        let session = URLSession.shared
+        let lock = NSLock()
+        let group = DispatchGroup()
+
+        func finish(with image: UIImage?, data: Data?) {
+            lock.lock()
+            if isFinished {
+                lock.unlock()
                 return
             }
+            isFinished = true
+            lock.unlock()
 
-            self?.fetchFirstValidImage(urls: urls, index: index + 1, completion: completion)
-        }.resume()
+            if let img = image, let data = data {
+                self.saveHighResIcon(data: data, for: cleanDomain)
+            }
+
+            self.mapLock.lock()
+            let callbacks = self.inFlightMap.removeValue(forKey: cleanDomain) ?? []
+            self.mapLock.unlock()
+
+            DispatchQueue.main.async {
+                for cb in callbacks {
+                    cb(image)
+                }
+            }
+        }
+
+        for urlString in urls {
+            guard let url = URL(string: urlString) else { continue }
+            group.enter()
+
+            var req = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 3.2)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+
+            session.dataTask(with: req) { data, response, _ in
+                defer { group.leave() }
+
+                lock.lock()
+                if isFinished {
+                    lock.unlock()
+                    return
+                }
+                lock.unlock()
+
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                      let data = data, data.count > 100,
+                      let img = UIImage(data: data), img.size.width >= 16 else {
+                    return
+                }
+
+                if img.size.width >= 48 {
+                    finish(with: img, data: data)
+                    return
+                }
+
+                lock.lock()
+                if bestImage == nil {
+                    bestImage = img
+                    bestData = data
+                }
+                lock.unlock()
+            }.resume()
+        }
+
+        group.notify(queue: .global()) {
+            lock.lock()
+            let finalImage = bestImage
+            let finalData = bestData
+            let done = isFinished
+            lock.unlock()
+
+            if !done {
+                finish(with: finalImage, data: finalData)
+            }
+        }
     }
 }
 ```
