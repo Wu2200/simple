@@ -32,6 +32,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     let id = UUID().uuidString
     let webView: WKWebView
     weak var delegate: TabItemDelegate?
+    var snapshot: UIImage?
 
     var title: String {
         return webView.title ?? ""
@@ -134,6 +135,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         // 动态注入/清除规则
     }
 
+    func takeSnapshot(completion: ((UIImage?) -> Void)? = nil) {
+        let config = WKSnapshotConfiguration()
+        webView.takeSnapshot(with: config) { [weak self] image, _ in
+            self?.snapshot = image
+            completion?(image)
+        }
+    }
+
     // MARK: - WKNavigationDelegate
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         delegate?.tabItemDidStartLoading(self)
@@ -143,6 +152,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         delegate?.tabItemDidFinishLoading(self)
         delegate?.tabDidUpdate(self)
+        takeSnapshot()
         if let host = webView.url?.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
@@ -256,7 +266,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func startRealDownload(url: URL, filename: String) {
-        let task = URLSession.shared.downloadTask(with: url) { [weak self] tempURL, _, _ in
+        let task = URLSession.shared.downloadTask(with: url) { tempURL, _, _ in
             guard let tempURL = tempURL else { return }
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             let downloadsDir = docs.appendingPathComponent("Downloads", isDirectory: true)
