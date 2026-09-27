@@ -12,7 +12,7 @@
     <key>CFBundleAllowMixedLocalizations</key>
     <true/>
     <key>CFBundleDisplayName</key>
-    <string>简阅浏览器</string>
+    <string>浏览器</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
