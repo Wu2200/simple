@@ -4607,10 +4607,12 @@ final class AddressCalloutMenuView: UIView {
 
     private func makeBtn(title: String, action: Selector) -> UIButton {
         let btn = UIButton(type: .system)
-        btn.setTitle(title, for: .normal)
-        btn.setTitleColor(UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0), for: .normal)
+        var config = UIButton.Configuration.plain()
+        config.title = title
+        config.baseForegroundColor = UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
+        btn.configuration = config
         btn.titleLabel?.font = .systemFont(ofSize: 14.5, weight: .regular)
-        btn.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
         btn.addTarget(self, action: action, for: .touchUpInside)
         return btn
     }
