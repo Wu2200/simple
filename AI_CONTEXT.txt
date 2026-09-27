@@ -9484,6 +9484,62 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
+    private func extractHighResFaviconIfNeeded() {
+        guard let currentHost = url?.host, !currentHost.isEmpty else { return }
+
+        let js = """
+        (function() {
+            try {
+                var links = document.querySelectorAll("link[rel*='icon'], link[rel*='apple-touch-icon']");
+                var bestHref = null;
+                var bestScore = -1;
+
+                for (var i = 0; i < links.length; i++) {
+                    var el = links[i];
+                    var rel = (el.getAttribute('rel') || '').toLowerCase();
+                    var href = el.href;
+                    if (!href) continue;
+
+                    var score = 0;
+                    if (rel.indexOf('apple-touch-icon') !== -1) {
+                        score += 1000;
+                    }
+                    var sizes = el.getAttribute('sizes') || '';
+                    var match = sizes.match(/(\\d+)x(\\d+)/i);
+                    if (match) {
+                        var w = parseInt(match[1], 10);
+                        score += w;
+                    }
+
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestHref = href;
+                    }
+                }
+                return bestHref;
+            } catch(e) {
+                return null;
+            }
+        })();
+        """
+
+        webView.evaluateJavaScript(js) { result, _ in
+            guard let iconURLString = result as? String, let iconURL = URL(string: iconURLString) else { return }
+
+            var req = URLRequest(url: iconURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 5)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+
+            URLSession.shared.dataTask(with: req) { data, response, _ in
+                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                   let data = data, data.count > 100,
+                   let img = UIImage(data: data), img.size.width >= 24 {
+                    FaviconLoader.shared.saveHighResIcon(data: data, for: currentHost)
+                    NotificationCenter.default.post(name: NSNotification.Name("FaviconUpdatedNotification"), object: currentHost)
+                }
+            }.resume()
+        }
+    }
+
     func injectAndRunUserScripts() {
         applyDesktopViewAdaptationIfNeeded()
         injectInlineVideoHelper()
@@ -9714,6 +9770,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             hasInjectedScriptsForCurrentPage = true
             injectAndRunUserScripts()
         }
+        extractHighResFaviconIfNeeded()
         DispatchQueue.main.async { [weak webView] in
             webView?.setNeedsLayout()
             webView?.layoutIfNeeded()
