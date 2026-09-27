@@ -5091,11 +5091,11 @@ final class CleanDataSelectionViewController: UIViewController, UITableViewDataS
                 titleText = "网页缓存文件"
                 option = .cache
             case 1:
-                titleText = "登录与本地数据"
-                option = .loginAndData
-            case 2:
                 titleText = "搜索与浏览历史记录"
                 option = .searchHistory
+            case 2:
+                titleText = "登录与本地数据"
+                option = .loginAndData
             default:
                 titleText = "用户脚本缓存数据"
                 option = .scriptData
@@ -5119,8 +5119,8 @@ final class CleanDataSelectionViewController: UIViewController, UITableViewDataS
             let option: CleanOption
             switch indexPath.row {
             case 0: option = .cache
-            case 1: option = .loginAndData
-            case 2: option = .searchHistory
+            case 1: option = .searchHistory
+            case 2: option = .loginAndData
             default: option = .scriptData
             }
 
