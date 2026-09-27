@@ -1170,6 +1170,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
         isShowingLongPressMenu = true
+        view.endEditing(true)
 
         let currentText: String
         if let url = activeTab.url {
@@ -2000,9 +2001,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let panel = CustomBottomSheetViewController(title: "", items: items, layout: .list)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                let cardHeight: CGFloat = 58
-                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + 40
-                presentation.detents = [.custom { _ in min(totalHeight, 350) }]
+                let cardHeight: CGFloat = 52
+                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + 36
+                presentation.detents = [.custom { _ in min(totalHeight, 320) }]
                 presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
@@ -2073,9 +2074,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let panel = CustomBottomSheetViewController(title: script.name, items: items, layout: .list)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                let cardHeight: CGFloat = 58
-                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + 80
-                presentation.detents = [.custom { _ in min(totalHeight, 400) }]
+                let cardHeight: CGFloat = 52
+                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + 70
+                presentation.detents = [.custom { _ in min(totalHeight, 380) }]
                 presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
@@ -2170,6 +2171,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(nav, animated: true)
     }
 
+    private func showDownloadManager() {
+        dismissKeyboard()
+        let vc = DownloadManagerViewController()
+        let nav = UINavigationController(rootViewController: vc)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true)
+    }
+
     private func handleAddAction() {
         guard let url = activeTab.url else {
             showToastNotice("主页无需添加")
@@ -2230,7 +2239,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 2. 电脑版 (长按进入标识设置)
+        // 2. 下载管理 (放在原电脑版位置)
+        items.append(CustomBottomSheetItem(
+            title: "下载管理",
+            iconName: "arrow.down.circle",
+            dismissOnTap: true,
+            handler: { [weak self] in
+                self?.showDownloadManager()
+            }
+        ))
+
+        // 3. 电脑版 (放在原扩展脚本位置，长按进入标识设置)
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
             title: isDesktop ? "移动版" : "电脑版",
@@ -2249,16 +2268,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             },
             longPressHandler: { [weak self] in
                 self?.showUserAgentManager()
-            }
-        ))
-
-        // 3. 扩展脚本
-        items.append(CustomBottomSheetItem(
-            title: "扩展脚本",
-            iconName: "puzzlepiece.extension",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showPluginPanel()
             }
         ))
 
@@ -2287,7 +2296,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 6. 全屏浏览 (移动到原标识设置位置)
+        // 6. 全屏浏览
         items.append(CustomBottomSheetItem(
             title: isFullscreen ? "退出全屏" : "全屏浏览",
             iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
@@ -2298,7 +2307,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 7. 广告过滤 (与清除数据交换位置)
+        // 7. 广告过滤
         let isAdBlockOn = AdBlockManager.shared.isEnabled
         items.append(CustomBottomSheetItem(
             title: "广告过滤",
@@ -2316,7 +2325,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 8. 清除数据 (与广告过滤交换位置)
+        // 8. 清除数据
         items.append(CustomBottomSheetItem(
             title: "清除数据",
             iconName: "trash",
@@ -2327,7 +2336,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         ))
 
         // Page 2: Secondary items
-        // 9. 标识设置 (移动到第二页)
+        // 9. 扩展脚本 (由第一页移入第二页)
+        items.append(CustomBottomSheetItem(
+            title: "扩展脚本",
+            iconName: "puzzlepiece.extension",
+            dismissOnTap: true,
+            handler: { [weak self] in
+                self?.showPluginPanel()
+            }
+        ))
+
+        // 10. 标识设置
         items.append(CustomBottomSheetItem(
             title: "标识设置",
             iconName: "slider.horizontal.3",
@@ -2337,7 +2356,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 10. 搜索引擎
+        // 11. 搜索引擎
         let currentEngine = SearchEngineStore.shared.currentEngine
         items.append(CustomBottomSheetItem(
             title: currentEngine.name,
@@ -2348,7 +2367,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 11. 提取正文
+        // 12. 提取正文
         items.append(CustomBottomSheetItem(
             title: "提取正文",
             iconName: "doc.text.magnifyingglass",
@@ -2449,6 +2468,139 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         group.notify(queue: .main) {
             completion()
         }
+    }
+}
+
+final class DownloadManagerViewController: UITableViewController, UIDocumentInteractionControllerDelegate {
+    private struct DownloadedFile {
+        let name: String
+        let url: URL
+        let sizeString: String
+        let dateString: String
+    }
+
+    private var files: [DownloadedFile] = []
+    private var docController: UIDocumentInteractionController?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "下载管理"
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "DownloadFileCell")
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleClose))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "清空", style: .plain, target: self, action: #selector(handleClearAll))
+        loadDownloadedFiles()
+    }
+
+    @objc private func handleClose() {
+        dismiss(animated: true)
+    }
+
+    private func getDownloadsDirectory() -> URL {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let downloads = docs.appendingPathComponent("Downloads", isDirectory: true)
+        if !fm.fileExists(atPath: downloads.path) {
+            try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
+        }
+        return downloads
+    }
+
+    private func loadDownloadedFiles() {
+        let fm = FileManager.default
+        var list: [DownloadedFile] = []
+        let dirs = [getDownloadsDirectory(), fm.urls(for: .documentDirectory, in: .userDomainMask)[0]]
+
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm"
+
+        for dir in dirs {
+            if let urls = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey], options: .skipsHiddenFiles) {
+                for url in urls {
+                    let vals = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+                    if vals?.isDirectory == true { continue }
+
+                    let size = vals?.fileSize ?? 0
+                    let date = vals?.contentModificationDate ?? Date()
+                    let sizeStr = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+                    let dateStr = df.string(from: date)
+
+                    list.append(DownloadedFile(name: url.lastPathComponent, url: url, sizeString: sizeStr, dateString: dateStr))
+                }
+            }
+        }
+
+        self.files = list
+        tableView.reloadData()
+    }
+
+    @objc private func handleClearAll() {
+        guard !files.isEmpty else { return }
+        let alert = UIAlertController(title: "清空下载文件", message: "确定要删除所有已下载的文件吗？", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
+            guard let self = self else { return }
+            let fm = FileManager.default
+            for f in self.files {
+                try? fm.removeItem(at: f.url)
+            }
+            self.loadDownloadedFiles()
+        })
+        present(alert, animated: true)
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        files.count
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "DownloadFileCell", for: indexPath)
+        let item = files[indexPath.row]
+
+        var content = cell.defaultContentConfiguration()
+        content.text = item.name
+        content.secondaryText = "\(item.sizeString) • \(item.dateString)"
+        content.image = UIImage(systemName: "doc.fill")
+        content.imageProperties.tintColor = .systemBlue
+        content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
+        cell.contentConfiguration = content
+        cell.accessoryType = .disclosureIndicator
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row < files.count else { return }
+        let file = files[indexPath.row]
+
+        docController = UIDocumentInteractionController(url: file.url)
+        docController?.delegate = self
+        if !docController!.presentPreview(animated: true) {
+            docController?.presentOptionsMenu(from: view.bounds, in: view, animated: true)
+        }
+    }
+
+    func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
+        self
+    }
+
+    override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard indexPath.row < files.count else { return nil }
+        let file = files[indexPath.row]
+
+        let deleteAction = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
+            try? FileManager.default.removeItem(at: file.url)
+            self?.loadDownloadedFiles()
+            completion(true)
+        }
+
+        let shareAction = UIContextualAction(style: .normal, title: "共享") { [weak self] _, _, completion in
+            let activity = UIActivityViewController(activityItems: [file.url], applicationActivities: nil)
+            self?.present(activity, animated: true)
+            completion(true)
+        }
+        shareAction.backgroundColor = .systemBlue
+
+        return UISwipeActionsConfiguration(actions: [deleteAction, shareAction])
     }
 }
 
