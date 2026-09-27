@@ -50,7 +50,7 @@ final class AdBlockManager {
 
     private init() {
         if UserDefaults.standard.object(forKey: enabledKey) == nil {
-            UserDefaults.standard.set(true, enabledKey)
+            UserDefaults.standard.set(true, forKey: enabledKey)
         }
 
         metadataBySource = loadMetadata()
