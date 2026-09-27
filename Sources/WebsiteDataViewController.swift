@@ -140,7 +140,11 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
     }
 
     @objc private func handleDone() {
-        dismiss(animated: true)
+        if let nav = navigationController, nav.viewControllers.count > 1 {
+            nav.popViewController(animated: true)
+        } else {
+            dismiss(animated: true)
+        }
     }
 
     @objc private func handleRemoveAction() {
@@ -772,7 +776,11 @@ final class UserAgentManagerViewController: UITableViewController {
     }
 
     @objc private func handleDone() {
-        dismiss(animated: true)
+        if let nav = navigationController, nav.viewControllers.count > 1 {
+            nav.popViewController(animated: true)
+        } else {
+            dismiss(animated: true)
+        }
     }
 
     @objc private func handleAddCustomUA() {
