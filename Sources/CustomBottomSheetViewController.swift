@@ -2,11 +2,12 @@ import UIKit
 
 final class CustomBottomSheetViewController: UIViewController, UIScrollViewDelegate {
     private let titleString: String
-    private let items: [CustomBottomSheetItem]
+    private var items: [CustomBottomSheetItem]
     private let layout: CustomBottomSheetLayout
 
     private var pageControl: UIPageControl?
     private var pagedScrollView: UIScrollView?
+    private var gridButtons: [GridItemButton] = []
 
     init(title: String, items: [CustomBottomSheetItem], layout: CustomBottomSheetLayout = .list) {
         self.titleString = title
@@ -53,7 +54,9 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         pc.currentPage = 0
         pc.hidesForSinglePage = true
         pc.pageIndicatorTintColor = .tertiaryLabel
-        pc.currentPageIndicatorTintColor = .label
+        pc.currentPageIndicatorTintColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
+        }
         pc.isUserInteractionEnabled = true
         pc.addTarget(self, action: #selector(handlePageControlChange(_:)), for: .valueChanged)
         self.pageControl = pc
@@ -61,7 +64,9 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
 
         let collapseButton = TouchButton()
         collapseButton.translatesAutoresizingMaskIntoConstraints = false
-        collapseButton.tintColor = .secondaryLabel
+        collapseButton.tintColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.65, alpha: 1.0) : UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
+        }
         collapseButton.setImage(
             UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)),
             for: .normal
@@ -71,21 +76,21 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         view.addSubview(collapseButton)
 
         NSLayoutConstraint.activate([
-            grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
             grabber.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             grabber.widthAnchor.constraint(equalToConstant: 36),
             grabber.heightAnchor.constraint(equalToConstant: 5),
 
-            scrollView.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 14),
+            scrollView.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 18),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.heightAnchor.constraint(equalToConstant: 162),
+            scrollView.heightAnchor.constraint(equalToConstant: 168),
 
             pc.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: 4),
             pc.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            pc.heightAnchor.constraint(equalToConstant: (totalPages > 1 ? 18 : 0)),
+            pc.heightAnchor.constraint(equalToConstant: (totalPages > 1 ? 16 : 0)),
 
-            collapseButton.topAnchor.constraint(equalTo: pc.bottomAnchor, constant: 4),
+            collapseButton.topAnchor.constraint(equalTo: pc.bottomAnchor, constant: 2),
             collapseButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             collapseButton.heightAnchor.constraint(equalToConstant: 32),
             collapseButton.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -2)
@@ -125,7 +130,9 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             for i in 0..<4 {
                 if i < pageItems.count {
                     let globalIndex = startIndex + i
-                    row1.addArrangedSubview(createGridItemButton(item: pageItems[i], tag: globalIndex))
+                    let btn = createGridItemButton(item: pageItems[i], tag: globalIndex)
+                    gridButtons.append(btn)
+                    row1.addArrangedSubview(btn)
                 } else {
                     let spacer = UIView()
                     row1.addArrangedSubview(spacer)
@@ -135,7 +142,9 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             for i in 4..<8 {
                 if i < pageItems.count {
                     let globalIndex = startIndex + i
-                    row2.addArrangedSubview(createGridItemButton(item: pageItems[i], tag: globalIndex))
+                    let btn = createGridItemButton(item: pageItems[i], tag: globalIndex)
+                    gridButtons.append(btn)
+                    row2.addArrangedSubview(btn)
                 } else {
                     let spacer = UIView()
                     row2.addArrangedSubview(spacer)
@@ -159,11 +168,9 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         scrollView.contentLayoutGuide.trailingAnchor.constraint(equalTo: previousPageAnchor).isActive = true
     }
 
-    private func createGridItemButton(item: CustomBottomSheetItem, tag: Int) -> TouchButton {
-        let button = TouchButton()
+    private func createGridItemButton(item: CustomBottomSheetItem, tag: Int) -> GridItemButton {
+        let button = GridItemButton(item: item, tag: tag)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.backgroundColor = .clear
-        button.tag = tag
         button.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
 
         if item.longPressHandler != nil {
@@ -171,81 +178,6 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             longPress.minimumPressDuration = 0.45
             button.addGestureRecognizer(longPress)
         }
-
-        let iconContainer = UIView()
-        iconContainer.translatesAutoresizingMaskIntoConstraints = false
-        iconContainer.isUserInteractionEnabled = false
-
-        let iconImageView = UIImageView()
-        iconImageView.translatesAutoresizingMaskIntoConstraints = false
-        iconImageView.contentMode = .scaleAspectFit
-        let iconName = item.iconName ?? "circle.grid.2x2"
-        iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 25, weight: .regular))
-        iconImageView.tintColor = item.isDestructive ? .systemRed : .label
-        iconImageView.isUserInteractionEnabled = false
-        iconContainer.addSubview(iconImageView)
-
-        NSLayoutConstraint.activate([
-            iconImageView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
-            iconImageView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 28),
-            iconImageView.heightAnchor.constraint(equalToConstant: 28)
-        ])
-
-        if let isOn = item.isSwitchOn {
-            let switchPill = UIView()
-            switchPill.translatesAutoresizingMaskIntoConstraints = false
-            switchPill.backgroundColor = isOn ? .systemBlue : .tertiarySystemFill
-            switchPill.layer.cornerRadius = 6
-            switchPill.clipsToBounds = true
-            switchPill.isUserInteractionEnabled = false
-
-            let knob = UIView()
-            knob.translatesAutoresizingMaskIntoConstraints = false
-            knob.backgroundColor = .white
-            knob.layer.cornerRadius = 4.5
-            knob.clipsToBounds = true
-            knob.isUserInteractionEnabled = false
-            switchPill.addSubview(knob)
-
-            iconContainer.addSubview(switchPill)
-            NSLayoutConstraint.activate([
-                switchPill.widthAnchor.constraint(equalToConstant: 22),
-                switchPill.heightAnchor.constraint(equalToConstant: 12),
-                switchPill.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: -6),
-                switchPill.bottomAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: -1),
-
-                knob.widthAnchor.constraint(equalToConstant: 9),
-                knob.heightAnchor.constraint(equalToConstant: 9),
-                knob.centerYAnchor.constraint(equalTo: switchPill.centerYAnchor),
-                isOn ? knob.trailingAnchor.constraint(equalTo: switchPill.trailingAnchor, constant: -1.5)
-                     : knob.leadingAnchor.constraint(equalTo: switchPill.leadingAnchor, constant: 1.5)
-            ])
-        }
-
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 12, weight: .regular)
-        label.textColor = item.isDestructive ? .systemRed : .label
-        label.text = item.title
-        label.textAlignment = .center
-        label.numberOfLines = 1
-        label.isUserInteractionEnabled = false
-
-        button.addSubview(iconContainer)
-        button.addSubview(label)
-
-        NSLayoutConstraint.activate([
-            iconContainer.topAnchor.constraint(equalTo: button.topAnchor, constant: 6),
-            iconContainer.centerXAnchor.constraint(equalTo: button.centerXAnchor),
-            iconContainer.heightAnchor.constraint(equalToConstant: 34),
-            iconContainer.widthAnchor.constraint(equalToConstant: 50),
-
-            label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 6),
-            label.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 4),
-            label.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -4),
-            label.bottomAnchor.constraint(lessThanOrEqualTo: button.bottomAnchor, constant: -4)
-        ])
 
         return button
     }
@@ -275,12 +207,14 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         let titleLabel = UILabel()
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        titleLabel.textColor = .label
+        titleLabel.textColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.26, green: 0.26, blue: 0.28, alpha: 1.0)
+        }
         titleLabel.text = titleString
 
         let closeButton = TouchButton()
         closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.tintColor = .secondaryLabel
+        closeButton.tintColor = UIColor(red: 0.50, green: 0.50, blue: 0.53, alpha: 1.0)
         closeButton.setImage(
             UIImage(systemName: "xmark.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)),
             for: .normal
@@ -362,20 +296,24 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.contentMode = .scaleAspectFit
         let iconName = item.iconName ?? "doc.plaintext"
-        let iconColor: UIColor = item.isDestructive ? .systemRed : .label
+        let iconColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
+        }
         iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
         iconImageView.tintColor = iconColor
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.font = .systemFont(ofSize: 15, weight: .regular)
-        label.textColor = item.isDestructive ? .systemRed : .label
+        label.textColor = item.isDestructive ? .systemRed : UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.26, green: 0.26, blue: 0.28, alpha: 1.0)
+        }
         label.text = item.title
         label.numberOfLines = 1
 
         let chevron = UIImageView(image: UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
         chevron.translatesAutoresizingMaskIntoConstraints = false
-        chevron.tintColor = .tertiaryLabel
+        chevron.tintColor = UIColor(red: 0.65, green: 0.65, blue: 0.68, alpha: 1.0)
         chevron.isHidden = (item.handler == nil)
 
         card.addSubview(iconImageView)
@@ -419,7 +357,19 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
     }
 
     @objc private func handleItemTap(_ sender: UIButton) {
-        let item = items[sender.tag]
+        if let gridBtn = sender as? GridItemButton, gridBtn.item.isSwitchOn != nil, !gridBtn.item.dismissOnTap {
+            let currentState = gridBtn.item.isSwitchOn ?? false
+            let newState = !currentState
+            gridBtn.updateSwitchVisual(isOn: newState, animated: true)
+            if sender.tag < items.count {
+                items[sender.tag].isSwitchOn = newState
+            }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            gridBtn.item.handler?()
+            return
+        }
+
+        let item = (sender as? GridItemButton)?.item ?? items[sender.tag]
         dismiss(animated: true) {
             item.handler?()
         }
@@ -427,5 +377,149 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
 
     @objc private func handleDismiss() {
         dismiss(animated: true)
+    }
+}
+
+final class GridItemButton: TouchButton {
+    var item: CustomBottomSheetItem
+    private(set) var switchPill: UIView?
+    private(set) var knob: UIView?
+    private var knobLeadingConstraint: NSLayoutConstraint?
+    private var knobTrailingConstraint: NSLayoutConstraint?
+
+    init(item: CustomBottomSheetItem, tag: Int) {
+        self.item = item
+        super.init(frame: .zero)
+        self.tag = tag
+        setupContent()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func setupContent() {
+        let iconColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
+        }
+        let textColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.26, green: 0.26, blue: 0.28, alpha: 1.0)
+        }
+
+        let iconContainer = UIView()
+        iconContainer.translatesAutoresizingMaskIntoConstraints = false
+        iconContainer.isUserInteractionEnabled = false
+
+        let iconImageView = UIImageView()
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        iconImageView.contentMode = .scaleAspectFit
+        let iconName = item.iconName ?? "circle.grid.2x2"
+        iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular))
+        iconImageView.tintColor = iconColor
+        iconImageView.isUserInteractionEnabled = false
+        iconContainer.addSubview(iconImageView)
+
+        let hasSwitch = (item.isSwitchOn != nil)
+
+        NSLayoutConstraint.activate([
+            iconImageView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor, constant: hasSwitch ? -6 : 0),
+            iconImageView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
+            iconImageView.widthAnchor.constraint(equalToConstant: 24),
+            iconImageView.heightAnchor.constraint(equalToConstant: 24)
+        ])
+
+        if let isOn = item.isSwitchOn {
+            let pill = UIView()
+            pill.translatesAutoresizingMaskIntoConstraints = false
+            pill.backgroundColor = isOn ? .systemBlue : UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(white: 0.35, alpha: 1.0) : UIColor(red: 0.84, green: 0.84, blue: 0.86, alpha: 1.0)
+            }
+            pill.layer.cornerRadius = 4.75
+            pill.clipsToBounds = true
+            pill.isUserInteractionEnabled = false
+            self.switchPill = pill
+
+            let knobView = UIView()
+            knobView.translatesAutoresizingMaskIntoConstraints = false
+            knobView.backgroundColor = .white
+            knobView.layer.cornerRadius = 3.5
+            knobView.layer.shadowColor = UIColor.black.cgColor
+            knobView.layer.shadowOpacity = 0.12
+            knobView.layer.shadowRadius = 1
+            knobView.layer.shadowOffset = CGSize(width: 0, height: 1)
+            knobView.clipsToBounds = false
+            knobView.isUserInteractionEnabled = false
+            pill.addSubview(knobView)
+            self.knob = knobView
+
+            iconContainer.addSubview(pill)
+
+            let leadingCon = knobView.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 1)
+            let trailingCon = knobView.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -1)
+            self.knobLeadingConstraint = leadingCon
+            self.knobTrailingConstraint = trailingCon
+
+            if isOn {
+                trailingCon.isActive = true
+            } else {
+                leadingCon.isActive = true
+            }
+
+            NSLayoutConstraint.activate([
+                pill.widthAnchor.constraint(equalToConstant: 16),
+                pill.heightAnchor.constraint(equalToConstant: 9.5),
+                pill.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 3),
+                pill.bottomAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: -0.5),
+
+                knobView.widthAnchor.constraint(equalToConstant: 7),
+                knobView.heightAnchor.constraint(equalToConstant: 7),
+                knobView.centerYAnchor.constraint(equalTo: pill.centerYAnchor)
+            ])
+        }
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 11.5, weight: .regular)
+        label.textColor = textColor
+        label.text = item.title
+        label.textAlignment = .center
+        label.numberOfLines = 1
+        label.isUserInteractionEnabled = false
+
+        addSubview(iconContainer)
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            iconContainer.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            iconContainer.centerXAnchor.constraint(equalTo: centerXAnchor),
+            iconContainer.heightAnchor.constraint(equalToConstant: 32),
+            iconContainer.widthAnchor.constraint(equalToConstant: 48),
+
+            label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 5),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            label.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -2)
+        ])
+    }
+
+    func updateSwitchVisual(isOn: Bool, animated: Bool = true) {
+        item.isSwitchOn = isOn
+        let block = {
+            self.switchPill?.backgroundColor = isOn ? .systemBlue : UIColor { trait in
+                trait.userInterfaceStyle == .dark ? UIColor(white: 0.35, alpha: 1.0) : UIColor(red: 0.84, green: 0.84, blue: 0.86, alpha: 1.0)
+            }
+            if isOn {
+                self.knobLeadingConstraint?.isActive = false
+                self.knobTrailingConstraint?.isActive = true
+            } else {
+                self.knobTrailingConstraint?.isActive = false
+                self.knobLeadingConstraint?.isActive = true
+            }
+            self.switchPill?.layoutIfNeeded()
+        }
+
+        if animated {
+            UIView.animate(withDuration: 0.18, delay: 0, options: .curveEaseInOut, animations: block)
+        } else {
+            block()
+        }
     }
 }
