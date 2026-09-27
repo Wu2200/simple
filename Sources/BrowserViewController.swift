@@ -75,6 +75,23 @@ final class AddressTextField: UITextField {
     }
 }
 
+final class GradientView: UIView {
+    override class var layerClass: AnyClass {
+        CAGradientLayer.self
+    }
+
+    var gradientLayer: CAGradientLayer {
+        layer as! CAGradientLayer
+    }
+}
+
+private struct HomeShortcut {
+    let title: String
+    let urlString: String
+    let iconName: String
+    let iconColor: UIColor
+}
+
 final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate, UIGestureRecognizerDelegate {
     private var tabs: [TabItem] = []
     private var activeTabIndex = 0
@@ -87,6 +104,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     private let webContainer = UIView()
     private let homeView = UIView()
+    private let homeScrollView = UIScrollView()
+    private var homeSearchEngineBadge: UILabel?
+
     private let failureOverlayView = UIView()
     private let failureTitleLabel = UILabel()
     private let failureReasonLabel = UILabel()
@@ -117,6 +137,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private var webBottomPanelConstraint: NSLayoutConstraint?
     private var webBottomFullscreenConstraint: NSLayoutConstraint?
 
+    private let homeShortcuts: [HomeShortcut] = [
+        HomeShortcut(title: "百度", urlString: "https://www.baidu.com", iconName: "magnifyingglass", iconColor: .systemBlue),
+        HomeShortcut(title: "必应", urlString: "https://www.bing.com", iconName: "globe.asia.australia.fill", iconColor: .systemTeal),
+        HomeShortcut(title: "GitHub", urlString: "https://github.com", iconName: "chevron.left.forwardslash.chevron.right", iconColor: .label),
+        HomeShortcut(title: "哔哩哔哩", urlString: "https://www.bilibili.com", iconName: "play.tv.fill", iconColor: .systemPink),
+        HomeShortcut(title: "知乎", urlString: "https://www.zhihu.com", iconName: "text.book.closed.fill", iconColor: .systemCyan),
+        HomeShortcut(title: "掘金", urlString: "https://juejin.cn", iconName: "flame.fill", iconColor: .systemOrange),
+        HomeShortcut(title: "维基百科", urlString: "https://zh.wikipedia.org", iconName: "character.book.closed.fill", iconColor: .systemIndigo),
+        HomeShortcut(title: "V2EX", urlString: "https://www.v2ex.com", iconName: "bubble.left.and.bubble.right.fill", iconColor: .systemGreen)
+    ]
+
     override var preferredStatusBarStyle: UIStatusBarStyle {
         .darkContent
     }
@@ -144,6 +175,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         EyeProtectionManager.shared.restoreState(in: view.window)
+        homeSearchEngineBadge?.text = "  \(SearchEngineStore.shared.currentEngine.name)  "
     }
 
     override func didReceiveMemoryWarning() {
@@ -295,99 +327,441 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func configureHomeView() {
-        let symbolView = UIImageView()
-        symbolView.translatesAutoresizingMaskIntoConstraints = false
-        symbolView.image = UIImage(
-            systemName: "safari",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 36, weight: .regular)
+        homeScrollView.translatesAutoresizingMaskIntoConstraints = false
+        homeScrollView.alwaysBounceVertical = true
+        homeScrollView.showsVerticalScrollIndicator = false
+        homeView.addSubview(homeScrollView)
+
+        NSLayoutConstraint.activate([
+            homeScrollView.topAnchor.constraint(equalTo: homeView.topAnchor),
+            homeScrollView.leadingAnchor.constraint(equalTo: homeView.leadingAnchor),
+            homeScrollView.trailingAnchor.constraint(equalTo: homeView.trailingAnchor),
+            homeScrollView.bottomAnchor.constraint(equalTo: homeView.bottomAnchor)
+        ])
+
+        let contentContainer = UIView()
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        homeScrollView.addSubview(contentContainer)
+
+        NSLayoutConstraint.activate([
+            contentContainer.topAnchor.constraint(equalTo: homeScrollView.contentLayoutGuide.topAnchor),
+            contentContainer.leadingAnchor.constraint(equalTo: homeScrollView.contentLayoutGuide.leadingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: homeScrollView.contentLayoutGuide.trailingAnchor),
+            contentContainer.bottomAnchor.constraint(equalTo: homeScrollView.contentLayoutGuide.bottomAnchor),
+            contentContainer.widthAnchor.constraint(equalTo: homeScrollView.frameLayoutGuide.widthAnchor)
+        ])
+
+        let iconCard = GradientView()
+        iconCard.translatesAutoresizingMaskIntoConstraints = false
+        iconCard.layer.cornerRadius = 20
+        iconCard.layer.cornerCurve = .continuous
+        iconCard.clipsToBounds = true
+        iconCard.gradientLayer.colors = [
+            UIColor(red: 0.12, green: 0.53, blue: 0.98, alpha: 1.0).cgColor,
+            UIColor(red: 0.35, green: 0.28, blue: 0.95, alpha: 1.0).cgColor
+        ]
+        iconCard.gradientLayer.startPoint = CGPoint(x: 0, y: 0)
+        iconCard.gradientLayer.endPoint = CGPoint(x: 1, y: 1)
+
+        let brandSymbol = UIImageView()
+        brandSymbol.translatesAutoresizingMaskIntoConstraints = false
+        brandSymbol.image = UIImage(
+            systemName: "safari.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 30, weight: .semibold)
         )
-        symbolView.tintColor = .secondaryLabel
-        symbolView.contentMode = .scaleAspectFit
+        brandSymbol.tintColor = .white
+        brandSymbol.contentMode = .scaleAspectFit
+        iconCard.addSubview(brandSymbol)
+
+        let iconContainer = UIView()
+        iconContainer.translatesAutoresizingMaskIntoConstraints = false
+        iconContainer.layer.shadowColor = UIColor(red: 0.2, green: 0.4, blue: 0.95, alpha: 1.0).cgColor
+        iconContainer.layer.shadowOpacity = 0.32
+        iconContainer.layer.shadowRadius = 14
+        iconContainer.layer.shadowOffset = CGSize(width: 0, height: 6)
+        iconContainer.addSubview(iconCard)
+
+        NSLayoutConstraint.activate([
+            iconCard.topAnchor.constraint(equalTo: iconContainer.topAnchor),
+            iconCard.leadingAnchor.constraint(equalTo: iconContainer.leadingAnchor),
+            iconCard.trailingAnchor.constraint(equalTo: iconContainer.trailingAnchor),
+            iconCard.bottomAnchor.constraint(equalTo: iconContainer.bottomAnchor),
+            iconContainer.widthAnchor.constraint(equalToConstant: 64),
+            iconContainer.heightAnchor.constraint(equalToConstant: 64),
+
+            brandSymbol.centerXAnchor.constraint(equalTo: iconCard.centerXAnchor),
+            brandSymbol.centerYAnchor.constraint(equalTo: iconCard.centerYAnchor),
+            brandSymbol.widthAnchor.constraint(equalToConstant: 32),
+            brandSymbol.heightAnchor.constraint(equalToConstant: 32)
+        ])
 
         let titleLabel = UILabel()
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "简阅浏览器"
-        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+        titleLabel.text = "简阅"
+        titleLabel.font = .systemFont(ofSize: 26, weight: .bold)
         titleLabel.textColor = .label
         titleLabel.textAlignment = .center
 
         let subtitleLabel = UILabel()
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        subtitleLabel.text = "在底部地址栏中搜索或输入网址"
-        subtitleLabel.font = .systemFont(ofSize: 14, weight: .regular)
+        subtitleLabel.text = "极简 · 高效 · 自由"
+        subtitleLabel.font = .systemFont(ofSize: 13, weight: .regular)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.textAlignment = .center
 
-        let startButton = TouchButton()
-        startButton.translatesAutoresizingMaskIntoConstraints = false
+        let headerStack = UIStackView(arrangedSubviews: [iconContainer, titleLabel, subtitleLabel])
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+        headerStack.axis = .vertical
+        headerStack.alignment = .center
+        headerStack.spacing = 10
+        headerStack.setCustomSpacing(4, after: titleLabel)
 
-        var configuration = UIButton.Configuration.gray()
-        configuration.title = "开始搜索"
-        configuration.image = UIImage(
+        let searchCard = TouchButton()
+        searchCard.translatesAutoresizingMaskIntoConstraints = false
+        searchCard.backgroundColor = .secondarySystemGroupedBackground
+        searchCard.layer.cornerRadius = 24
+        searchCard.layer.cornerCurve = .continuous
+        searchCard.layer.borderWidth = 0.5
+        searchCard.layer.borderColor = UIColor.separator.withAlphaComponent(0.25).cgColor
+        searchCard.layer.shadowColor = UIColor.black.cgColor
+        searchCard.layer.shadowOpacity = 0.04
+        searchCard.layer.shadowRadius = 8
+        searchCard.layer.shadowOffset = CGSize(width: 0, height: 2)
+        searchCard.addTarget(self, action: #selector(focusAddressFieldFromHome), for: .touchUpInside)
+
+        let searchMagnifier = UIImageView()
+        searchMagnifier.translatesAutoresizingMaskIntoConstraints = false
+        searchMagnifier.image = UIImage(
             systemName: "magnifyingglass",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
         )
-        configuration.imagePadding = 7
-        configuration.baseForegroundColor = .label
-        configuration.cornerStyle = .medium
-        configuration.contentInsets = NSDirectionalEdgeInsets(
-            top: 10,
-            leading: 16,
-            bottom: 10,
-            trailing: 16
-        )
+        searchMagnifier.tintColor = .systemBlue
+        searchMagnifier.isUserInteractionEnabled = false
 
-        startButton.configuration = configuration
-        startButton.addTarget(
-            self,
-            action: #selector(focusAddressFieldFromHome),
-            for: .touchUpInside
-        )
+        let searchPrompt = UILabel()
+        searchPrompt.translatesAutoresizingMaskIntoConstraints = false
+        searchPrompt.text = "搜索或输入网址"
+        searchPrompt.font = .systemFont(ofSize: 15, weight: .regular)
+        searchPrompt.textColor = .secondaryLabel
+        searchPrompt.isUserInteractionEnabled = false
 
-        let stack = UIStackView(
-            arrangedSubviews: [
-                symbolView,
-                titleLabel,
-                subtitleLabel,
-                startButton
-            ]
-        )
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .vertical
-        stack.alignment = .center
-        stack.spacing = 10
+        let engineBadge = UILabel()
+        engineBadge.translatesAutoresizingMaskIntoConstraints = false
+        engineBadge.font = .systemFont(ofSize: 11, weight: .medium)
+        engineBadge.textColor = .secondaryLabel
+        engineBadge.backgroundColor = .tertiarySystemFill
+        engineBadge.layer.cornerRadius = 10
+        engineBadge.layer.cornerCurve = .continuous
+        engineBadge.clipsToBounds = true
+        engineBadge.textAlignment = .center
+        engineBadge.text = "  \(SearchEngineStore.shared.currentEngine.name)  "
+        engineBadge.isUserInteractionEnabled = false
+        self.homeSearchEngineBadge = engineBadge
 
-        stack.setCustomSpacing(14, after: subtitleLabel)
-
-        homeView.addSubview(stack)
+        searchCard.addSubview(searchMagnifier)
+        searchCard.addSubview(searchPrompt)
+        searchCard.addSubview(engineBadge)
 
         NSLayoutConstraint.activate([
-            symbolView.widthAnchor.constraint(equalToConstant: 44),
-            symbolView.heightAnchor.constraint(equalToConstant: 44),
+            searchCard.heightAnchor.constraint(equalToConstant: 48),
 
-            stack.leadingAnchor.constraint(
-                greaterThanOrEqualTo: homeView.leadingAnchor,
-                constant: 24
-            ),
-            stack.trailingAnchor.constraint(
-                lessThanOrEqualTo: homeView.trailingAnchor,
-                constant: -24
-            ),
-            stack.centerXAnchor.constraint(equalTo: homeView.centerXAnchor),
-            stack.centerYAnchor.constraint(
-                equalTo: homeView.centerYAnchor,
-                constant: -34
-            )
+            searchMagnifier.leadingAnchor.constraint(equalTo: searchCard.leadingAnchor, constant: 16),
+            searchMagnifier.centerYAnchor.constraint(equalTo: searchCard.centerYAnchor),
+            searchMagnifier.widthAnchor.constraint(equalToConstant: 20),
+            searchMagnifier.heightAnchor.constraint(equalToConstant: 20),
+
+            searchPrompt.leadingAnchor.constraint(equalTo: searchMagnifier.trailingAnchor, constant: 10),
+            searchPrompt.trailingAnchor.constraint(lessThanOrEqualTo: engineBadge.leadingAnchor, constant: -8),
+            searchPrompt.centerYAnchor.constraint(equalTo: searchCard.centerYAnchor),
+
+            engineBadge.trailingAnchor.constraint(equalTo: searchCard.trailingAnchor, constant: -14),
+            engineBadge.centerYAnchor.constraint(equalTo: searchCard.centerYAnchor),
+            engineBadge.heightAnchor.constraint(equalToConstant: 22)
         ])
+
+        let shortcutsHeader = UILabel()
+        shortcutsHeader.translatesAutoresizingMaskIntoConstraints = false
+        shortcutsHeader.text = "常用站点"
+        shortcutsHeader.font = .systemFont(ofSize: 13, weight: .semibold)
+        shortcutsHeader.textColor = .secondaryLabel
+
+        let row1 = UIStackView()
+        row1.axis = .horizontal
+        row1.distribution = .fillEqually
+        row1.spacing = 10
+
+        let row2 = UIStackView()
+        row2.axis = .horizontal
+        row2.distribution = .fillEqually
+        row2.spacing = 10
+
+        for idx in 0..<4 {
+            row1.addArrangedSubview(createShortcutButton(shortcut: homeShortcuts[idx], index: idx))
+        }
+        for idx in 4..<8 {
+            row2.addArrangedSubview(createShortcutButton(shortcut: homeShortcuts[idx], index: idx))
+        }
+
+        let shortcutsStack = UIStackView(arrangedSubviews: [row1, row2])
+        shortcutsStack.translatesAutoresizingMaskIntoConstraints = false
+        shortcutsStack.axis = .vertical
+        shortcutsStack.spacing = 14
+
+        let statusChip = UIView()
+        statusChip.translatesAutoresizingMaskIntoConstraints = false
+        statusChip.backgroundColor = .secondarySystemGroupedBackground
+        statusChip.layer.cornerRadius = 15
+        statusChip.layer.cornerCurve = .continuous
+        statusChip.layer.borderWidth = 0.5
+        statusChip.layer.borderColor = UIColor.separator.withAlphaComponent(0.2).cgColor
+
+        let shieldIcon = UIImageView()
+        shieldIcon.translatesAutoresizingMaskIntoConstraints = false
+        shieldIcon.image = UIImage(
+            systemName: "shield.lefthalf.filled",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        )
+        shieldIcon.tintColor = .systemGreen
+
+        let statusText = UILabel()
+        statusText.translatesAutoresizingMaskIntoConstraints = false
+        statusText.text = "广告拦截与油猴插件引擎已就绪"
+        statusText.font = .systemFont(ofSize: 12, weight: .regular)
+        statusText.textColor = .secondaryLabel
+
+        let statusStack = UIStackView(arrangedSubviews: [shieldIcon, statusText])
+        statusStack.translatesAutoresizingMaskIntoConstraints = false
+        statusStack.axis = .horizontal
+        statusStack.spacing = 6
+        statusStack.alignment = .center
+        statusChip.addSubview(statusStack)
+
+        NSLayoutConstraint.activate([
+            statusStack.topAnchor.constraint(equalTo: statusChip.topAnchor, constant: 6),
+            statusStack.bottomAnchor.constraint(equalTo: statusChip.bottomAnchor, constant: -6),
+            statusStack.leadingAnchor.constraint(equalTo: statusChip.leadingAnchor, constant: 12),
+            statusStack.trailingAnchor.constraint(equalTo: statusChip.trailingAnchor, constant: -12),
+
+            shieldIcon.widthAnchor.constraint(equalToConstant: 14),
+            shieldIcon.heightAnchor.constraint(equalToConstant: 14)
+        ])
+
+        contentContainer.addSubview(headerStack)
+        contentContainer.addSubview(searchCard)
+        contentContainer.addSubview(shortcutsHeader)
+        contentContainer.addSubview(shortcutsStack)
+        contentContainer.addSubview(statusChip)
+
+        NSLayoutConstraint.activate([
+            headerStack.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 36),
+            headerStack.centerXAnchor.constraint(equalTo: contentContainer.centerXAnchor),
+
+            searchCard.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 28),
+            searchCard.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 20),
+            searchCard.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -20),
+
+            shortcutsHeader.topAnchor.constraint(equalTo: searchCard.bottomAnchor, constant: 28),
+            shortcutsHeader.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 24),
+
+            shortcutsStack.topAnchor.constraint(equalTo: shortcutsHeader.bottomAnchor, constant: 12),
+            shortcutsStack.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 16),
+            shortcutsStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -16),
+
+            statusChip.topAnchor.constraint(equalTo: shortcutsStack.bottomAnchor, constant: 32),
+            statusChip.centerXAnchor.constraint(equalTo: contentContainer.centerXAnchor),
+            statusChip.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -40)
+        ])
+    }
+
+    private func createShortcutButton(shortcut: HomeShortcut, index: Int) -> TouchButton {
+        let button = TouchButton()
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.tag = index
+        button.addTarget(self, action: #selector(handleShortcutTap(_:)), for: .touchUpInside)
+
+        let iconContainer = UIView()
+        iconContainer.translatesAutoresizingMaskIntoConstraints = false
+        iconContainer.backgroundColor = .secondarySystemGroupedBackground
+        iconContainer.layer.cornerRadius = 16
+        iconContainer.layer.cornerCurve = .continuous
+        iconContainer.layer.borderWidth = 0.5
+        iconContainer.layer.borderColor = UIColor.separator.withAlphaComponent(0.2).cgColor
+        iconContainer.layer.shadowColor = UIColor.black.cgColor
+        iconContainer.layer.shadowOpacity = 0.03
+        iconContainer.layer.shadowRadius = 4
+        iconContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
+        iconContainer.isUserInteractionEnabled = false
+
+        let iconImageView = UIImageView()
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        iconImageView.image = UIImage(
+            systemName: shortcut.iconName,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+        )
+        iconImageView.tintColor = shortcut.iconColor
+        iconImageView.contentMode = .scaleAspectFit
+        iconImageView.isUserInteractionEnabled = false
+        iconContainer.addSubview(iconImageView)
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = shortcut.title
+        label.font = .systemFont(ofSize: 11, weight: .medium)
+        label.textColor = .label
+        label.textAlignment = .center
+        label.isUserInteractionEnabled = false
+
+        button.addSubview(iconContainer)
+        button.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            button.heightAnchor.constraint(equalToConstant: 76),
+
+            iconContainer.topAnchor.constraint(equalTo: button.topAnchor),
+            iconContainer.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            iconContainer.widthAnchor.constraint(equalToConstant: 52),
+            iconContainer.heightAnchor.constraint(equalToConstant: 52),
+
+            iconImageView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
+            iconImageView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
+            iconImageView.widthAnchor.constraint(equalToConstant: 24),
+            iconImageView.heightAnchor.constraint(equalToConstant: 24),
+
+            label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 6),
+            label.leadingAnchor.constraint(equalTo: button.leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+            label.bottomAnchor.constraint(lessThanOrEqualTo: button.bottomAnchor)
+        ])
+
+        return button
+    }
+
+    @objc private func handleShortcutTap(_ sender: UIButton) {
+        let index = sender.tag
+        guard homeShortcuts.indices.contains(index),
+              let url = URL(string: homeShortcuts[index].urlString) else { return }
+        load(url: url)
     }
 
     @objc private func focusAddressFieldFromHome() {
         addressField.becomeFirstResponder()
     }
 
+    private func configureFailureView() {
+        failureOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        failureOverlayView.backgroundColor = .systemBackground
+        failureOverlayView.isHidden = true
+
+        let card = UIView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.backgroundColor = .secondarySystemGroupedBackground
+        card.layer.cornerRadius = 22
+        card.layer.cornerCurve = .continuous
+        card.layer.borderWidth = 0.5
+        card.layer.borderColor = UIColor.separator.withAlphaComponent(0.25).cgColor
+        card.layer.shadowColor = UIColor.black.cgColor
+        card.layer.shadowOpacity = 0.06
+        card.layer.shadowRadius = 16
+        card.layer.shadowOffset = CGSize(width: 0, height: 4)
+
+        let iconContainer = UIView()
+        iconContainer.translatesAutoresizingMaskIntoConstraints = false
+        iconContainer.backgroundColor = UIColor.systemRed.withAlphaComponent(0.12)
+        iconContainer.layer.cornerRadius = 26
+        iconContainer.layer.cornerCurve = .continuous
+
+        let failureIconView = UIImageView()
+        failureIconView.translatesAutoresizingMaskIntoConstraints = false
+        failureIconView.image = UIImage(
+            systemName: "wifi.exclamationmark",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .semibold)
+        )
+        failureIconView.tintColor = .systemRed
+        failureIconView.contentMode = .scaleAspectFit
+        iconContainer.addSubview(failureIconView)
+
+        failureTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        failureTitleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
+        failureTitleLabel.textColor = .label
+        failureTitleLabel.textAlignment = .center
+        failureTitleLabel.text = "无法打开网页"
+
+        failureReasonLabel.translatesAutoresizingMaskIntoConstraints = false
+        failureReasonLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        failureReasonLabel.textColor = .secondaryLabel
+        failureReasonLabel.textAlignment = .center
+        failureReasonLabel.numberOfLines = 0
+        failureReasonLabel.text = "请检查网络连接或网址输入后重试。"
+
+        failureURLLabel.translatesAutoresizingMaskIntoConstraints = false
+        failureURLLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        failureURLLabel.textColor = .tertiaryLabel
+        failureURLLabel.textAlignment = .center
+        failureURLLabel.numberOfLines = 2
+
+        failureBackButton.translatesAutoresizingMaskIntoConstraints = false
+        var backConfig = UIButton.Configuration.gray()
+        backConfig.title = "返回"
+        backConfig.cornerStyle = .capsule
+        backConfig.baseForegroundColor = .label
+        failureBackButton.configuration = backConfig
+        failureBackButton.addTarget(self, action: #selector(goBack), for: .touchUpInside)
+
+        failureReloadButton.translatesAutoresizingMaskIntoConstraints = false
+        var reloadConfig = UIButton.Configuration.filled()
+        reloadConfig.title = "重新加载"
+        reloadConfig.cornerStyle = .capsule
+        reloadConfig.baseBackgroundColor = .systemBlue
+        reloadConfig.baseForegroundColor = .white
+        failureReloadButton.configuration = reloadConfig
+        failureReloadButton.addTarget(self, action: #selector(handleRefreshTap), for: .touchUpInside)
+
+        let failureButtons = UIStackView(arrangedSubviews: [failureBackButton, failureReloadButton])
+        failureButtons.translatesAutoresizingMaskIntoConstraints = false
+        failureButtons.axis = .horizontal
+        failureButtons.spacing = 10
+        failureButtons.distribution = .fillEqually
+
+        let failureStack = UIStackView(arrangedSubviews: [
+            iconContainer,
+            failureTitleLabel,
+            failureReasonLabel,
+            failureURLLabel,
+            failureButtons
+        ])
+        failureStack.translatesAutoresizingMaskIntoConstraints = false
+        failureStack.axis = .vertical
+        failureStack.alignment = .fill
+        failureStack.spacing = 10
+        failureStack.setCustomSpacing(18, after: failureURLLabel)
+
+        card.addSubview(failureStack)
+        failureOverlayView.addSubview(card)
+
+        NSLayoutConstraint.activate([
+            iconContainer.widthAnchor.constraint(equalToConstant: 52),
+            iconContainer.heightAnchor.constraint(equalToConstant: 52),
+
+            failureIconView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
+            failureIconView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
+            failureIconView.widthAnchor.constraint(equalToConstant: 26),
+            failureIconView.heightAnchor.constraint(equalToConstant: 26),
+
+            failureButtons.heightAnchor.constraint(equalToConstant: 40),
+
+            failureStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 24),
+            failureStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            failureStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
+            failureStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
+
+            card.leadingAnchor.constraint(equalTo: failureOverlayView.leadingAnchor, constant: 24),
+            card.trailingAnchor.constraint(equalTo: failureOverlayView.trailingAnchor, constant: -24),
+            card.centerYAnchor.constraint(equalTo: failureOverlayView.centerYAnchor, constant: -30)
+        ])
+    }
+
     private func configureInterface() {
         let pageBackground = UIColor.systemBackground
-        let toolbarBackground = UIColor.secondarySystemBackground
 
         view.backgroundColor = pageBackground
 
@@ -397,113 +771,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         homeView.translatesAutoresizingMaskIntoConstraints = false
         homeView.backgroundColor = pageBackground
 
-        failureOverlayView.translatesAutoresizingMaskIntoConstraints = false
-        failureOverlayView.backgroundColor = pageBackground
-        failureOverlayView.isHidden = true
-
-        let failureIconView = UIImageView()
-        failureIconView.translatesAutoresizingMaskIntoConstraints = false
-        failureIconView.image = UIImage(
-            systemName: "wifi.exclamationmark",
-            withConfiguration: UIImage.SymbolConfiguration(
-                pointSize: 34,
-                weight: .regular
-            )
-        )
-        failureIconView.tintColor = .secondaryLabel
-        failureIconView.contentMode = .scaleAspectFit
-
-        failureTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        failureTitleLabel.font = .systemFont(ofSize: 19, weight: .semibold)
-        failureTitleLabel.textColor = .label
-        failureTitleLabel.textAlignment = .center
-        failureTitleLabel.text = "无法打开网页"
-
-        failureReasonLabel.translatesAutoresizingMaskIntoConstraints = false
-        failureReasonLabel.font = .systemFont(ofSize: 14, weight: .regular)
-        failureReasonLabel.textColor = .secondaryLabel
-        failureReasonLabel.textAlignment = .center
-        failureReasonLabel.numberOfLines = 0
-        failureReasonLabel.text = "请检查网络连接后重试。"
-
-        failureURLLabel.translatesAutoresizingMaskIntoConstraints = false
-        failureURLLabel.font = .systemFont(ofSize: 12, weight: .regular)
-        failureURLLabel.textColor = .tertiaryLabel
-        failureURLLabel.textAlignment = .center
-        failureURLLabel.numberOfLines = 2
-
-        failureBackButton.translatesAutoresizingMaskIntoConstraints = false
-        var backConfig = UIButton.Configuration.gray()
-        backConfig.title = "返回"
-        backConfig.cornerStyle = .medium
-        backConfig.baseForegroundColor = .label
-        failureBackButton.configuration = backConfig
-        failureBackButton.addTarget(
-            self,
-            action: #selector(goBack),
-            for: .touchUpInside
-        )
-
-        failureReloadButton.translatesAutoresizingMaskIntoConstraints = false
-        var reloadConfig = UIButton.Configuration.filled()
-        reloadConfig.title = "重新加载"
-        reloadConfig.cornerStyle = .medium
-        reloadConfig.baseBackgroundColor = .systemBlue
-        reloadConfig.baseForegroundColor = .white
-        failureReloadButton.configuration = reloadConfig
-        failureReloadButton.addTarget(
-            self,
-            action: #selector(handleRefreshTap),
-            for: .touchUpInside
-        )
-
-        let failureButtons = UIStackView(
-            arrangedSubviews: [failureBackButton, failureReloadButton]
-        )
-        failureButtons.translatesAutoresizingMaskIntoConstraints = false
-        failureButtons.axis = .horizontal
-        failureButtons.spacing = 10
-        failureButtons.distribution = .fillEqually
-
-        let failureStack = UIStackView(
-            arrangedSubviews: [
-                failureIconView,
-                failureTitleLabel,
-                failureReasonLabel,
-                failureURLLabel,
-                failureButtons
-            ]
-        )
-        failureStack.translatesAutoresizingMaskIntoConstraints = false
-        failureStack.axis = .vertical
-        failureStack.alignment = .fill
-        failureStack.spacing = 10
-
-        failureStack.setCustomSpacing(20, after: failureURLLabel)
-
-        failureOverlayView.addSubview(failureStack)
-
-        NSLayoutConstraint.activate([
-            failureIconView.heightAnchor.constraint(equalToConstant: 46),
-
-            failureButtons.heightAnchor.constraint(equalToConstant: 42),
-
-            failureStack.leadingAnchor.constraint(
-                equalTo: failureOverlayView.leadingAnchor,
-                constant: 32
-            ),
-            failureStack.trailingAnchor.constraint(
-                equalTo: failureOverlayView.trailingAnchor,
-                constant: -32
-            ),
-            failureStack.centerYAnchor.constraint(
-                equalTo: failureOverlayView.centerYAnchor,
-                constant: -28
-            )
-        ])
+        configureFailureView()
 
         editingDimmingView.translatesAutoresizingMaskIntoConstraints = false
-        editingDimmingView.backgroundColor = UIColor.black.withAlphaComponent(0.16)
+        editingDimmingView.backgroundColor = UIColor.black.withAlphaComponent(0.2)
         editingDimmingView.alpha = 0
         editingDimmingView.isHidden = true
 
@@ -514,17 +785,24 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         editingDimmingView.addGestureRecognizer(dimmingTap)
 
         bottomPanel.translatesAutoresizingMaskIntoConstraints = false
-        bottomPanel.backgroundColor = toolbarBackground
+        bottomPanel.backgroundColor = .clear
         bottomPanel.clipsToBounds = false
+
+        let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+        blurView.translatesAutoresizingMaskIntoConstraints = false
+        bottomPanel.addSubview(blurView)
 
         let toolbarSeparator = UIView()
         toolbarSeparator.translatesAutoresizingMaskIntoConstraints = false
-        toolbarSeparator.backgroundColor = UIColor.separator.withAlphaComponent(0.45)
+        toolbarSeparator.backgroundColor = UIColor.separator.withAlphaComponent(0.25)
+        bottomPanel.addSubview(toolbarSeparator)
 
         addressContainer.translatesAutoresizingMaskIntoConstraints = false
         addressContainer.backgroundColor = .tertiarySystemFill
-        addressContainer.layer.cornerRadius = 14
+        addressContainer.layer.cornerRadius = 21
         addressContainer.layer.cornerCurve = .continuous
+        addressContainer.layer.borderWidth = 0.5
+        addressContainer.layer.borderColor = UIColor.separator.withAlphaComponent(0.2).cgColor
         addressContainer.clipsToBounds = true
 
         lockButton.translatesAutoresizingMaskIntoConstraints = false
@@ -533,18 +811,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             UIImage(
                 systemName: "lock.fill",
                 withConfiguration: UIImage.SymbolConfiguration(
-                    pointSize: 11,
-                    weight: .medium
+                    pointSize: 12,
+                    weight: .semibold
                 )
             ),
             for: .normal
         )
-        lockButton.hitTestInsets = UIEdgeInsets(
-            top: -10,
-            left: -10,
-            bottom: -10,
-            right: -10
-        )
+        lockButton.hitTestInsets = UIEdgeInsets(top: -10, left: -10, bottom: -10, right: -10)
         lockButton.addTarget(
             self,
             action: #selector(showSiteDomainSettings),
@@ -554,7 +827,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         addressField.translatesAutoresizingMaskIntoConstraints = false
         addressField.delegate = self
         addressField.placeholder = "搜索或输入网址"
-        addressField.font = .systemFont(ofSize: 14, weight: .regular)
+        addressField.font = .systemFont(ofSize: 14.5, weight: .regular)
         addressField.textColor = .label
         addressField.textAlignment = .left
         addressField.keyboardType = .webSearch
@@ -575,12 +848,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             UIImage(
                 systemName: "arrow.clockwise",
                 withConfiguration: UIImage.SymbolConfiguration(
-                    pointSize: 14,
-                    weight: .medium
+                    pointSize: 13,
+                    weight: .semibold
                 )
             ),
             for: .normal
         )
+        refreshButton.hitTestInsets = UIEdgeInsets(top: -8, left: -8, bottom: -8, right: -8)
         refreshButton.addTarget(
             self,
             action: #selector(handleRefreshTap),
@@ -599,6 +873,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             for: .normal
         )
+        clearButton.hitTestInsets = UIEdgeInsets(top: -8, left: -8, bottom: -8, right: -8)
         clearButton.alpha = 0
         clearButton.isHidden = true
         clearButton.addTarget(
@@ -617,16 +892,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         navigationStack.axis = .horizontal
         navigationStack.alignment = .fill
         navigationStack.distribution = .fillEqually
-        navigationStack.spacing = 4
+        navigationStack.spacing = 2
 
         configureToolbarButton(
             backButton,
-            imageName: "chevron.left",
+            imageName: "chevron.backward",
             action: #selector(goBack)
         )
         configureToolbarButton(
             forwardButton,
-            imageName: "chevron.right",
+            imageName: "chevron.forward",
             action: #selector(goForward)
         )
         configureToolbarButton(
@@ -641,7 +916,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         )
         configureToolbarButton(
             pluginButton,
-            imageName: "square.3.layers.3d",
+            imageName: "puzzlepiece.extension",
             action: #selector(showPluginPanel)
         )
 
@@ -664,7 +939,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         addressContainer.addSubview(clearButton)
         addressContainer.addSubview(progressView)
 
-        bottomPanel.addSubview(toolbarSeparator)
         bottomPanel.addSubview(addressContainer)
         bottomPanel.addSubview(navigationStack)
 
@@ -717,6 +991,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             bottomPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottomPanelBottomConstraint!,
 
+            blurView.topAnchor.constraint(equalTo: bottomPanel.topAnchor),
+            blurView.leadingAnchor.constraint(equalTo: bottomPanel.leadingAnchor),
+            blurView.trailingAnchor.constraint(equalTo: bottomPanel.trailingAnchor),
+            blurView.bottomAnchor.constraint(equalTo: bottomPanel.bottomAnchor),
+
             toolbarSeparator.topAnchor.constraint(equalTo: bottomPanel.topAnchor),
             toolbarSeparator.leadingAnchor.constraint(equalTo: bottomPanel.leadingAnchor),
             toolbarSeparator.trailingAnchor.constraint(equalTo: bottomPanel.trailingAnchor),
@@ -734,17 +1013,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 equalTo: bottomPanel.trailingAnchor,
                 constant: -14
             ),
-            addressContainer.heightAnchor.constraint(equalToConstant: 40),
+            addressContainer.heightAnchor.constraint(equalToConstant: 42),
 
             lockButton.leadingAnchor.constraint(
                 equalTo: addressContainer.leadingAnchor,
-                constant: 11
+                constant: 10
             ),
             lockButton.centerYAnchor.constraint(
                 equalTo: addressContainer.centerYAnchor
             ),
-            lockButton.widthAnchor.constraint(equalToConstant: 22),
-            lockButton.heightAnchor.constraint(equalToConstant: 22),
+            lockButton.widthAnchor.constraint(equalToConstant: 24),
+            lockButton.heightAnchor.constraint(equalToConstant: 24),
 
             addressField.leadingAnchor.constraint(
                 equalTo: lockButton.trailingAnchor,
@@ -794,21 +1073,21 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
             navigationStack.topAnchor.constraint(
                 equalTo: addressContainer.bottomAnchor,
-                constant: 6
+                constant: 4
             ),
             navigationStack.leadingAnchor.constraint(
                 equalTo: bottomPanel.leadingAnchor,
-                constant: 14
+                constant: 12
             ),
             navigationStack.trailingAnchor.constraint(
                 equalTo: bottomPanel.trailingAnchor,
-                constant: -14
+                constant: -12
             ),
             navigationStack.bottomAnchor.constraint(
                 equalTo: bottomPanel.safeAreaLayoutGuide.bottomAnchor,
-                constant: -4
+                constant: -2
             ),
-            navigationStack.heightAnchor.constraint(equalToConstant: 38)
+            navigationStack.heightAnchor.constraint(equalToConstant: 40)
         ])
     }
 
@@ -1029,6 +1308,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureOverlayView.isHidden = true
         addressField.text = ""
         addressField.resignFirstResponder()
+        homeSearchEngineBadge?.text = "  \(SearchEngineStore.shared.currentEngine.name)  "
         resetProgress()
         updateUIState()
     }
@@ -1074,7 +1354,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         refreshButton.setImage(
             UIImage(
                 systemName: refreshImage,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
             ),
             for: .normal
         )
@@ -1453,12 +1733,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if matchingScripts.isEmpty {
             items.append(CustomBottomSheetItem(
                 title: "未匹配到脚本",
+                iconName: "exclamationmark.triangle",
                 handler: nil
             ))
         } else {
             for script in matchingScripts {
                 items.append(CustomBottomSheetItem(
                     title: script.name,
+                    iconName: "puzzlepiece.extension",
                     handler: { [weak self] in
                         self?.showScriptSubMenu(for: script)
                     }
@@ -1468,6 +1750,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         items.append(CustomBottomSheetItem(
             title: "搜索适合当前网站的脚本",
+            iconName: "arrow.down.circle",
             handler: { [weak self] in
                 let searchUrlStr = "https://greasyfork.org/zh-CN/scripts?q=\(currentHost)"
                 if let searchUrl = URL(string: searchUrlStr) {
@@ -1478,6 +1761,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         items.append(CustomBottomSheetItem(
             title: "用户脚本管理",
+            iconName: "gearshape",
             handler: { [weak self] in
                 self?.showPluginManager()
             }
@@ -1501,6 +1785,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         for cmd in scriptCmds {
             items.append(CustomBottomSheetItem(
                 title: cmd.caption,
+                iconName: "play.circle",
                 handler: { [weak self] in
                     self?.activeTab.webView.evaluateJavaScript("window.__gm_invokeMenuCommand(\(cmd.cmdId))", completionHandler: nil)
                 }
@@ -1509,6 +1794,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         items.append(CustomBottomSheetItem(
             title: script.isEnabled ? "禁用该脚本" : "启用该脚本",
+            iconName: "power",
             handler: { [weak self] in
                 var scripts = UserScriptStore.shared.loadScripts()
                 if let idx = scripts.firstIndex(where: { $0.id == script.id }) {
@@ -1521,6 +1807,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         items.append(CustomBottomSheetItem(
             title: "清除脚本缓存数据",
+            iconName: "trash",
             isDestructive: false,
             handler: {
                 ScriptDataStore.shared.clearDataForScript(scriptId: script.id)
@@ -1529,6 +1816,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         items.append(CustomBottomSheetItem(
             title: "编辑脚本代码",
+            iconName: "curlybraces",
             handler: { [weak self] in
                 let editor = UserScriptEditorViewController(script: script)
                 editor.onSave = { updatedScript in
@@ -1619,8 +1907,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         for engine in SearchEngine.allCases {
             let isCurrent = engine == SearchEngineStore.shared.currentEngine
             let title = isCurrent ? "\(engine.name) ✓" : engine.name
-            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
+            alert.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in
                 SearchEngineStore.shared.currentEngine = engine
+                self?.homeSearchEngineBadge?.text = "  \(engine.name)  "
             })
         }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -1643,6 +1932,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         items.append(CustomBottomSheetItem(
             title: isFullscreen ? "退出全屏浏览" : "全屏浏览",
+            iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
             handler: { [weak self] in
                 guard let self = self else { return }
                 self.setFullscreen(!self.isFullscreen)
@@ -1652,6 +1942,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let isEyeOn = EyeProtectionManager.shared.isEnabled
         items.append(CustomBottomSheetItem(
             title: isEyeOn ? "关闭护眼" : "护眼模式",
+            iconName: isEyeOn ? "eye.slash.fill" : "eye.fill",
             handler: { [weak self] in
                 EyeProtectionManager.shared.toggle(in: self?.view.window)
             },
@@ -1663,6 +1954,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let isAdBlockOn = AdBlockManager.shared.isEnabled
         items.append(CustomBottomSheetItem(
             title: isAdBlockOn ? "广告拦截: 开启" : "广告拦截: 关闭",
+            iconName: "shield.lefthalf.filled",
             handler: { [weak self] in
                 self?.showAdBlockerManager()
             }
@@ -1671,6 +1963,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let currentEngine = SearchEngineStore.shared.currentEngine
         items.append(CustomBottomSheetItem(
             title: "搜索引擎: \(currentEngine.name)",
+            iconName: "magnifyingglass",
             handler: { [weak self] in
                 self?.showSearchEnginePicker()
             }
@@ -1679,6 +1972,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let currentUAItem = UserAgentStore.shared.getSelectedItem()
         items.append(CustomBottomSheetItem(
             title: "标识: \(currentUAItem.name)",
+            iconName: "desktopcomputer",
             handler: { [weak self] in
                 self?.showUserAgentManager()
             }
@@ -1687,6 +1981,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
             title: isDesktop ? "切换为移动版" : "切换为电脑版",
+            iconName: isDesktop ? "iphone" : "macbook",
             handler: { [weak self] in
                 guard let self = self else { return }
                 let newMode: UserAgentCategory = isDesktop ? .mobile : .desktop
@@ -1701,6 +1996,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         items.append(CustomBottomSheetItem(
             title: "历史记录",
+            iconName: "clock.arrow.circlepath",
             handler: { [weak self] in
                 self?.showBrowserHistory()
             }
@@ -1708,6 +2004,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         items.append(CustomBottomSheetItem(
             title: "清除数据与管理网站",
+            iconName: "trash",
             isDestructive: false,
             handler: { [weak self] in
                 self?.showCleanDataMenu()
