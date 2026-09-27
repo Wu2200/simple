@@ -13,6 +13,7 @@
 - `README.md`
 - `Resources/LaunchScreen.storyboard`
 - `Sources/AdBlocker.swift`
+- `Sources/AppDelegate.swift`
 - `Sources/BrowserHistoryViewController.swift`
 - `Sources/BrowserViewController.swift`
 - `Sources/CleanDataViewController.swift`
@@ -2565,6 +2566,28 @@ final class CustomRuleEditorViewController: UIViewController {
             alert.addAction(UIAlertAction(title: "确定", style: .default))
             self.present(alert, animated: true)
         }
+    }
+}
+```
+
+### Sources/AppDelegate.swift
+
+```text
+import UIKit
+
+@main
+final class AppDelegate: UIResponder, UIApplicationDelegate {
+    var window: UIWindow?
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = BrowserViewController()
+        window.makeKeyAndVisible()
+        self.window = window
+        return true
     }
 }
 ```
