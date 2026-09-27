@@ -89,6 +89,7 @@ final class AddressTextField: UITextField {
     @objc func customCopyAction() {
         if let text = text, !text.isEmpty {
             UIPasteboard.general.string = text
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
     }
 
@@ -1539,7 +1540,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
         if !currentText.isEmpty {
             UIPasteboard.general.string = currentText
-            showToastNotice("已拷贝网址")
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
     }
 
@@ -1564,7 +1565,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private func handleCalloutPasteAndGo() {
         guard let paste = UIPasteboard.general.string,
               let url = destinationURL(from: paste) else {
-            showToastNotice("剪贴板内容非有效网址")
             return
         }
         load(url: url)
@@ -2249,7 +2249,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         activeTab.webView.evaluateJavaScript("document.body.innerText") { [weak self] result, error in
             guard let self = self else { return }
             guard let text = result as? String, !text.isEmpty else {
-                self.showToastNotice("未能提取到网页正文")
                 return
             }
             let vc = UIViewController()
@@ -2277,14 +2276,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 action: #selector(self.dismissModalVC)
             )
 
-            let copyAction = UIAction { [weak self, weak vc] _ in
+            let copyAction = UIAction { _ in
                 UIPasteboard.general.string = text
-                let alert = UIAlertController(title: nil, message: "已复制到剪贴板", preferredStyle: .alert)
-                vc?.present(alert, animated: true)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    alert.dismiss(animated: true)
-                }
-                self?.showToastNotice("已复制到剪贴板")
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
             vc.navigationItem.leftBarButtonItem = UIBarButtonItem(title: "复制", primaryAction: copyAction)
 
