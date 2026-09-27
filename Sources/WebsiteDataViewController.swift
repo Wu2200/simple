@@ -152,27 +152,11 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
             }
         })
 
-        alert.addAction(UIAlertAction(title: "全部清空(包含已锁定)", style: .destructive) { [weak self] _ in
-            let confirmAlert = UIAlertController(
-                title: "确认全部清空",
-                message: "此操作将无视锁定保护，彻底删除所有网站的数据与登录信息。",
-                preferredStyle: .alert
-            )
-            confirmAlert.addAction(UIAlertAction(title: "取消", style: .cancel))
-            confirmAlert.addAction(UIAlertAction(title: "确定清空", style: .destructive) { _ in
-                let types = WKWebsiteDataStore.allWebsiteDataTypes()
-                WKWebsiteDataStore.default().fetchDataRecords(ofTypes: types) { records in
-                    WKWebsiteDataStore.default().removeData(ofTypes: types, for: records) {
-                        DispatchQueue.main.async {
-                            self?.loadData()
-                        }
-                    }
-                }
-            })
-            self?.present(confirmAlert, animated: true)
-        })
-
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+
+        if let popover = alert.popoverPresentationController {
+            popover.barButtonItem = navigationItem.rightBarButtonItem
+        }
         present(alert, animated: true)
     }
 
