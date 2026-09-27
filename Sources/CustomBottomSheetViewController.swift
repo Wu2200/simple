@@ -212,7 +212,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         let itemsStack = UIStackView()
         itemsStack.translatesAutoresizingMaskIntoConstraints = false
         itemsStack.axis = .vertical
-        itemsStack.spacing = 2
+        itemsStack.spacing = 10
 
         for (idx, item) in items.enumerated() {
             let card = createListCardButton(item: item, tag: idx)
@@ -248,7 +248,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             view.addSubview(headerContainer)
 
             NSLayoutConstraint.activate([
-                grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+                grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
                 grabber.centerXAnchor.constraint(equalTo: view.centerXAnchor),
                 grabber.widthAnchor.constraint(equalToConstant: 36),
                 grabber.heightAnchor.constraint(equalToConstant: 5),
@@ -266,7 +266,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
                 closeButton.widthAnchor.constraint(equalToConstant: 30),
                 closeButton.heightAnchor.constraint(equalToConstant: 30),
 
-                scrollView.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 6),
+                scrollView.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: 10),
                 scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
@@ -287,21 +287,29 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
 
         NSLayoutConstraint.activate([
             itemsStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
-            itemsStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
-            itemsStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
-            itemsStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-            itemsStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
+            itemsStack.leadingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.leadingAnchor, constant: 16),
+            itemsStack.trailingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.trailingAnchor, constant: -16),
+            itemsStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -10)
         ])
     }
 
     private func createListCardButton(item: CustomBottomSheetItem, tag: Int) -> TouchButton {
         let card = TouchButton()
         card.translatesAutoresizingMaskIntoConstraints = false
-        card.backgroundColor = .clear
         card.tag = tag
+        card.layer.cornerRadius = 14
+        card.layer.cornerCurve = .continuous
+        card.clipsToBounds = true
 
         let isActionable = (item.handler != nil)
         card.isUserInteractionEnabled = isActionable
+
+        card.backgroundColor = UIColor { trait in
+            if !isActionable {
+                return trait.userInterfaceStyle == .dark ? UIColor(white: 0.16, alpha: 1.0) : UIColor(red: 0.95, green: 0.95, blue: 0.96, alpha: 1.0)
+            }
+            return trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0)
+        }
 
         if isActionable {
             card.addTarget(self, action: #selector(handleItemTap(_:)), for: .touchUpInside)
@@ -320,7 +328,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
         }
         let disabledColor: UIColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.70, alpha: 1.0) : UIColor(red: 0.32, green: 0.32, blue: 0.34, alpha: 1.0)
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.60, alpha: 1.0) : UIColor(red: 0.45, green: 0.45, blue: 0.48, alpha: 1.0)
         }
 
         let resolvedIconColor = isActionable ? defaultIconColor : disabledColor
@@ -331,16 +339,16 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
             let iconName = item.iconName ?? "doc.plaintext"
             iconImageView.image = UIImage(
                 systemName: iconName,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
             )
         }
         iconImageView.tintColor = resolvedIconColor
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 16.5, weight: .regular)
+        label.font = .systemFont(ofSize: 15, weight: isActionable ? .medium : .regular)
         label.textColor = item.isDestructive ? .systemRed : (isActionable ? UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.90, alpha: 1.0) : UIColor(red: 0.20, green: 0.20, blue: 0.22, alpha: 1.0)
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.90, alpha: 1.0) : UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0)
         } : disabledColor)
         label.text = item.title
         label.numberOfLines = 1
@@ -348,7 +356,7 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         let chevron = UIImageView(
             image: UIImage(
                 systemName: "chevron.right",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
             )
         )
         chevron.translatesAutoresizingMaskIntoConstraints = false
@@ -360,18 +368,18 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         card.addSubview(chevron)
 
         NSLayoutConstraint.activate([
-            card.heightAnchor.constraint(equalToConstant: 54),
+            card.heightAnchor.constraint(equalToConstant: 52),
 
-            iconImageView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            iconImageView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
             iconImageView.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 24),
-            iconImageView.heightAnchor.constraint(equalToConstant: 24),
+            iconImageView.widthAnchor.constraint(equalToConstant: 22),
+            iconImageView.heightAnchor.constraint(equalToConstant: 22),
 
-            label.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 14),
+            label.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 12),
             label.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -10),
             label.centerYAnchor.constraint(equalTo: card.centerYAnchor),
 
-            chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
+            chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
             chevron.centerYAnchor.constraint(equalTo: card.centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 12),
             chevron.heightAnchor.constraint(equalToConstant: 16)
