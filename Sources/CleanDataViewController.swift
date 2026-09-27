@@ -1,210 +1,233 @@
 import UIKit
+import WebKit
 
-final class CleanDataSelectionViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
-    private var selectedOptions: Set<CleanOption> = [.cache]
-    private let savedOptionsKey = "browser_saved_clean_options_v1"
+public struct CleanOptionItem {
+    public let type: WebsiteDataType
+    public let title: String
+    public let detail: String
+    public var isSelected: Bool
 
-    var onConfirmClean: ((Set<CleanOption>, @escaping () -> Void) -> Void)?
-    var onOpenWebsiteDataManager: (() -> Void)?
-
-    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "清除数据"
-        view.backgroundColor = .systemGroupedBackground
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(handleCancel))
-
-        setupInterface()
-        loadSavedOptions()
+    public init(type: WebsiteDataType, title: String, detail: String, isSelected: Bool = true) {
+        self.type = type
+        self.title = title
+        self.detail = detail
+        self.isSelected = isSelected
     }
+}
 
-    private func setupInterface() {
-        tableView.translatesAutoresizingMaskIntoConstraints = false
+public final class CleanDataViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+
+    public var onDataCleared: (() -> Void)?
+
+    private var options: [CleanOptionItem] = [
+        CleanOptionItem(type: .history, title: "浏览历史记录", detail: "已访问网页的历史记录", isSelected: true),
+        CleanOptionItem(type: .cache, title: "缓存文件与临时文件", detail: "网页临时资源与离线页面缓存", isSelected: true),
+        CleanOptionItem(type: .cookies, title: "Cookies 与登录状态", detail: "网站登录信息与偏好设置", isSelected: false),
+        CleanOptionItem(type: .localStorage, title: "本地存储与网站数据库", detail: "IndexedDB 与 WebSQL 本地存储", isSelected: true)
+    ]
+
+    private let tableView: UITableView = {
+        let tv = UITableView(frame: .zero, style: .insetGrouped)
+        tv.translatesAutoresizingMaskIntoConstraints = false
+        return tv
+    }()
+
+    private let bottomActionContainer: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = .systemBackground
+        return view
+    }()
+
+    private let clearButton: UIButton = {
+        let btn = UIButton(type: .system)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.setTitle("立即清除所选数据", for: .normal)
+        btn.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+        btn.backgroundColor = .systemRed
+        btn.setTitleColor(.white, for: .normal)
+        btn.layer.cornerRadius = 12
+        btn.layer.masksToBounds = true
+        return btn
+    }()
+
+    public override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "清除浏览数据"
+        view.backgroundColor = .systemGroupedBackground
+
+        setupNavigationBar()
+        setupLayout()
+
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.register(CleanOptionRowCell.self, forCellReuseIdentifier: "CleanOptionRowCell")
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "OptionCell")
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "ManageDataCell")
 
+        clearButton.addTarget(self, action: #selector(handleClearButtonTapped), for: .touchUpInside)
+    }
+
+    private func setupNavigationBar() {
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "完成",
+            style: .done,
+            target: self,
+            action: #selector(handleDone)
+        )
+    }
+
+    private func setupLayout() {
         view.addSubview(tableView)
+        view.addSubview(bottomActionContainer)
+        bottomActionContainer.addSubview(clearButton)
+
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            tableView.bottomAnchor.constraint(equalTo: bottomActionContainer.topAnchor),
+
+            bottomActionContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bottomActionContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bottomActionContainer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            bottomActionContainer.heightAnchor.constraint(equalToConstant: 72),
+
+            clearButton.topAnchor.constraint(equalTo: bottomActionContainer.topAnchor, constant: 10),
+            clearButton.leadingAnchor.constraint(equalTo: bottomActionContainer.leadingAnchor, constant: 16),
+            clearButton.trailingAnchor.constraint(equalTo: bottomActionContainer.trailingAnchor, constant: -16),
+            clearButton.heightAnchor.constraint(equalToConstant: 48)
         ])
     }
 
-    private func loadSavedOptions() {
-        if let saved = UserDefaults.standard.array(forKey: savedOptionsKey) as? [Int] {
-            let opts = saved.compactMap { CleanOption(rawValue: $0) }
-            selectedOptions = Set(opts)
-        }
-    }
-
-    private func saveOptions() {
-        let rawValues = selectedOptions.map { $0.rawValue }
-        UserDefaults.standard.set(rawValues, forKey: savedOptionsKey)
-    }
-
-    @objc private func handleCancel() {
+    @objc private func handleDone() {
         dismiss(animated: true)
     }
 
-    @objc private func requestCleanConfirmation() {
-        guard !selectedOptions.isEmpty else { return }
-
-        var message = "确定要执行清理操作吗？"
-        if selectedOptions.contains(.loginAndData) {
-            message = "勾选了“登录与本地数据”，未受保护网站的 Cookies 和本地数据库将被清除。"
-        }
-
-        let alert = UIAlertController(title: "确认清理", message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel, handler: nil))
-        alert.addAction(UIAlertAction(title: "确定清理", style: .default) { [weak self] _ in
-            guard let self = self else { return }
-            let opts = self.selectedOptions
-            self.onConfirmClean?(opts) { [weak self] in
-                guard let self = self else { return }
-                self.dismiss(animated: true)
-            }
-        })
-        present(alert, animated: true)
+    public func numberOfSections(in tableView: UITableView) -> Int {
+        return 2
     }
 
-    func numberOfSections(in tableView: UITableView) -> Int {
-        return 3
+    public func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return section == 0 ? options.count : 1
     }
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 { return 4 }
-        return 1
+    public func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return section == 0 ? "选择要清除的类型" : "网站细化管理"
     }
 
-    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-        return 52
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "CleanOptionRowCell", for: indexPath) as! CleanOptionRowCell
-
+    public func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         if indexPath.section == 0 {
-            let option: CleanOption
-            let titleText: String
-            switch indexPath.row {
-            case 0:
-                titleText = "网页缓存文件"
-                option = .cache
-            case 1:
-                titleText = "搜索与浏览历史记录"
-                option = .searchHistory
-            case 2:
-                titleText = "登录与本地数据"
-                option = .loginAndData
-            default:
-                titleText = "用户脚本缓存数据"
-                option = .scriptData
-            }
-
-            let isChecked = selectedOptions.contains(option)
-            cell.configure(title: titleText, isChecked: isChecked, isActionButton: false)
-        } else if indexPath.section == 1 {
-            cell.configure(title: "确认清理", isChecked: false, isActionButton: true, textColor: .systemBlue)
+            let item = options[indexPath.row]
+            let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "OptionCell")
+            cell.textLabel?.text = item.title
+            cell.textLabel?.font = UIFont.systemFont(ofSize: 16)
+            cell.detailTextLabel?.text = item.detail
+            cell.detailTextLabel?.textColor = .secondaryLabel
+            cell.accessoryType = item.isSelected ? .checkmark : .none
+            cell.selectionStyle = .none
+            return cell
         } else {
-            cell.configure(title: "管理网站数据", isChecked: false, isActionButton: true, textColor: .systemBlue)
+            let cell = UITableViewCell(style: .value1, reuseIdentifier: "ManageDataCell")
+            cell.textLabel?.text = "管理网站数据"
+            cell.textLabel?.font = UIFont.systemFont(ofSize: 16)
+            cell.detailTextLabel?.text = "查看各域名缓存与Cookies"
+            cell.detailTextLabel?.font = UIFont.systemFont(ofSize: 14)
+            cell.accessoryType = .disclosureIndicator
+            return cell
         }
-
-        return cell
     }
 
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    public func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
 
         if indexPath.section == 0 {
-            let option: CleanOption
-            switch indexPath.row {
-            case 0: option = .cache
-            case 1: option = .searchHistory
-            case 2: option = .loginAndData
-            default: option = .scriptData
-            }
-
-            if selectedOptions.contains(option) {
-                selectedOptions.remove(option)
-            } else {
-                selectedOptions.insert(option)
-            }
-            saveOptions()
-            tableView.reloadRows(at: [indexPath], with: .automatic)
-        } else if indexPath.section == 1 {
-            requestCleanConfirmation()
+            options[indexPath.row].isSelected.toggle()
+            tableView.reloadRows(at: [indexPath], with: .none)
+            updateClearButtonState()
         } else {
-            let manager = WebsiteDataManagerViewController()
-            if let nav = navigationController {
-                nav.pushViewController(manager, animated: true)
-            } else {
-                onOpenWebsiteDataManager?()
-            }
+            let managerVC = WebsiteDataManagerViewController()
+            navigationController?.pushViewController(managerVC, animated: true)
         }
     }
-}
 
-final class CleanOptionRowCell: UITableViewCell {
-    private let titleLabel = UILabel()
-    private let checkIcon = UIImageView()
-    private var regularConstraints: [NSLayoutConstraint] = []
-    private var centeredConstraints: [NSLayoutConstraint] = []
-
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
-        backgroundColor = .secondarySystemGroupedBackground
-
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
-
-        checkIcon.translatesAutoresizingMaskIntoConstraints = false
-        checkIcon.image = UIImage(systemName: "checkmark")
-        checkIcon.tintColor = .systemBlue
-
-        contentView.addSubview(titleLabel)
-        contentView.addSubview(checkIcon)
-
-        regularConstraints = [
-            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            titleLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: checkIcon.leadingAnchor, constant: -8),
-            checkIcon.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            checkIcon.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            checkIcon.widthAnchor.constraint(equalToConstant: 18),
-            checkIcon.heightAnchor.constraint(equalToConstant: 18)
-        ]
-
-        centeredConstraints = [
-            titleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-            titleLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
-        ]
-
-        NSLayoutConstraint.activate(regularConstraints)
+    private func updateClearButtonState() {
+        let hasSelected = options.contains(where: { $0.isSelected })
+        clearButton.isEnabled = hasSelected
+        clearButton.backgroundColor = hasSelected ? .systemRed : .systemGray4
     }
 
-    required init?(coder: NSCoder) { nil }
+    @objc private func handleClearButtonTapped() {
+        let selectedItems = options.filter { $0.isSelected }
+        guard !selectedItems.isEmpty else { return }
 
-    func configure(title: String, isChecked: Bool, isActionButton: Bool, textColor: UIColor? = nil) {
-        titleLabel.text = title
+        let alert = UIAlertController(
+            title: "确认清除",
+            message: "确定要清除选中的数据吗？此操作无法撤销。",
+            preferredStyle: .actionSheet
+        )
 
-        if isActionButton {
-            titleLabel.textColor = textColor ?? .label
-            titleLabel.textAlignment = .center
-            titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-            checkIcon.isHidden = true
-            NSLayoutConstraint.deactivate(regularConstraints)
-            NSLayoutConstraint.activate(centeredConstraints)
+        let confirmAction = UIAlertAction(title: "立即清除", style: .destructive) { [weak self] _ in
+            self?.performDataClearing(selectedItems: selectedItems)
+        }
+        let cancelAction = UIAlertAction(title: "取消", style: .cancel)
+
+        alert.addAction(confirmAction)
+        alert.addAction(cancelAction)
+
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = clearButton
+            popover.sourceRect = clearButton.bounds
+        }
+
+        present(alert, animated: true)
+    }
+
+    private func performDataClearing(selectedItems: [CleanOptionItem]) {
+        clearButton.isEnabled = false
+        clearButton.setTitle("正在清除...", for: .normal)
+
+        var recordTypes = Set<String>()
+        for item in selectedItems {
+            switch item.type {
+            case .history:
+                HistoryStore.shared.clearAll()
+            case .cache:
+                recordTypes.insert(WKWebsiteDataTypeDiskCache)
+                recordTypes.insert(WKWebsiteDataTypeMemoryCache)
+                recordTypes.insert(WKWebsiteDataTypeOfflineWebApplicationCache)
+            case .cookies:
+                recordTypes.insert(WKWebsiteDataTypeCookies)
+            case .localStorage:
+                recordTypes.insert(WKWebsiteDataTypeLocalStorage)
+                recordTypes.insert(WKWebsiteDataTypeIndexedDBDatabases)
+                recordTypes.insert(WKWebsiteDataTypeWebSQLDatabases)
+            }
+        }
+
+        let finishHandler = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                NotificationCenter.default.post(name: NSNotification.Name("WebsiteDataClearedNotification"), object: nil)
+                self.onDataCleared?()
+
+                self.clearButton.isEnabled = true
+                self.clearButton.setTitle("立即清除所选数据", for: .normal)
+
+                let tipAlert = UIAlertController(title: "清除完成", message: "选中的浏览数据已成功清除。", preferredStyle: .alert)
+                tipAlert.addAction(UIAlertAction(title: "好的", style: .default))
+                self.present(tipAlert, animated: true)
+            }
+        }
+
+        if recordTypes.isEmpty {
+            finishHandler()
         } else {
-            titleLabel.textColor = .label
-            titleLabel.textAlignment = .left
-            titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
-            checkIcon.isHidden = !isChecked
-            NSLayoutConstraint.deactivate(centeredConstraints)
-            NSLayoutConstraint.activate(regularConstraints)
+            let dataStore = WKWebsiteDataStore.default()
+            dataStore.fetchDataRecords(ofTypes: recordTypes) { records in
+                dataStore.removeData(ofTypes: recordTypes, for: records) {
+                    finishHandler()
+                }
+            }
         }
     }
 }

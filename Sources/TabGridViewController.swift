@@ -1,303 +1,364 @@
 import UIKit
 
-final class TabGridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
-    private var tabs: [TabItem]
-    private var activeIndex: Int
-    private var collectionView: UICollectionView!
-    private let addButton = TouchButton()
-    private let flowLayout = UICollectionViewFlowLayout()
+public final class TabGridCardCell: UICollectionViewCell {
+    public static let identifier = "TabGridCardCell"
 
-    var onSelectTab: ((Int) -> Void)?
-    var onCloseTab: ((Int) -> Void)?
-    var onClearAllTabs: (() -> Void)?
-    var onNewTab: (() -> Void)?
+    public var onCloseButtonTapped: (() -> Void)?
 
-    init(tabs: [TabItem], activeIndex: Int) {
-        self.tabs = tabs
-        self.activeIndex = activeIndex
-        super.init(nibName: nil, bundle: nil)
+    private let headerBar: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = UIColor { trait in
+            return trait.userInterfaceStyle == .dark
+                ? UIColor(white: 0.22, alpha: 1.0)
+                : UIColor(white: 0.94, alpha: 1.0)
+        }
+        return view
+    }()
+
+    private let titleLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        label.textColor = .label
+        label.lineBreakMode = .byTruncatingTail
+        return label
+    }()
+
+    private let closeButton: UIButton = {
+        let btn = UIButton(type: .system)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .bold)
+        let img = UIImage(systemName: "xmark", withConfiguration: config)
+        btn.setImage(img, for: .normal)
+        btn.tintColor = .secondaryLabel
+        btn.backgroundColor = UIColor { trait in
+            return trait.userInterfaceStyle == .dark
+                ? UIColor(white: 0.35, alpha: 0.8)
+                : UIColor(white: 0.85, alpha: 0.8)
+        }
+        btn.layer.cornerRadius = 11
+        btn.layer.masksToBounds = true
+        return btn
+    }()
+
+    private let previewImageView: UIImageView = {
+        let iv = UIImageView()
+        iv.translatesAutoresizingMaskIntoConstraints = false
+        iv.contentMode = .scaleAspectFill
+        iv.clipsToBounds = true
+        iv.backgroundColor = .systemBackground
+        return iv
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.layer.cornerRadius = 14
+        contentView.layer.masksToBounds = true
+        contentView.backgroundColor = .systemBackground
+
+        layer.cornerRadius = 14
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+        layer.shadowRadius = 6
+        layer.shadowOpacity = 0.12
+        layer.masksToBounds = false
+
+        contentView.addSubview(headerBar)
+        headerBar.addSubview(titleLabel)
+        headerBar.addSubview(closeButton)
+        contentView.addSubview(previewImageView)
+
+        NSLayoutConstraint.activate([
+            headerBar.topAnchor.constraint(equalTo: contentView.topAnchor),
+            headerBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            headerBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            headerBar.heightAnchor.constraint(equalToConstant: 34),
+
+            titleLabel.leadingAnchor.constraint(equalTo: headerBar.leadingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -6),
+            titleLabel.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
+
+            closeButton.trailingAnchor.constraint(equalTo: headerBar.trailingAnchor, constant: -8),
+            closeButton.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 22),
+            closeButton.heightAnchor.constraint(equalToConstant: 22),
+
+            previewImageView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
+            previewImageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            previewImageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            previewImageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+
+        closeButton.addTarget(self, action: #selector(handleClose), for: .touchUpInside)
     }
 
     required init?(coder: NSCoder) {
-        nil
+        fatalError("init(coder:) has not been implemented")
     }
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
+    @objc private func handleClose() {
+        onCloseButtonTapped?()
+    }
 
-        title = "标签页"
+    public func configure(tab: TabItem, isActive: Bool) {
+        titleLabel.text = tab.title.isEmpty ? "新标签页" : tab.title
+        previewImageView.image = tab.snapshot
+
+        if isActive {
+            contentView.layer.borderColor = UIColor.systemBlue.cgColor
+            contentView.layer.borderWidth = 3.0
+        } else {
+            contentView.layer.borderColor = UIColor.separator.cgColor
+            contentView.layer.borderWidth = 0.5
+        }
+    }
+}
+
+public protocol TabGridViewControllerDelegate: AnyObject {
+    func tabGridDidSelectTab(at index: Int)
+    func tabGridDidCloseTab(at index: Int)
+    func tabGridDidCreateNewTab()
+    func tabGridDidCloseAllTabs()
+}
+
+public final class TabGridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+
+    public weak var delegate: TabGridViewControllerDelegate?
+    public var tabs: [TabItem] = []
+    public var activeTabIndex: Int = 0
+
+    private let topNavBar: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = .systemGroupedBackground
+        return view
+    }()
+
+    private let clearAllButton: UIButton = {
+        let btn = UIButton(type: .system)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        let img = UIImage(systemName: "trash")
+        btn.setImage(img, for: .normal)
+        btn.tintColor = .systemBlue
+        return btn
+    }()
+
+    private let navTitleLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "标签页"
+        label.font = UIFont.systemFont(ofSize: 17, weight: .bold)
+        label.textAlignment = .center
+        return label
+    }()
+
+    private let doneButton: UIButton = {
+        let btn = UIButton(type: .system)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.setTitle("完成", for: .normal)
+        btn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 16)
+        btn.tintColor = .systemBlue
+        return btn
+    }()
+
+    private lazy var collectionView: UICollectionView = {
+        let layout = UICollectionViewFlowLayout()
+        layout.minimumLineSpacing = 14
+        layout.minimumInteritemSpacing = 12
+        layout.scrollDirection = .vertical
+        let cv = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        cv.translatesAutoresizingMaskIntoConstraints = false
+        cv.backgroundColor = .systemGroupedBackground
+        cv.showsVerticalScrollIndicator = true
+        cv.alwaysBounceVertical = true
+        return cv
+    }()
+
+    private let addTabButton: UIButton = {
+        let btn = UIButton(type: .system)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        let cfg = UIImage.SymbolConfiguration(pointSize: 24, weight: .medium)
+        btn.setImage(UIImage(systemName: "plus", withConfiguration: cfg), for: .normal)
+        btn.tintColor = .white
+        btn.backgroundColor = .systemBlue
+        btn.layer.cornerRadius = 28
+        btn.layer.masksToBounds = false
+        btn.layer.shadowColor = UIColor.systemBlue.cgColor
+        btn.layer.shadowOffset = CGSize(width: 0, height: 4)
+        btn.layer.shadowRadius = 8
+        btn.layer.shadowOpacity = 0.35
+        return btn
+    }()
+
+    public override func viewDidLoad() {
+        super.viewDidLoad()
         view.backgroundColor = .systemGroupedBackground
 
-        flowLayout.minimumInteritemSpacing = 12
-        flowLayout.minimumLineSpacing = 16
-        flowLayout.sectionInset = UIEdgeInsets(top: 16, left: 16, bottom: 88, right: 16)
+        setupLayout()
+        setupActions()
 
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: flowLayout)
-        collectionView.translatesAutoresizingMaskIntoConstraints = false
-        collectionView.backgroundColor = .clear
         collectionView.dataSource = self
         collectionView.delegate = self
-        collectionView.alwaysBounceVertical = true
-        collectionView.showsVerticalScrollIndicator = false
-        collectionView.register(TabGridCell.self, forCellWithReuseIdentifier: "TabGridCell")
+        collectionView.register(TabGridCardCell.self, forCellWithReuseIdentifier: TabGridCardCell.identifier)
+    }
 
-        addButton.translatesAutoresizingMaskIntoConstraints = false
+    public override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        updateDynamicLayoutAndScroll()
+    }
 
-        var configuration = UIButton.Configuration.filled()
-        configuration.image = UIImage(
-            systemName: "plus",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
-        )
-        configuration.cornerStyle = .capsule
-        configuration.baseBackgroundColor = .systemBlue
-        configuration.baseForegroundColor = .white
+    public override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateDynamicLayoutAndScroll()
+    }
 
-        addButton.configuration = configuration
-        addButton.layer.shadowColor = UIColor.black.cgColor
-        addButton.layer.shadowOpacity = 0.1
-        addButton.layer.shadowRadius = 8
-        addButton.layer.shadowOffset = CGSize(width: 0, height: 3)
-        addButton.addTarget(self, action: #selector(handleNewTab), for: .touchUpInside)
+    private func setupLayout() {
+        view.addSubview(topNavBar)
+        topNavBar.addSubview(clearAllButton)
+        topNavBar.addSubview(navTitleLabel)
+        topNavBar.addSubview(doneButton)
 
         view.addSubview(collectionView)
-        view.addSubview(addButton)
+        view.addSubview(addTabButton)
 
         NSLayoutConstraint.activate([
-            collectionView.topAnchor.constraint(equalTo: view.topAnchor),
+            topNavBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            topNavBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topNavBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topNavBar.heightAnchor.constraint(equalToConstant: 44),
+
+            clearAllButton.leadingAnchor.constraint(equalTo: topNavBar.leadingAnchor, constant: 16),
+            clearAllButton.centerYAnchor.constraint(equalTo: topNavBar.centerYAnchor),
+            clearAllButton.widthAnchor.constraint(equalToConstant: 32),
+            clearAllButton.heightAnchor.constraint(equalToConstant: 32),
+
+            doneButton.trailingAnchor.constraint(equalTo: topNavBar.trailingAnchor, constant: -16),
+            doneButton.centerYAnchor.constraint(equalTo: topNavBar.centerYAnchor),
+            doneButton.heightAnchor.constraint(equalToConstant: 32),
+
+            navTitleLabel.centerXAnchor.constraint(equalTo: topNavBar.centerXAnchor),
+            navTitleLabel.centerYAnchor.constraint(equalTo: topNavBar.centerYAnchor),
+
+            collectionView.topAnchor.constraint(equalTo: topNavBar.bottomAnchor),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            addButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            addButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-            addButton.widthAnchor.constraint(equalToConstant: 48),
-            addButton.heightAnchor.constraint(equalToConstant: 48)
+            addTabButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            addTabButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            addTabButton.widthAnchor.constraint(equalToConstant: 56),
+            addTabButton.heightAnchor.constraint(equalToConstant: 56)
         ])
-
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "trash"),
-            style: .plain,
-            target: self,
-            action: #selector(handleClearAllTabs)
-        )
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "完成",
-            style: .done,
-            target: self,
-            action: #selector(handleDone)
-        )
     }
 
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        updateLayoutInsets()
-    }
-
-    private func updateLayoutInsets() {
-        guard let layout = collectionView.collectionViewLayout as? UICollectionViewFlowLayout else { return }
-
-        let columns: CGFloat = 2
-        let padding: CGFloat = 16
-        let spacing: CGFloat = 16
-        let totalWidth = collectionView.bounds.width
-        guard totalWidth > 0 else { return }
-
-        let itemWidth = floor((totalWidth - padding * 2 - spacing * (columns - 1)) / columns)
-        let itemHeight = floor(itemWidth * 1.35)
-
-        layout.itemSize = CGSize(width: itemWidth, height: itemHeight)
-
-        let totalTabs = tabs.count
-        let rows = max(1, Int(ceil(Double(totalTabs) / Double(columns))))
-        let totalCardsHeight = CGFloat(rows) * itemHeight + CGFloat(max(0, rows - 1)) * spacing
-
-        let bottomSpace: CGFloat = 88
-        let topBarHeight = (navigationController?.navigationBar.frame.height ?? 44) + view.safeAreaInsets.top
-        let availableHeight = view.bounds.height - topBarHeight - bottomSpace
-
-        let targetTop: CGFloat
-        if availableHeight > totalCardsHeight && totalTabs > 0 {
-            targetTop = availableHeight - totalCardsHeight + 16
-        } else {
-            targetTop = 16
-        }
-
-        let newInsets = UIEdgeInsets(top: max(16, targetTop), left: padding, bottom: bottomSpace, right: padding)
-        if layout.sectionInset != newInsets {
-            layout.sectionInset = newInsets
-            layout.invalidateLayout()
-        }
-    }
-
-    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        tabs.count
-    }
-
-    func collectionView(
-        _ collectionView: UICollectionView,
-        cellForItemAt indexPath: IndexPath
-    ) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(
-            withReuseIdentifier: "TabGridCell",
-            for: indexPath
-        ) as! TabGridCell
-
-        let tab = tabs[indexPath.item]
-        cell.configure(tab: tab, isActive: indexPath.item == activeIndex)
-
-        cell.onClose = { [weak self] in
-            self?.closeTab(at: indexPath.item)
-        }
-
-        return cell
-    }
-
-    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        onSelectTab?(indexPath.item)
-        dismiss(animated: true)
-    }
-
-    func collectionView(
-        _ collectionView: UICollectionView,
-        layout collectionViewLayout: UICollectionViewLayout,
-        sizeForItemAt indexPath: IndexPath
-    ) -> CGSize {
-        let width = floor((view.bounds.width - 44) / 2)
-        return CGSize(width: width, height: floor(width * 1.35))
-    }
-
-    private func closeTab(at index: Int) {
-        guard tabs.indices.contains(index) else {
-            return
-        }
-
-        tabs.remove(at: index)
-
-        if activeIndex == index {
-            activeIndex = max(0, index - 1)
-        } else if activeIndex > index {
-            activeIndex -= 1
-        }
-
-        updateLayoutInsets()
-        collectionView.reloadData()
-        onCloseTab?(index)
-
-        if tabs.isEmpty {
-            dismiss(animated: true)
-        }
-    }
-
-    @objc private func handleClearAllTabs() {
-        guard !tabs.isEmpty else { return }
-        let alert = UIAlertController(title: "关闭所有标签页", message: "确定要关闭所有标签页吗？", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "确定关闭", style: .destructive) { [weak self] _ in
-            self?.dismiss(animated: true) {
-                self?.onClearAllTabs?()
-            }
-        })
-        present(alert, animated: true)
-    }
-
-    @objc private func handleNewTab() {
-        dismiss(animated: true) { [weak self] in
-            self?.onNewTab?()
-        }
+    private func setupActions() {
+        doneButton.addTarget(self, action: #selector(handleDone), for: .touchUpInside)
+        clearAllButton.addTarget(self, action: #selector(handleClearAll), for: .touchUpInside)
+        addTabButton.addTarget(self, action: #selector(handleAddTab), for: .touchUpInside)
     }
 
     @objc private func handleDone() {
         dismiss(animated: true)
     }
-}
 
-final class TabGridCell: UICollectionViewCell {
-    private let headerView = UIView()
-    private let thumbnailView = UIImageView()
-    private let titleLabel = UILabel()
-    private let closeButton = TouchButton()
-
-    var onClose: (() -> Void)?
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-
-        contentView.backgroundColor = .secondarySystemGroupedBackground
-        contentView.layer.cornerRadius = 14
-        contentView.layer.masksToBounds = true
-
-        headerView.translatesAutoresizingMaskIntoConstraints = false
-        headerView.backgroundColor = .secondarySystemGroupedBackground
-
-        thumbnailView.translatesAutoresizingMaskIntoConstraints = false
-        thumbnailView.contentMode = .scaleAspectFill
-        thumbnailView.clipsToBounds = true
-        thumbnailView.backgroundColor = .systemBackground
-
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        titleLabel.textColor = .label
-        titleLabel.lineBreakMode = .byTruncatingTail
-
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.tintColor = .secondaryLabel
-        closeButton.setImage(
-            UIImage(
-                systemName: "xmark.circle.fill",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-            ),
-            for: .normal
-        )
-        closeButton.hitTestInsets = UIEdgeInsets(top: -12, left: -12, bottom: -12, right: -12)
-        closeButton.addTarget(self, action: #selector(handleClose), for: .touchUpInside)
-
-        headerView.addSubview(titleLabel)
-        headerView.addSubview(closeButton)
-
-        contentView.addSubview(headerView)
-        contentView.addSubview(thumbnailView)
-
-        NSLayoutConstraint.activate([
-            headerView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            headerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            headerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            headerView.heightAnchor.constraint(equalToConstant: 34),
-
-            titleLabel.leadingAnchor.constraint(equalTo: headerView.leadingAnchor, constant: 10),
-            titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
-            titleLabel.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
-
-            closeButton.trailingAnchor.constraint(equalTo: headerView.trailingAnchor, constant: -7),
-            closeButton.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: 24),
-            closeButton.heightAnchor.constraint(equalToConstant: 24),
-
-            thumbnailView.topAnchor.constraint(equalTo: headerView.bottomAnchor),
-            thumbnailView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            thumbnailView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            thumbnailView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-        ])
+    @objc private func handleClearAll() {
+        guard !tabs.isEmpty else { return }
+        let alert = UIAlertController(title: "关闭所有标签页", message: "确定要关闭全部 \(tabs.count) 个标签页吗？", preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "关闭所有标签页", style: .destructive) { [weak self] _ in
+            self?.delegate?.tabGridDidCloseAllTabs()
+            self?.tabs.removeAll()
+            self?.collectionView.reloadData()
+            self?.dismiss(animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = clearAllButton
+            popover.sourceRect = clearAllButton.bounds
+        }
+        present(alert, animated: true)
     }
 
-    required init?(coder: NSCoder) {
-        nil
+    @objc private func handleAddTab() {
+        delegate?.tabGridDidCreateNewTab()
+        dismiss(animated: true)
     }
 
-    override func prepareForReuse() {
-        super.prepareForReuse()
-        titleLabel.text = nil
-        thumbnailView.image = nil
-        contentView.layer.borderWidth = 0
+    private func updateDynamicLayoutAndScroll() {
+        guard collectionView.bounds.width > 0 else { return }
+
+        let totalTabs = tabs.count
+        let rows = Int(ceil(Double(totalTabs) / 2.0))
+        let width = (collectionView.bounds.width - 16 * 2 - 12) / 2
+        let height = width * 1.35
+        let spacing: CGFloat = 14
+        let bottomPadding: CGFloat = 88 // 底部加号按钮空间
+        let totalCardsHeight = CGFloat(rows) * height + CGFloat(max(0, rows - 1)) * spacing
+
+        let visibleHeight = collectionView.bounds.height
+        let topInset: CGFloat
+        if totalCardsHeight + bottomPadding < visibleHeight {
+            topInset = max(16, visibleHeight - bottomPadding - totalCardsHeight)
+        } else {
+            topInset = 16
+        }
+
+        if let layout = collectionView.collectionViewLayout as? UICollectionViewFlowLayout {
+            layout.sectionInset = UIEdgeInsets(top: topInset, left: 16, bottom: bottomPadding, right: 16)
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let maxOffsetY = max(0, self.collectionView.contentSize.height - self.collectionView.bounds.height)
+            if maxOffsetY > 0 {
+                self.collectionView.setContentOffset(CGPoint(x: 0, y: maxOffsetY), animated: false)
+            }
+        }
     }
 
-    func configure(tab: TabItem, isActive: Bool) {
-        titleLabel.text = tab.title.isEmpty ? "新标签页" : tab.title
-        thumbnailView.image = tab.snapshot
-        contentView.layer.borderWidth = isActive ? 2 : 0
-        contentView.layer.borderColor = isActive ? UIColor.systemBlue.cgColor : UIColor.clear.cgColor
+    public func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        return tabs.count
     }
 
-    @objc private func handleClose() {
-        onClose?()
+    public func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
+        let width = (collectionView.bounds.width - 16 * 2 - 12) / 2
+        return CGSize(width: width, height: width * 1.35)
+    }
+
+    public func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        guard let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TabGridCardCell.identifier, for: indexPath) as? TabGridCardCell else {
+            return UICollectionViewCell()
+        }
+        let tab = tabs[indexPath.row]
+        let isActive = (indexPath.row == activeTabIndex)
+        cell.configure(tab: tab, isActive: isActive)
+        cell.onCloseButtonTapped = { [weak self] in
+            self?.closeTab(at: indexPath.row)
+        }
+        return cell
+    }
+
+    public func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        delegate?.tabGridDidSelectTab(at: indexPath.row)
+        dismiss(animated: true)
+    }
+
+    private func closeTab(at index: Int) {
+        guard index < tabs.count else { return }
+        tabs.remove(at: index)
+        delegate?.tabGridDidCloseTab(at: index)
+
+        if tabs.isEmpty {
+            delegate?.tabGridDidCreateNewTab()
+            dismiss(animated: true)
+            return
+        }
+
+        if activeTabIndex >= tabs.count {
+            activeTabIndex = tabs.count - 1
+        }
+
+        collectionView.reloadData()
+        updateDynamicLayoutAndScroll()
     }
 }
