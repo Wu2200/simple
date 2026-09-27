@@ -2056,7 +2056,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let nav = UINavigationController(rootViewController: editor)
         if #available(iOS 15.0, *) {
             if let presentation = nav.sheetPresentationController {
-                presentation.detents = [.medium(), .large()]
+                presentation.detents = [.medium()] // 向上展开严格半屏
                 presentation.prefersGrabberVisible = true
                 presentation.preferredCornerRadius = 24
             }
@@ -2740,7 +2740,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 2. 电脑版 (与下载管理互换位置，长按进入标识设置)
+        // 2. 电脑版 (长按进入标识设置)
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
             title: isDesktop ? "移动版" : "电脑版",
@@ -2762,7 +2762,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 3. 下载管理 (与电脑版互换位置)
+        // 3. 下载管理
         items.append(CustomBottomSheetItem(
             title: "下载管理",
             iconName: "arrow.down.circle",
@@ -2837,7 +2837,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         ))
 
         // Page 2: Secondary items
-        // 9. 扩展脚本 (由第一页移入第二页)
+        // 9. 扩展脚本
         items.append(CustomBottomSheetItem(
             title: "扩展脚本",
             iconName: "puzzlepiece.extension",
@@ -3099,7 +3099,8 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
     }
 }
 
-final class ExpandedURLEditorViewController: UIViewController {
+// MARK: - 向上半屏展开的网址编辑器 (无多余按钮)
+final class ExpandedURLEditorViewController: UIViewController, UITextViewDelegate {
     private let initialURL: String
     private let onConfirm: (String) -> Void
     private let textView = UITextView()
@@ -3115,7 +3116,7 @@ final class ExpandedURLEditorViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "编辑网址"
-        view.backgroundColor = .systemBackground
+        view.backgroundColor = .systemGroupedBackground
 
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             title: "取消",
@@ -3130,75 +3131,43 @@ final class ExpandedURLEditorViewController: UIViewController {
             action: #selector(handleGo)
         )
 
-        let toolbarStack = UIStackView()
-        toolbarStack.translatesAutoresizingMaskIntoConstraints = false
-        toolbarStack.axis = .horizontal
-        toolbarStack.distribution = .fillEqually
-        toolbarStack.spacing = 10
-
-        let clearBtn = createToolButton(title: "清空", action: #selector(handleClear))
-        let pasteBtn = createToolButton(title: "粘贴", action: #selector(handlePaste))
-        let copyBtn = createToolButton(title: "复制", action: #selector(handleCopy))
-
-        toolbarStack.addArrangedSubview(clearBtn)
-        toolbarStack.addArrangedSubview(pasteBtn)
-        toolbarStack.addArrangedSubview(copyBtn)
-
         let container = UIView()
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.backgroundColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0)
-        }
-        container.layer.cornerRadius = 14
+        container.backgroundColor = .secondarySystemGroupedBackground
+        container.layer.cornerRadius = 16
         container.layer.cornerCurve = .continuous
         container.clipsToBounds = true
 
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
-        textView.font = .systemFont(ofSize: 15, weight: .regular)
+        textView.font = .systemFont(ofSize: 15.5, weight: .regular)
         textView.textColor = .label
         textView.autocapitalizationType = .none
         textView.autocorrectionType = .no
         textView.text = initialURL
         textView.keyboardType = .webSearch
         textView.returnKeyType = .go
+        textView.delegate = self
 
         container.addSubview(textView)
-        view.addSubview(toolbarStack)
         view.addSubview(container)
 
         NSLayoutConstraint.activate([
-            toolbarStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            toolbarStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            toolbarStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            toolbarStack.heightAnchor.constraint(equalToConstant: 34),
-
-            container.topAnchor.constraint(equalTo: toolbarStack.bottomAnchor, constant: 12),
+            container.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 14),
             container.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             container.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            container.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            container.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -16),
 
-            textView.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            textView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
-            textView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
-            textView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8)
+            textView.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            textView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            textView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            textView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10)
         ])
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.textView.becomeFirstResponder()
+            self.textView.selectAll(nil)
         }
-    }
-
-    private func createToolButton(title: String, action: Selector) -> TouchButton {
-        let btn = TouchButton()
-        var config = UIButton.Configuration.gray()
-        config.title = title
-        config.cornerStyle = .capsule
-        config.buttonSize = .mini
-        config.baseForegroundColor = .label
-        btn.configuration = config
-        btn.addTarget(self, action: action, for: .touchUpInside)
-        return btn
     }
 
     @objc private func handleCancel() {
@@ -3214,18 +3183,351 @@ final class ExpandedURLEditorViewController: UIViewController {
         }
     }
 
-    @objc private func handleClear() {
-        textView.text = ""
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        if text == "\n" {
+            handleGo()
+            return false
+        }
+        return true
+    }
+}
+
+// MARK: - 浏览器标识管理 (仅手机版和电脑版两组，添加自定义位于各自组下)
+final class UserAgentManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    var onUASelected: ((UserAgentItem) -> Void)?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "浏览器标识 (UA)"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.rowHeight = 52
+        view.addSubview(tableView)
+
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
     }
 
-    @objc private func handlePaste() {
-        if let pasteString = UIPasteboard.general.string {
-            textView.text = pasteString
+    @objc private func handleDone() {
+        dismiss(animated: true)
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 2 // 0: 手机版, 1: 电脑版
+    }
+
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return section == 0 ? "手机版标识 (Mobile)" : "电脑版标识 (Desktop)"
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        if section == 0 {
+            return UserAgentStore.shared.loadMobileItems().count + 1
+        } else {
+            return UserAgentStore.shared.loadDesktopItems().count + 1
         }
     }
 
-    @objc private func handleCopy() {
-        UIPasteboard.general.string = textView.text
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "UACell")
+        cell.backgroundColor = .secondarySystemGroupedBackground
+
+        let isMobile = (indexPath.section == 0)
+        let items = isMobile ? UserAgentStore.shared.loadMobileItems() : UserAgentStore.shared.loadDesktopItems()
+
+        if indexPath.row == items.count {
+            // 组内底部的添加行
+            cell.textLabel?.text = isMobile ? "+ 添加自定义手机版标识" : "+ 添加自定义电脑版标识"
+            cell.textLabel?.textColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+            cell.textLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+            cell.detailTextLabel?.text = nil
+            cell.accessoryType = .none
+            cell.imageView?.image = UIImage(systemName: "plus.circle")
+            cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+            return cell
+        }
+
+        let item = items[indexPath.row]
+        cell.textLabel?.text = item.name
+        cell.textLabel?.textColor = .label
+        cell.textLabel?.font = .systemFont(ofSize: 15, weight: .regular)
+        cell.detailTextLabel?.text = item.uaString
+        cell.detailTextLabel?.textColor = .secondaryLabel
+        cell.detailTextLabel?.font = .systemFont(ofSize: 11, weight: .regular)
+        cell.imageView?.image = UIImage(systemName: isMobile ? "iphone" : "laptopcomputer")
+        cell.imageView?.tintColor = .secondaryLabel
+
+        let currentActiveItem = UserAgentStore.shared.getSelectedItem()
+        if item.id == currentActiveItem.id {
+            cell.accessoryType = .checkmark
+            cell.tintColor = .systemBlue
+            cell.textLabel?.textColor = .systemBlue
+        } else {
+            cell.accessoryType = .none
+        }
+
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+
+        let isMobile = (indexPath.section == 0)
+        let items = isMobile ? UserAgentStore.shared.loadMobileItems() : UserAgentStore.shared.loadDesktopItems()
+
+        if indexPath.row == items.count {
+            promptAddCustomUA(isDesktop: !isMobile)
+            return
+        }
+
+        let item = items[indexPath.row]
+        if isMobile {
+            UserAgentStore.shared.currentMode = .mobile
+            UserAgentStore.shared.setSelectedMobileId(item.id)
+        } else {
+            UserAgentStore.shared.currentMode = .desktop
+            UserAgentStore.shared.setSelectedDesktopId(item.id)
+        }
+
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        tableView.reloadData()
+        onUASelected?(item)
+    }
+
+    private func promptAddCustomUA(isDesktop: Bool) {
+        let typeStr = isDesktop ? "电脑版" : "手机版"
+        let alert = UIAlertController(title: "添加自定义\(typeStr)标识", message: nil, preferredStyle: .alert)
+        alert.addTextField { tf in
+            tf.placeholder = "标识名称（如：\(isDesktop ? "macOS Edge" : "Android Chrome")）"
+        }
+        alert.addTextField { tf in
+            tf.placeholder = "User-Agent 字符串"
+        }
+        alert.addAction(UIAlertAction(title: "保存并启用", style: .default) { [weak self] _ in
+            let name = alert.textFields?[0].text ?? ""
+            let ua = alert.textFields?[1].text ?? ""
+            UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: isDesktop ? .desktop : .mobile)
+            self?.tableView.reloadData()
+            let active = UserAgentStore.shared.getSelectedItem()
+            self?.onUASelected?(active)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let isMobile = (indexPath.section == 0)
+        let items = isMobile ? UserAgentStore.shared.loadMobileItems() : UserAgentStore.shared.loadDesktopItems()
+
+        guard indexPath.row < items.count else { return nil }
+        let item = items[indexPath.row]
+        guard item.isCustom else { return nil }
+
+        let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
+            UserAgentStore.shared.deleteCustomItem(id: item.id)
+            self?.tableView.reloadData()
+            let active = UserAgentStore.shared.getSelectedItem()
+            self?.onUASelected?(active)
+            completion(true)
+        }
+        return UISwipeActionsConfiguration(actions: [delete])
+    }
+}
+
+// MARK: - 站点域名高级设置面板
+final class DomainSettingsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    private let domain: String
+    private let onSettingsChanged: () -> Void
+    var onExtractText: (() -> Void)?
+
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+
+    init(domain: String, onSettingsChanged: @escaping () -> Void) {
+        self.domain = domain
+        self.onSettingsChanged = onSettingsChanged
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = domain
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.rowHeight = 50
+        view.addSubview(tableView)
+
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+
+    @objc private func handleDone() {
+        dismiss(animated: true) { [weak self] in
+            self?.onSettingsChanged()
+        }
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 2
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        if section == 0 { return 2 }
+        return 1
+    }
+
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return section == 0 ? "站点控制" : "更多操作"
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .default, reuseIdentifier: "SettingCell")
+        cell.backgroundColor = .secondarySystemGroupedBackground
+
+        if indexPath.section == 0 {
+            if indexPath.row == 0 {
+                cell.textLabel?.text = "启用广告拦截"
+                let toggle = UISwitch()
+                toggle.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "adBlock", defaultVal: true)
+                toggle.addTarget(self, action: #selector(handleAdBlockToggle(_:)), for: .valueChanged)
+                cell.accessoryView = toggle
+                cell.selectionStyle = .none
+            } else {
+                cell.textLabel?.text = "启用用户脚本"
+                let toggle = UISwitch()
+                toggle.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "userScripts", defaultVal: true)
+                toggle.addTarget(self, action: #selector(handleScriptToggle(_:)), for: .valueChanged)
+                cell.accessoryView = toggle
+                cell.selectionStyle = .none
+            }
+        } else {
+            cell.textLabel?.text = "提取网页所有文字"
+            cell.textLabel?.textColor = .systemBlue
+            cell.accessoryType = .disclosureIndicator
+        }
+        return cell
+    }
+
+    @objc private func handleAdBlockToggle(_ sender: UISwitch) {
+        DomainSettingsStore.shared.setBool(domain: domain, setting: "adBlock", value: sender.isOn)
+    }
+
+    @objc private func handleScriptToggle(_ sender: UISwitch) {
+        DomainSettingsStore.shared.setBool(domain: domain, setting: "userScripts", value: sender.isOn)
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        if indexPath.section == 1 {
+            dismiss(animated: true) { [weak self] in
+                self?.onExtractText?()
+            }
+        }
+    }
+}
+
+// MARK: - 油猴脚本代码编辑器
+final class UserScriptEditorViewController: UIViewController {
+    private let script: UserScript?
+    var onSave: ((UserScript) -> Void)?
+
+    private let nameField = UITextField()
+    private let matchField = UITextField()
+    private let codeTextView = UITextView()
+
+    init(script: UserScript?) {
+        self.script = script
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = script == nil ? "新建脚本" : "编辑脚本"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(handleCancel))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "保存", style: .done, target: self, action: #selector(handleSave))
+
+        let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 10
+        view.addSubview(stack)
+
+        nameField.placeholder = "脚本名称"
+        nameField.borderStyle = .roundedRect
+        nameField.text = script?.name
+
+        matchField.placeholder = "匹配规则 (如: *://*.example.com/*)"
+        matchField.borderStyle = .roundedRect
+        matchField.autocapitalizationType = .none
+        matchField.autocorrectionType = .no
+        matchField.text = script?.matchPattern ?? "*"
+
+        codeTextView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        codeTextView.layer.cornerRadius = 10
+        codeTextView.clipsToBounds = true
+        codeTextView.backgroundColor = .secondarySystemGroupedBackground
+        codeTextView.autocapitalizationType = .none
+        codeTextView.autocorrectionType = .no
+        codeTextView.text = script?.code ?? "// ==UserScript==\n// @name         新脚本\n// @match        *\n// ==/UserScript==\n\nconsole.log('脚本已运行');"
+
+        stack.addArrangedSubview(nameField)
+        stack.addArrangedSubview(matchField)
+        stack.addArrangedSubview(codeTextView)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+
+            nameField.heightAnchor.constraint(equalToConstant: 40),
+            matchField.heightAnchor.constraint(equalToConstant: 40)
+        ])
+    }
+
+    @objc private func handleCancel() {
+        dismiss(animated: true)
+    }
+
+    @objc private func handleSave() {
+        let name = nameField.text?.trimmingCharacters(in: .whitespaces) ?? "未命名脚本"
+        let match = matchField.text?.trimmingCharacters(in: .whitespaces) ?? "*"
+        let code = codeTextView.text ?? ""
+
+        let updated = UserScript(
+            id: script?.id ?? UUID().uuidString,
+            name: name.isEmpty ? "未命名脚本" : name,
+            matchPattern: match.isEmpty ? "*" : match,
+            code: code,
+            isEnabled: script?.isEnabled ?? true
+        )
+
+        dismiss(animated: true) { [weak self] in
+            self?.onSave?(updated)
+        }
     }
 }
