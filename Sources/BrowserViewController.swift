@@ -95,7 +95,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private let webContainer = UIView()
     private let homeView = UIView()
     private let homeScrollView = UIScrollView()
-    private var homeSearchEngineBadge: UILabel?
+    private let homeSearchContainer = UIView()
+    private let homeSearchField = AddressTextField()
 
     private let failureOverlayView = UIView()
     private let failureTitleLabel = UILabel()
@@ -110,7 +111,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private let addressContainer = UIView()
     private let lockButton = TouchButton()
     private let addressField = AddressTextField()
-    private let refreshButton = TouchButton()
     private let clearButton = TouchButton()
     private let progressView = UIProgressView(progressViewStyle: .default)
 
@@ -137,6 +137,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         HomeShortcut(title: "维基百科", urlString: "https://zh.wikipedia.org", iconName: "character.book.closed.fill", iconColor: .systemIndigo),
         HomeShortcut(title: "V2EX", urlString: "https://www.v2ex.com", iconName: "bubble.left.and.bubble.right.fill", iconColor: .systemGreen)
     ]
+
+    private var gentleToolbarIconColor: UIColor {
+        UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
+        }
+    }
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
         .darkContent
@@ -165,7 +171,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         EyeProtectionManager.shared.restoreState(in: view.window)
-        homeSearchEngineBadge?.text = "  \(SearchEngineStore.shared.currentEngine.name)  "
     }
 
     override func didReceiveMemoryWarning() {
@@ -300,11 +305,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private func makeSpacedThreeLinesIcon() -> UIImage {
         let size = CGSize(width: 20, height: 18)
         let renderer = UIGraphicsImageRenderer(size: size)
+        let strokeColor = gentleToolbarIconColor.resolvedColor(with: traitCollection)
         let img = renderer.image { ctx in
             let cg = ctx.cgContext
             cg.setLineWidth(1.8)
             cg.setLineCap(.round)
-            cg.setStrokeColor(UIColor.label.cgColor)
+            cg.setStrokeColor(strokeColor.cgColor)
 
             let yOffsets: [CGFloat] = [2.0, 9.0, 16.0]
             for y in yOffsets {
@@ -341,75 +347,59 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             contentContainer.widthAnchor.constraint(equalTo: homeScrollView.frameLayoutGuide.widthAnchor)
         ])
 
-        let searchCard = TouchButton()
-        searchCard.translatesAutoresizingMaskIntoConstraints = false
-        searchCard.backgroundColor = UIColor { trait in
+        homeSearchContainer.translatesAutoresizingMaskIntoConstraints = false
+        homeSearchContainer.backgroundColor = UIColor { trait in
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
         }
-        searchCard.layer.cornerRadius = 24
-        searchCard.layer.cornerCurve = .continuous
-        searchCard.layer.borderWidth = 0
-        searchCard.layer.shadowColor = UIColor.black.cgColor
-        searchCard.layer.shadowOpacity = 0.05
-        searchCard.layer.shadowRadius = 8
-        searchCard.layer.shadowOffset = CGSize(width: 0, height: 2)
-        searchCard.addTarget(self, action: #selector(focusAddressFieldFromHome), for: .touchUpInside)
+        homeSearchContainer.layer.cornerRadius = 24
+        homeSearchContainer.layer.cornerCurve = .continuous
+        homeSearchContainer.layer.shadowColor = UIColor.black.cgColor
+        homeSearchContainer.layer.shadowOpacity = 0.04
+        homeSearchContainer.layer.shadowRadius = 8
+        homeSearchContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
 
         let searchMagnifier = UIImageView()
         searchMagnifier.translatesAutoresizingMaskIntoConstraints = false
         searchMagnifier.image = UIImage(
             systemName: "magnifyingglass",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
         )
-        searchMagnifier.tintColor = .secondaryLabel
+        searchMagnifier.tintColor = UIColor(red: 0.50, green: 0.50, blue: 0.53, alpha: 1.0)
         searchMagnifier.isUserInteractionEnabled = false
 
-        let searchPrompt = UILabel()
-        searchPrompt.translatesAutoresizingMaskIntoConstraints = false
-        searchPrompt.text = "搜索或输入网址"
-        searchPrompt.font = .systemFont(ofSize: 15, weight: .regular)
-        searchPrompt.textColor = .secondaryLabel
-        searchPrompt.isUserInteractionEnabled = false
+        homeSearchField.translatesAutoresizingMaskIntoConstraints = false
+        homeSearchField.placeholder = "搜索或输入网址"
+        homeSearchField.font = .systemFont(ofSize: 15, weight: .regular)
+        homeSearchField.textColor = .label
+        homeSearchField.delegate = self
+        homeSearchField.keyboardType = .webSearch
+        homeSearchField.returnKeyType = .go
+        homeSearchField.autocapitalizationType = .none
+        homeSearchField.autocorrectionType = .no
+        homeSearchField.clearButtonMode = .whileEditing
 
-        let engineBadge = UILabel()
-        engineBadge.translatesAutoresizingMaskIntoConstraints = false
-        engineBadge.font = .systemFont(ofSize: 11, weight: .medium)
-        engineBadge.textColor = .secondaryLabel
-        engineBadge.backgroundColor = .tertiarySystemFill
-        engineBadge.layer.cornerRadius = 10
-        engineBadge.layer.cornerCurve = .continuous
-        engineBadge.clipsToBounds = true
-        engineBadge.textAlignment = .center
-        engineBadge.text = "  \(SearchEngineStore.shared.currentEngine.name)  "
-        engineBadge.isUserInteractionEnabled = false
-        self.homeSearchEngineBadge = engineBadge
-
-        searchCard.addSubview(searchMagnifier)
-        searchCard.addSubview(searchPrompt)
-        searchCard.addSubview(engineBadge)
+        homeSearchContainer.addSubview(searchMagnifier)
+        homeSearchContainer.addSubview(homeSearchField)
 
         NSLayoutConstraint.activate([
-            searchCard.heightAnchor.constraint(equalToConstant: 48),
+            homeSearchContainer.heightAnchor.constraint(equalToConstant: 48),
 
-            searchMagnifier.leadingAnchor.constraint(equalTo: searchCard.leadingAnchor, constant: 16),
-            searchMagnifier.centerYAnchor.constraint(equalTo: searchCard.centerYAnchor),
-            searchMagnifier.widthAnchor.constraint(equalToConstant: 20),
-            searchMagnifier.heightAnchor.constraint(equalToConstant: 20),
+            searchMagnifier.leadingAnchor.constraint(equalTo: homeSearchContainer.leadingAnchor, constant: 16),
+            searchMagnifier.centerYAnchor.constraint(equalTo: homeSearchContainer.centerYAnchor),
+            searchMagnifier.widthAnchor.constraint(equalToConstant: 18),
+            searchMagnifier.heightAnchor.constraint(equalToConstant: 18),
 
-            searchPrompt.leadingAnchor.constraint(equalTo: searchMagnifier.trailingAnchor, constant: 10),
-            searchPrompt.trailingAnchor.constraint(lessThanOrEqualTo: engineBadge.leadingAnchor, constant: -8),
-            searchPrompt.centerYAnchor.constraint(equalTo: searchCard.centerYAnchor),
-
-            engineBadge.trailingAnchor.constraint(equalTo: searchCard.trailingAnchor, constant: -14),
-            engineBadge.centerYAnchor.constraint(equalTo: searchCard.centerYAnchor),
-            engineBadge.heightAnchor.constraint(equalToConstant: 22)
+            homeSearchField.leadingAnchor.constraint(equalTo: searchMagnifier.trailingAnchor, constant: 10),
+            homeSearchField.trailingAnchor.constraint(equalTo: homeSearchContainer.trailingAnchor, constant: -16),
+            homeSearchField.topAnchor.constraint(equalTo: homeSearchContainer.topAnchor),
+            homeSearchField.bottomAnchor.constraint(equalTo: homeSearchContainer.bottomAnchor)
         ])
 
         let shortcutsHeader = UILabel()
         shortcutsHeader.translatesAutoresizingMaskIntoConstraints = false
         shortcutsHeader.text = "常用站点"
         shortcutsHeader.font = .systemFont(ofSize: 13, weight: .semibold)
-        shortcutsHeader.textColor = .secondaryLabel
+        shortcutsHeader.textColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
 
         let row1 = UIStackView()
         row1.axis = .horizontal
@@ -433,16 +423,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         shortcutsStack.axis = .vertical
         shortcutsStack.spacing = 14
 
-        contentContainer.addSubview(searchCard)
+        contentContainer.addSubview(homeSearchContainer)
         contentContainer.addSubview(shortcutsHeader)
         contentContainer.addSubview(shortcutsStack)
 
         NSLayoutConstraint.activate([
-            searchCard.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 54),
-            searchCard.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 20),
-            searchCard.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -20),
+            homeSearchContainer.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 50),
+            homeSearchContainer.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 20),
+            homeSearchContainer.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -20),
 
-            shortcutsHeader.topAnchor.constraint(equalTo: searchCard.bottomAnchor, constant: 32),
+            shortcutsHeader.topAnchor.constraint(equalTo: homeSearchContainer.bottomAnchor, constant: 32),
             shortcutsHeader.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 24),
 
             shortcutsStack.topAnchor.constraint(equalTo: shortcutsHeader.bottomAnchor, constant: 14),
@@ -467,7 +457,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         iconContainer.layer.cornerCurve = .continuous
         iconContainer.layer.borderWidth = 0
         iconContainer.layer.shadowColor = UIColor.black.cgColor
-        iconContainer.layer.shadowOpacity = 0.04
+        iconContainer.layer.shadowOpacity = 0.03
         iconContainer.layer.shadowRadius = 4
         iconContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
         iconContainer.isUserInteractionEnabled = false
@@ -487,7 +477,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         label.translatesAutoresizingMaskIntoConstraints = false
         label.text = shortcut.title
         label.font = .systemFont(ofSize: 11, weight: .regular)
-        label.textColor = .label
+        label.textColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
+        }
         label.textAlignment = .center
         label.isUserInteractionEnabled = false
 
@@ -521,10 +513,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard homeShortcuts.indices.contains(index),
               let url = URL(string: homeShortcuts[index].urlString) else { return }
         load(url: url)
-    }
-
-    @objc private func focusAddressFieldFromHome() {
-        addressField.becomeFirstResponder()
     }
 
     private func configureFailureView() {
@@ -593,7 +581,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         reloadConfig.baseBackgroundColor = .systemBlue
         reloadConfig.baseForegroundColor = .white
         failureReloadButton.configuration = reloadConfig
-        failureReloadButton.addTarget(self, action: #selector(handleRefreshTap), for: .touchUpInside)
+        failureReloadButton.addTarget(self, action: #selector(handleFailureReload), for: .touchUpInside)
 
         let failureButtons = UIStackView(arrangedSubviews: [failureBackButton, failureReloadButton])
         failureButtons.translatesAutoresizingMaskIntoConstraints = false
@@ -679,13 +667,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         addressContainer.layer.cornerCurve = .continuous
         addressContainer.layer.borderWidth = 0
         addressContainer.layer.shadowColor = UIColor.black.cgColor
-        addressContainer.layer.shadowOpacity = 0.05
+        addressContainer.layer.shadowOpacity = 0.04
         addressContainer.layer.shadowRadius = 8
         addressContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
         addressContainer.clipsToBounds = false
 
         lockButton.translatesAutoresizingMaskIntoConstraints = false
-        lockButton.tintColor = .secondaryLabel
+        lockButton.tintColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
         lockButton.setImage(
             UIImage(
                 systemName: "lock.fill",
@@ -721,27 +709,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             for: .editingChanged
         )
 
-        refreshButton.translatesAutoresizingMaskIntoConstraints = false
-        refreshButton.tintColor = .secondaryLabel
-        refreshButton.setImage(
-            UIImage(
-                systemName: "arrow.clockwise",
-                withConfiguration: UIImage.SymbolConfiguration(
-                    pointSize: 13,
-                    weight: .semibold
-                )
-            ),
-            for: .normal
-        )
-        refreshButton.hitTestInsets = UIEdgeInsets(top: -8, left: -8, bottom: -8, right: -8)
-        refreshButton.addTarget(
-            self,
-            action: #selector(handleRefreshTap),
-            for: .touchUpInside
-        )
-
         clearButton.translatesAutoresizingMaskIntoConstraints = false
-        clearButton.tintColor = .secondaryLabel
+        clearButton.tintColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
         clearButton.setImage(
             UIImage(
                 systemName: "xmark.circle.fill",
@@ -814,7 +783,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         addressContainer.addSubview(lockButton)
         addressContainer.addSubview(addressField)
-        addressContainer.addSubview(refreshButton)
         addressContainer.addSubview(clearButton)
         addressContainer.addSubview(progressView)
 
@@ -904,8 +872,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 constant: 6
             ),
             addressField.trailingAnchor.constraint(
-                equalTo: refreshButton.leadingAnchor,
-                constant: -6
+                equalTo: addressContainer.trailingAnchor,
+                constant: -12
             ),
             addressField.topAnchor.constraint(
                 equalTo: addressContainer.topAnchor
@@ -924,16 +892,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 equalTo: addressContainer.bottomAnchor
             ),
             progressView.heightAnchor.constraint(equalToConstant: 2),
-
-            refreshButton.trailingAnchor.constraint(
-                equalTo: addressContainer.trailingAnchor,
-                constant: -10
-            ),
-            refreshButton.centerYAnchor.constraint(
-                equalTo: addressContainer.centerYAnchor
-            ),
-            refreshButton.widthAnchor.constraint(equalToConstant: 24),
-            refreshButton.heightAnchor.constraint(equalToConstant: 24),
 
             clearButton.trailingAnchor.constraint(
                 equalTo: addressContainer.trailingAnchor,
@@ -1007,7 +965,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
             )
         }
-        configuration.baseForegroundColor = .label
+        configuration.baseForegroundColor = gentleToolbarIconColor
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
 
         button.configuration = configuration
@@ -1182,7 +1140,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureOverlayView.isHidden = true
         addressField.text = ""
         addressField.resignFirstResponder()
-        homeSearchEngineBadge?.text = "  \(SearchEngineStore.shared.currentEngine.name)  "
+        homeSearchField.text = ""
+        homeSearchField.resignFirstResponder()
         resetProgress()
         updateUIState()
     }
@@ -1191,6 +1150,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         homeView.alpha = 0
         webContainer.alpha = 1
         failureOverlayView.isHidden = true
+        homeSearchField.resignFirstResponder()
         updateUIState()
     }
 
@@ -1221,17 +1181,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         backButton.isEnabled = !isHome && canGoBack
         forwardButton.isEnabled = !isHome && activeTab.webView.canGoForward
         moreButton.isEnabled = true
-        refreshButton.isEnabled = !isHome
-
-        let refreshImage = activeTab.isLoading ? "xmark" : "arrow.clockwise"
-
-        refreshButton.setImage(
-            UIImage(
-                systemName: refreshImage,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-            ),
-            for: .normal
-        )
     }
 
     private func destinationURL(from input: String) -> URL? {
@@ -1292,11 +1241,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private func updateAddressEditingAppearance() {
         let editing = addressField.isFirstResponder
 
-        refreshButton.isHidden = editing
         clearButton.isHidden = !editing
 
         UIView.animate(withDuration: 0.12) {
-            self.refreshButton.alpha = editing ? 0 : 1
             self.clearButton.alpha = editing ? 1 : 0
         }
     }
@@ -1355,34 +1302,38 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func textFieldDidBeginEditing(_ textField: UITextField) {
-        if let url = activeTab.url {
-            textField.text = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-        }
+        if textField == addressField {
+            if let url = activeTab.url {
+                textField.text = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+            }
 
-        navigationStack.isHidden = true
-        updateAddressEditingAppearance()
+            navigationStack.isHidden = true
+            updateAddressEditingAppearance()
 
-        editingDimmingView.isHidden = false
-        UIView.animate(withDuration: 0.2) {
-            self.editingDimmingView.alpha = 1
+            editingDimmingView.isHidden = false
+            UIView.animate(withDuration: 0.2) {
+                self.editingDimmingView.alpha = 1
+            }
         }
     }
 
     func textFieldDidEndEditing(_ textField: UITextField) {
-        if let url = activeTab.url {
-            let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-            textField.text = url.host?.removingPercentEncoding ?? url.host ?? rawString
-        } else if textField.text?.isEmpty == true {
-            textField.text = ""
-        }
+        if textField == addressField {
+            if let url = activeTab.url {
+                let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+                textField.text = url.host?.removingPercentEncoding ?? url.host ?? rawString
+            } else if textField.text?.isEmpty == true {
+                textField.text = ""
+            }
 
-        navigationStack.isHidden = false
-        updateAddressEditingAppearance()
+            navigationStack.isHidden = false
+            updateAddressEditingAppearance()
 
-        UIView.animate(withDuration: 0.2, animations: {
-            self.editingDimmingView.alpha = 0
-        }) { _ in
-            self.editingDimmingView.isHidden = true
+            UIView.animate(withDuration: 0.2, animations: {
+                self.editingDimmingView.alpha = 0
+            }) { _ in
+                self.editingDimmingView.isHidden = true
+            }
         }
     }
 
@@ -1398,7 +1349,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        if touch.view?.isDescendant(of: addressContainer) == true {
+        if touch.view?.isDescendant(of: addressContainer) == true ||
+           touch.view?.isDescendant(of: homeSearchContainer) == true {
             return false
         }
 
@@ -1473,26 +1425,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         setFullscreen(false)
     }
 
-    @objc private func handleRefreshTap() {
-        guard homeView.alpha < 0.5 else {
-            return
-        }
-
-        if activeTab.isDisplayingFailurePage {
-            guard let targetURL = activeTab.failedURL else { return }
-            activeTab.isDisplayingFailurePage = false
-            failureOverlayView.isHidden = true
-            activeTab.webView.load(URLRequest(url: targetURL))
-            updateUIState()
-            return
-        }
-
-        if activeTab.isLoading {
-            activeTab.webView.stopLoading()
-        } else {
-            activeTab.webView.reload()
-        }
-
+    @objc private func handleFailureReload() {
+        guard let targetURL = activeTab.failedURL else { return }
+        activeTab.isDisplayingFailurePage = false
+        failureOverlayView.isHidden = true
+        activeTab.webView.load(URLRequest(url: targetURL))
         updateUIState()
     }
 
@@ -1781,9 +1718,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         for engine in SearchEngine.allCases {
             let isCurrent = engine == SearchEngineStore.shared.currentEngine
             let title = isCurrent ? "\(engine.name) ✓" : engine.name
-            alert.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in
+            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
                 SearchEngineStore.shared.currentEngine = engine
-                self?.homeSearchEngineBadge?.text = "  \(engine.name)  "
             })
         }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -1793,20 +1729,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private func showAdBlockerManager() {
         let manager = AdBlockManagerViewController()
         manager.onRulesChanged = { [weak self] in
-            self?.showToastNotice("规则已应用，刷新页面后生效")
+            self?.showToastNotice("规则已更新并重新应用")
         }
         let nav = UINavigationController(rootViewController: manager)
         present(nav, animated: true)
-    }
-
-    private func shareCurrentPage() {
-        guard let url = activeTab.url else {
-            showToastNotice("当前无有效网页可分享")
-            return
-        }
-        let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        activityVC.popoverPresentationController?.sourceView = bottomPanel
-        present(activityVC, animated: true)
     }
 
     private func addCurrentPageToBookmarks() {
@@ -1828,20 +1754,22 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         items.append(CustomBottomSheetItem(
             title: "书签/历史",
             iconName: "star",
+            dismissOnTap: true,
             handler: { [weak self] in
                 self?.showBrowserBookmarksAndHistory()
             }
         ))
 
-        // 2. 电脑版/移动版
+        // 2. 电脑版
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
             title: isDesktop ? "移动版" : "电脑版",
             iconName: "desktopcomputer",
             isSwitchOn: isDesktop,
+            dismissOnTap: false,
             handler: { [weak self] in
                 guard let self = self else { return }
-                let newMode: UserAgentCategory = isDesktop ? .mobile : .desktop
+                let newMode: UserAgentCategory = (UserAgentStore.shared.currentMode == .desktop) ? .mobile : .desktop
                 UserAgentStore.shared.currentMode = newMode
                 let newUA = UserAgentStore.shared.getSelectedUA()
                 self.activeTab.webView.customUserAgent = newUA
@@ -1855,6 +1783,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         items.append(CustomBottomSheetItem(
             title: "扩展脚本",
             iconName: "puzzlepiece.extension",
+            dismissOnTap: true,
             handler: { [weak self] in
                 self?.showPluginPanel()
             }
@@ -1866,6 +1795,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             title: "夜间模式",
             iconName: "moon.stars",
             isSwitchOn: isEyeOn,
+            dismissOnTap: false,
             handler: { [weak self] in
                 EyeProtectionManager.shared.toggle(in: self?.view.window)
             },
@@ -1874,52 +1804,64 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 5. 添加书签
+        // 5. 全屏浏览
         items.append(CustomBottomSheetItem(
-            title: "添加书签",
-            iconName: "star.badge.plus",
+            title: isFullscreen ? "退出全屏" : "全屏浏览",
+            iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+            dismissOnTap: true,
             handler: { [weak self] in
-                self?.addCurrentPageToBookmarks()
+                guard let self = self else { return }
+                self.setFullscreen(!self.isFullscreen)
             }
         ))
 
-        // 6. 刷新
+        // 6. 标识设置 (UA/标签设置)
         items.append(CustomBottomSheetItem(
-            title: "刷新",
-            iconName: "arrow.clockwise",
+            title: "标识设置",
+            iconName: "slider.horizontal.3",
+            dismissOnTap: true,
             handler: { [weak self] in
-                self?.handleRefreshTap()
+                self?.showUserAgentManager()
             }
         ))
 
-        // 7. 共享
+        // 7. 清除数据
         items.append(CustomBottomSheetItem(
-            title: "共享",
-            iconName: "square.and.arrow.up",
+            title: "清除数据",
+            iconName: "trash",
+            dismissOnTap: true,
             handler: { [weak self] in
-                self?.shareCurrentPage()
+                self?.showCleanDataMenu()
             }
         ))
 
-        // 8. 广告过滤
+        // 8. 广告过滤 (点击开关拦截，长按进入规则编辑)
         let isAdBlockOn = AdBlockManager.shared.isEnabled
         items.append(CustomBottomSheetItem(
             title: "广告过滤",
             iconName: "shield.lefthalf.filled",
             isSwitchOn: isAdBlockOn,
+            dismissOnTap: false,
             handler: { [weak self] in
+                guard let self = self else { return }
+                let newState = !AdBlockManager.shared.isEnabled
+                AdBlockManager.shared.isEnabled = newState
+                AdBlockManager.shared.applyRules(to: self.activeTab.webView)
+                self.showToastNotice(newState ? "已开启广告过滤" : "已停用广告过滤")
+            },
+            longPressHandler: { [weak self] in
                 self?.showAdBlockerManager()
             }
         ))
 
-        // Page 2: 6 Items (4 columns x 2 rows)
-        // 9. 全屏浏览
+        // Page 2: Secondary items
+        // 9. 添加书签
         items.append(CustomBottomSheetItem(
-            title: isFullscreen ? "退出全屏" : "全屏浏览",
-            iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+            title: "添加书签",
+            iconName: "star.badge.plus",
+            dismissOnTap: true,
             handler: { [weak self] in
-                guard let self = self else { return }
-                self.setFullscreen(!self.isFullscreen)
+                self?.addCurrentPageToBookmarks()
             }
         ))
 
@@ -1928,52 +1870,36 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         items.append(CustomBottomSheetItem(
             title: currentEngine.name,
             iconName: "magnifyingglass",
+            dismissOnTap: true,
             handler: { [weak self] in
                 self?.showSearchEnginePicker()
             }
         ))
 
-        // 11. 标识设置 (UA)
-        items.append(CustomBottomSheetItem(
-            title: "标识设置",
-            iconName: "slider.horizontal.3",
-            handler: { [weak self] in
-                self?.showUserAgentManager()
-            }
-        ))
-
-        // 12. 清除数据
-        items.append(CustomBottomSheetItem(
-            title: "清除数据",
-            iconName: "trash",
-            isDestructive: false,
-            handler: { [weak self] in
-                self?.showCleanDataMenu()
-            }
-        ))
-
-        // 13. 提取正文
+        // 11. 提取正文
         items.append(CustomBottomSheetItem(
             title: "提取正文",
             iconName: "doc.text.magnifyingglass",
+            dismissOnTap: true,
             handler: { [weak self] in
                 self?.extractPageText()
             }
         ))
 
-        // 14. 新建标签
+        // 12. 网站设置
         items.append(CustomBottomSheetItem(
-            title: "新建标签",
-            iconName: "plus.square",
+            title: "网站设置",
+            iconName: "gearshape",
+            dismissOnTap: true,
             handler: { [weak self] in
-                self?.createNewTab(loadURL: nil)
+                self?.showSiteDomainSettings()
             }
         ))
 
         let panel = CustomBottomSheetViewController(title: "选项", items: items, layout: .grid)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                presentation.detents = [.custom { _ in 270 }]
+                presentation.detents = [.custom { _ in 280 }]
                 presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
