@@ -9995,14 +9995,13 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
 
     private func setupNavigationBar() {
         let isPushed = (navigationController?.viewControllers.count ?? 0) > 1
-        let backImage = UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
-        let leftItem = UIBarButtonItem(
-            image: isPushed ? backImage : nil,
-            title: isPushed ? nil : "完成",
-            style: .plain,
-            target: self,
-            action: #selector(handleDone)
-        )
+        let leftItem: UIBarButtonItem
+        if isPushed {
+            let backImage = UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
+            leftItem = UIBarButtonItem(image: backImage, style: .plain, target: self, action: #selector(handleDone))
+        } else {
+            leftItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
+        }
         navigationItem.leftBarButtonItem = leftItem
 
         let removeButton = UIBarButtonItem(title: "移除", style: .plain, target: self, action: #selector(handleRemoveAction))
