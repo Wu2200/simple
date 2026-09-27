@@ -75,16 +75,6 @@ final class AddressTextField: UITextField {
     }
 }
 
-final class GradientView: UIView {
-    override class var layerClass: AnyClass {
-        CAGradientLayer.self
-    }
-
-    var gradientLayer: CAGradientLayer {
-        layer as! CAGradientLayer
-    }
-}
-
 private struct HomeShortcut {
     let title: String
     let urlString: String
@@ -351,80 +341,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             contentContainer.widthAnchor.constraint(equalTo: homeScrollView.frameLayoutGuide.widthAnchor)
         ])
 
-        let iconCard = GradientView()
-        iconCard.translatesAutoresizingMaskIntoConstraints = false
-        iconCard.layer.cornerRadius = 20
-        iconCard.layer.cornerCurve = .continuous
-        iconCard.clipsToBounds = true
-        iconCard.gradientLayer.colors = [
-            UIColor(red: 0.12, green: 0.53, blue: 0.98, alpha: 1.0).cgColor,
-            UIColor(red: 0.35, green: 0.28, blue: 0.95, alpha: 1.0).cgColor
-        ]
-        iconCard.gradientLayer.startPoint = CGPoint(x: 0, y: 0)
-        iconCard.gradientLayer.endPoint = CGPoint(x: 1, y: 1)
-
-        let brandSymbol = UIImageView()
-        brandSymbol.translatesAutoresizingMaskIntoConstraints = false
-        brandSymbol.image = UIImage(
-            systemName: "safari.fill",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 30, weight: .semibold)
-        )
-        brandSymbol.tintColor = .white
-        brandSymbol.contentMode = .scaleAspectFit
-        iconCard.addSubview(brandSymbol)
-
-        let iconContainer = UIView()
-        iconContainer.translatesAutoresizingMaskIntoConstraints = false
-        iconContainer.layer.shadowColor = UIColor(red: 0.2, green: 0.4, blue: 0.95, alpha: 1.0).cgColor
-        iconContainer.layer.shadowOpacity = 0.32
-        iconContainer.layer.shadowRadius = 14
-        iconContainer.layer.shadowOffset = CGSize(width: 0, height: 6)
-        iconContainer.addSubview(iconCard)
-
-        NSLayoutConstraint.activate([
-            iconCard.topAnchor.constraint(equalTo: iconContainer.topAnchor),
-            iconCard.leadingAnchor.constraint(equalTo: iconContainer.leadingAnchor),
-            iconCard.trailingAnchor.constraint(equalTo: iconContainer.trailingAnchor),
-            iconCard.bottomAnchor.constraint(equalTo: iconContainer.bottomAnchor),
-            iconContainer.widthAnchor.constraint(equalToConstant: 64),
-            iconContainer.heightAnchor.constraint(equalToConstant: 64),
-
-            brandSymbol.centerXAnchor.constraint(equalTo: iconCard.centerXAnchor),
-            brandSymbol.centerYAnchor.constraint(equalTo: iconCard.centerYAnchor),
-            brandSymbol.widthAnchor.constraint(equalToConstant: 32),
-            brandSymbol.heightAnchor.constraint(equalToConstant: 32)
-        ])
-
-        let titleLabel = UILabel()
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "简阅"
-        titleLabel.font = .systemFont(ofSize: 26, weight: .bold)
-        titleLabel.textColor = .label
-        titleLabel.textAlignment = .center
-
-        let subtitleLabel = UILabel()
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        subtitleLabel.text = "极简 · 高效 · 自由"
-        subtitleLabel.font = .systemFont(ofSize: 13, weight: .regular)
-        subtitleLabel.textColor = .secondaryLabel
-        subtitleLabel.textAlignment = .center
-
-        let headerStack = UIStackView(arrangedSubviews: [iconContainer, titleLabel, subtitleLabel])
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
-        headerStack.axis = .vertical
-        headerStack.alignment = .center
-        headerStack.spacing = 10
-        headerStack.setCustomSpacing(4, after: titleLabel)
-
         let searchCard = TouchButton()
         searchCard.translatesAutoresizingMaskIntoConstraints = false
-        searchCard.backgroundColor = .secondarySystemGroupedBackground
+        searchCard.backgroundColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
+        }
         searchCard.layer.cornerRadius = 24
         searchCard.layer.cornerCurve = .continuous
-        searchCard.layer.borderWidth = 0.5
-        searchCard.layer.borderColor = UIColor.separator.withAlphaComponent(0.25).cgColor
+        searchCard.layer.borderWidth = 0
         searchCard.layer.shadowColor = UIColor.black.cgColor
-        searchCard.layer.shadowOpacity = 0.04
+        searchCard.layer.shadowOpacity = 0.05
         searchCard.layer.shadowRadius = 8
         searchCard.layer.shadowOffset = CGSize(width: 0, height: 2)
         searchCard.addTarget(self, action: #selector(focusAddressFieldFromHome), for: .touchUpInside)
@@ -433,9 +359,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         searchMagnifier.translatesAutoresizingMaskIntoConstraints = false
         searchMagnifier.image = UIImage(
             systemName: "magnifyingglass",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         )
-        searchMagnifier.tintColor = .systemBlue
+        searchMagnifier.tintColor = .secondaryLabel
         searchMagnifier.isUserInteractionEnabled = false
 
         let searchPrompt = UILabel()
@@ -507,69 +433,22 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         shortcutsStack.axis = .vertical
         shortcutsStack.spacing = 14
 
-        let statusChip = UIView()
-        statusChip.translatesAutoresizingMaskIntoConstraints = false
-        statusChip.backgroundColor = .secondarySystemGroupedBackground
-        statusChip.layer.cornerRadius = 15
-        statusChip.layer.cornerCurve = .continuous
-        statusChip.layer.borderWidth = 0.5
-        statusChip.layer.borderColor = UIColor.separator.withAlphaComponent(0.2).cgColor
-
-        let shieldIcon = UIImageView()
-        shieldIcon.translatesAutoresizingMaskIntoConstraints = false
-        shieldIcon.image = UIImage(
-            systemName: "shield.lefthalf.filled",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)
-        )
-        shieldIcon.tintColor = .systemGreen
-
-        let statusText = UILabel()
-        statusText.translatesAutoresizingMaskIntoConstraints = false
-        statusText.text = "广告拦截与油猴插件引擎已就绪"
-        statusText.font = .systemFont(ofSize: 12, weight: .regular)
-        statusText.textColor = .secondaryLabel
-
-        let statusStack = UIStackView(arrangedSubviews: [shieldIcon, statusText])
-        statusStack.translatesAutoresizingMaskIntoConstraints = false
-        statusStack.axis = .horizontal
-        statusStack.spacing = 6
-        statusStack.alignment = .center
-        statusChip.addSubview(statusStack)
-
-        NSLayoutConstraint.activate([
-            statusStack.topAnchor.constraint(equalTo: statusChip.topAnchor, constant: 6),
-            statusStack.bottomAnchor.constraint(equalTo: statusChip.bottomAnchor, constant: -6),
-            statusStack.leadingAnchor.constraint(equalTo: statusChip.leadingAnchor, constant: 12),
-            statusStack.trailingAnchor.constraint(equalTo: statusChip.trailingAnchor, constant: -12),
-
-            shieldIcon.widthAnchor.constraint(equalToConstant: 14),
-            shieldIcon.heightAnchor.constraint(equalToConstant: 14)
-        ])
-
-        contentContainer.addSubview(headerStack)
         contentContainer.addSubview(searchCard)
         contentContainer.addSubview(shortcutsHeader)
         contentContainer.addSubview(shortcutsStack)
-        contentContainer.addSubview(statusChip)
 
         NSLayoutConstraint.activate([
-            headerStack.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 36),
-            headerStack.centerXAnchor.constraint(equalTo: contentContainer.centerXAnchor),
-
-            searchCard.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 28),
+            searchCard.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 54),
             searchCard.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 20),
             searchCard.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -20),
 
-            shortcutsHeader.topAnchor.constraint(equalTo: searchCard.bottomAnchor, constant: 28),
+            shortcutsHeader.topAnchor.constraint(equalTo: searchCard.bottomAnchor, constant: 32),
             shortcutsHeader.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 24),
 
-            shortcutsStack.topAnchor.constraint(equalTo: shortcutsHeader.bottomAnchor, constant: 12),
+            shortcutsStack.topAnchor.constraint(equalTo: shortcutsHeader.bottomAnchor, constant: 14),
             shortcutsStack.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 16),
             shortcutsStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -16),
-
-            statusChip.topAnchor.constraint(equalTo: shortcutsStack.bottomAnchor, constant: 32),
-            statusChip.centerXAnchor.constraint(equalTo: contentContainer.centerXAnchor),
-            statusChip.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -40)
+            shortcutsStack.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -40)
         ])
     }
 
@@ -581,13 +460,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         let iconContainer = UIView()
         iconContainer.translatesAutoresizingMaskIntoConstraints = false
-        iconContainer.backgroundColor = .secondarySystemGroupedBackground
+        iconContainer.backgroundColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
+        }
         iconContainer.layer.cornerRadius = 16
         iconContainer.layer.cornerCurve = .continuous
-        iconContainer.layer.borderWidth = 0.5
-        iconContainer.layer.borderColor = UIColor.separator.withAlphaComponent(0.2).cgColor
+        iconContainer.layer.borderWidth = 0
         iconContainer.layer.shadowColor = UIColor.black.cgColor
-        iconContainer.layer.shadowOpacity = 0.03
+        iconContainer.layer.shadowOpacity = 0.04
         iconContainer.layer.shadowRadius = 4
         iconContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
         iconContainer.isUserInteractionEnabled = false
@@ -606,7 +486,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.text = shortcut.title
-        label.font = .systemFont(ofSize: 11, weight: .medium)
+        label.font = .systemFont(ofSize: 11, weight: .regular)
         label.textColor = .label
         label.textAlignment = .center
         label.isUserInteractionEnabled = false
@@ -657,10 +537,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         card.backgroundColor = .secondarySystemGroupedBackground
         card.layer.cornerRadius = 22
         card.layer.cornerCurve = .continuous
-        card.layer.borderWidth = 0.5
-        card.layer.borderColor = UIColor.separator.withAlphaComponent(0.25).cgColor
+        card.layer.borderWidth = 0
         card.layer.shadowColor = UIColor.black.cgColor
-        card.layer.shadowOpacity = 0.06
+        card.layer.shadowOpacity = 0.05
         card.layer.shadowRadius = 16
         card.layer.shadowOffset = CGSize(width: 0, height: 4)
 
@@ -788,22 +667,22 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         bottomPanel.backgroundColor = .clear
         bottomPanel.clipsToBounds = false
 
-        let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+        let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
         blurView.translatesAutoresizingMaskIntoConstraints = false
         bottomPanel.addSubview(blurView)
 
-        let toolbarSeparator = UIView()
-        toolbarSeparator.translatesAutoresizingMaskIntoConstraints = false
-        toolbarSeparator.backgroundColor = UIColor.separator.withAlphaComponent(0.25)
-        bottomPanel.addSubview(toolbarSeparator)
-
         addressContainer.translatesAutoresizingMaskIntoConstraints = false
-        addressContainer.backgroundColor = .tertiarySystemFill
-        addressContainer.layer.cornerRadius = 21
+        addressContainer.backgroundColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
+        }
+        addressContainer.layer.cornerRadius = 22
         addressContainer.layer.cornerCurve = .continuous
-        addressContainer.layer.borderWidth = 0.5
-        addressContainer.layer.borderColor = UIColor.separator.withAlphaComponent(0.2).cgColor
-        addressContainer.clipsToBounds = true
+        addressContainer.layer.borderWidth = 0
+        addressContainer.layer.shadowColor = UIColor.black.cgColor
+        addressContainer.layer.shadowOpacity = 0.05
+        addressContainer.layer.shadowRadius = 8
+        addressContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
+        addressContainer.clipsToBounds = false
 
         lockButton.translatesAutoresizingMaskIntoConstraints = false
         lockButton.tintColor = .secondaryLabel
@@ -812,7 +691,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 systemName: "lock.fill",
                 withConfiguration: UIImage.SymbolConfiguration(
                     pointSize: 12,
-                    weight: .semibold
+                    weight: .medium
                 )
             ),
             for: .normal
@@ -996,11 +875,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             blurView.trailingAnchor.constraint(equalTo: bottomPanel.trailingAnchor),
             blurView.bottomAnchor.constraint(equalTo: bottomPanel.bottomAnchor),
 
-            toolbarSeparator.topAnchor.constraint(equalTo: bottomPanel.topAnchor),
-            toolbarSeparator.leadingAnchor.constraint(equalTo: bottomPanel.leadingAnchor),
-            toolbarSeparator.trailingAnchor.constraint(equalTo: bottomPanel.trailingAnchor),
-            toolbarSeparator.heightAnchor.constraint(equalToConstant: 0.5),
-
             addressContainer.topAnchor.constraint(
                 equalTo: bottomPanel.topAnchor,
                 constant: 8
@@ -1013,7 +887,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 equalTo: bottomPanel.trailingAnchor,
                 constant: -14
             ),
-            addressContainer.heightAnchor.constraint(equalToConstant: 42),
+            addressContainer.heightAnchor.constraint(equalToConstant: 44),
 
             lockButton.leadingAnchor.constraint(
                 equalTo: addressContainer.leadingAnchor,
@@ -1323,7 +1197,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private func showFailureUI(for tab: TabItem) {
         homeView.alpha = 0
         webContainer.alpha = 1
-        failureOverlayView.isHidden = false
+        failureOverlayView.isHidden = true
         let targetURL = tab.failedURL ?? tab.url
         failureURLLabel.text = targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? ""
         if let err = tab.failureError as NSError? {
@@ -1925,63 +1799,46 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(nav, animated: true)
     }
 
+    private func shareCurrentPage() {
+        guard let url = activeTab.url else {
+            showToastNotice("当前无有效网页可分享")
+            return
+        }
+        let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        activityVC.popoverPresentationController?.sourceView = bottomPanel
+        present(activityVC, animated: true)
+    }
+
+    private func addCurrentPageToBookmarks() {
+        guard let url = activeTab.url else {
+            showToastNotice("主页无需添加书签")
+            return
+        }
+        BookmarkStore.shared.addBookmark(title: activeTab.title, urlString: url.absoluteString)
+        showToastNotice("已添加到书签")
+    }
+
     @objc private func showMoreMenu() {
         dismissKeyboard()
 
         var items: [CustomBottomSheetItem] = []
 
+        // Page 1: 8 Items (4 columns x 2 rows)
+        // 1. 书签/历史
         items.append(CustomBottomSheetItem(
-            title: isFullscreen ? "退出全屏浏览" : "全屏浏览",
-            iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+            title: "书签/历史",
+            iconName: "star",
             handler: { [weak self] in
-                guard let self = self else { return }
-                self.setFullscreen(!self.isFullscreen)
+                self?.showBrowserBookmarksAndHistory()
             }
         ))
 
-        let isEyeOn = EyeProtectionManager.shared.isEnabled
-        items.append(CustomBottomSheetItem(
-            title: isEyeOn ? "关闭护眼" : "护眼模式",
-            iconName: isEyeOn ? "eye.slash.fill" : "eye.fill",
-            handler: { [weak self] in
-                EyeProtectionManager.shared.toggle(in: self?.view.window)
-            },
-            longPressHandler: { [weak self] in
-                self?.showEyeProtectionLevelPicker()
-            }
-        ))
-
-        let isAdBlockOn = AdBlockManager.shared.isEnabled
-        items.append(CustomBottomSheetItem(
-            title: isAdBlockOn ? "广告拦截: 开启" : "广告拦截: 关闭",
-            iconName: "shield.lefthalf.filled",
-            handler: { [weak self] in
-                self?.showAdBlockerManager()
-            }
-        ))
-
-        let currentEngine = SearchEngineStore.shared.currentEngine
-        items.append(CustomBottomSheetItem(
-            title: "搜索引擎: \(currentEngine.name)",
-            iconName: "magnifyingglass",
-            handler: { [weak self] in
-                self?.showSearchEnginePicker()
-            }
-        ))
-
-        let currentUAItem = UserAgentStore.shared.getSelectedItem()
-        items.append(CustomBottomSheetItem(
-            title: "标识: \(currentUAItem.name)",
-            iconName: "desktopcomputer",
-            handler: { [weak self] in
-                self?.showUserAgentManager()
-            }
-        ))
-
+        // 2. 电脑版/移动版
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
-            title: isDesktop ? "切换为移动版" : "切换为电脑版",
-            iconName: isDesktop ? "iphone" : "macbook",
+            title: isDesktop ? "移动版" : "电脑版",
+            iconName: "desktopcomputer",
+            isSwitchOn: isDesktop,
             handler: { [weak self] in
                 guard let self = self else { return }
                 let newMode: UserAgentCategory = isDesktop ? .mobile : .desktop
@@ -1994,16 +1851,100 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
+        // 3. 扩展脚本
         items.append(CustomBottomSheetItem(
-            title: "历史记录",
-            iconName: "clock.arrow.circlepath",
+            title: "扩展脚本",
+            iconName: "puzzlepiece.extension",
             handler: { [weak self] in
-                self?.showBrowserHistory()
+                self?.showPluginPanel()
             }
         ))
 
+        // 4. 夜间模式
+        let isEyeOn = EyeProtectionManager.shared.isEnabled
         items.append(CustomBottomSheetItem(
-            title: "清除数据与管理网站",
+            title: "夜间模式",
+            iconName: "moon.stars",
+            isSwitchOn: isEyeOn,
+            handler: { [weak self] in
+                EyeProtectionManager.shared.toggle(in: self?.view.window)
+            },
+            longPressHandler: { [weak self] in
+                self?.showEyeProtectionLevelPicker()
+            }
+        ))
+
+        // 5. 添加书签
+        items.append(CustomBottomSheetItem(
+            title: "添加书签",
+            iconName: "star.badge.plus",
+            handler: { [weak self] in
+                self?.addCurrentPageToBookmarks()
+            }
+        ))
+
+        // 6. 刷新
+        items.append(CustomBottomSheetItem(
+            title: "刷新",
+            iconName: "arrow.clockwise",
+            handler: { [weak self] in
+                self?.handleRefreshTap()
+            }
+        ))
+
+        // 7. 共享
+        items.append(CustomBottomSheetItem(
+            title: "共享",
+            iconName: "square.and.arrow.up",
+            handler: { [weak self] in
+                self?.shareCurrentPage()
+            }
+        ))
+
+        // 8. 广告过滤
+        let isAdBlockOn = AdBlockManager.shared.isEnabled
+        items.append(CustomBottomSheetItem(
+            title: "广告过滤",
+            iconName: "shield.lefthalf.filled",
+            isSwitchOn: isAdBlockOn,
+            handler: { [weak self] in
+                self?.showAdBlockerManager()
+            }
+        ))
+
+        // Page 2: 6 Items (4 columns x 2 rows)
+        // 9. 全屏浏览
+        items.append(CustomBottomSheetItem(
+            title: isFullscreen ? "退出全屏" : "全屏浏览",
+            iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+            handler: { [weak self] in
+                guard let self = self else { return }
+                self.setFullscreen(!self.isFullscreen)
+            }
+        ))
+
+        // 10. 搜索引擎
+        let currentEngine = SearchEngineStore.shared.currentEngine
+        items.append(CustomBottomSheetItem(
+            title: currentEngine.name,
+            iconName: "magnifyingglass",
+            handler: { [weak self] in
+                self?.showSearchEnginePicker()
+            }
+        ))
+
+        // 11. 标识设置 (UA)
+        items.append(CustomBottomSheetItem(
+            title: "标识设置",
+            iconName: "slider.horizontal.3",
+            handler: { [weak self] in
+                self?.showUserAgentManager()
+            }
+        ))
+
+        // 12. 清除数据
+        items.append(CustomBottomSheetItem(
+            title: "清除数据",
             iconName: "trash",
             isDestructive: false,
             handler: { [weak self] in
@@ -2011,18 +1952,42 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
+        // 13. 提取正文
+        items.append(CustomBottomSheetItem(
+            title: "提取正文",
+            iconName: "doc.text.magnifyingglass",
+            handler: { [weak self] in
+                self?.extractPageText()
+            }
+        ))
+
+        // 14. 新建标签
+        items.append(CustomBottomSheetItem(
+            title: "新建标签",
+            iconName: "plus.square",
+            handler: { [weak self] in
+                self?.createNewTab(loadURL: nil)
+            }
+        ))
+
         let panel = CustomBottomSheetViewController(title: "选项", items: items, layout: .grid)
-        if #available(iOS 15.0, *) {
+        if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                presentation.detents = [.medium(), .large()]
-                presentation.prefersGrabberVisible = true
+                presentation.detents = [.custom { _ in 270 }]
+                presentation.prefersGrabberVisible = false
+                presentation.preferredCornerRadius = 24
+            }
+        } else if #available(iOS 15.0, *) {
+            if let presentation = panel.sheetPresentationController {
+                presentation.detents = [.medium()]
+                presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
         }
         present(panel, animated: true)
     }
 
-    private func showBrowserHistory() {
+    private func showBrowserBookmarksAndHistory() {
         dismissKeyboard()
 
         let historyVC = BrowserHistoryViewController()
