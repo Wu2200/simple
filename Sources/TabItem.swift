@@ -85,7 +85,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let downloadTask = task as? URLSessionDownloadTask, let error = error else { return }
-        if let info = downloadTasks[downloadTask] {
+        if downloadTasks[downloadTask] != nil {
             downloadTasks.removeValue(forKey: downloadTask)
             NotificationCenter.default.post(
                 name: NSNotification.Name("DownloadFailedNotification"),
