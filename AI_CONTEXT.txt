@@ -8484,6 +8484,77 @@ protocol TabItemDelegate: AnyObject {
     func tabRequestGoBack(_ tab: TabItem)
 }
 
+final class DownloadCoordinator: NSObject, WKDownloadDelegate {
+    static let shared = DownloadCoordinator()
+    private var activeDownloads: Set<WKDownload> = []
+
+    private override init() {
+        super.init()
+    }
+
+    static func getDownloadsDirectory() -> URL {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let downloads = docs.appendingPathComponent("Downloads", isDirectory: true)
+        if !fm.fileExists(atPath: downloads.path) {
+            try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
+        }
+        return downloads
+    }
+
+    func manage(download: WKDownload, suggestedName: String? = nil) {
+        activeDownloads.insert(download)
+        download.delegate = self
+    }
+
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        let destDir = Self.getDownloadsDirectory()
+        let rawName = suggestedFilename.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackName = response.suggestedFilename ?? "download_\(Int(Date().timeIntervalSince1970))"
+        let filename = rawName.isEmpty ? fallbackName : rawName
+
+        let fm = FileManager.default
+        var targetURL = destDir.appendingPathComponent(filename)
+        var counter = 1
+        let nameWithoutExt = (filename as NSString).deletingPathExtension
+        let ext = (filename as NSString).pathExtension
+
+        while fm.fileExists(atPath: targetURL.path) {
+            let newName = ext.isEmpty ? "\(nameWithoutExt)_\(counter)" : "\(nameWithoutExt)_\(counter).\(ext)"
+            targetURL = destDir.appendingPathComponent(newName)
+            counter += 1
+        }
+
+        NotificationCenter.default.post(
+            name: NSNotification.Name("DownloadStartedNotification"),
+            object: targetURL.lastPathComponent
+        )
+
+        completionHandler(targetURL)
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        activeDownloads.remove(download)
+        NotificationCenter.default.post(
+            name: NSNotification.Name("DownloadFinishedNotification"),
+            object: nil
+        )
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        activeDownloads.remove(download)
+        NotificationCenter.default.post(
+            name: NSNotification.Name("DownloadFailedNotification"),
+            object: error.localizedDescription
+        )
+    }
+}
+
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let id = UUID()
     let webView: WKWebView
@@ -9046,6 +9117,23 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             return
         }
 
+        if #available(iOS 14.5, *) {
+            if navigationAction.shouldPerformDownload {
+                decisionHandler(.download, preferences)
+                return
+            }
+
+            let ext = targetURL.pathExtension.lowercased()
+            let knownDownloadExtensions: Set<String> = [
+                "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "dmg", "pkg", "deb",
+                "torrent", "iso"
+            ]
+            if knownDownloadExtensions.contains(ext) {
+                decisionHandler(.download, preferences)
+                return
+            }
+        }
+
         if ["http", "https", "about", "data", "blob"].contains(scheme) {
             if navigationAction.targetFrame == nil {
                 decisionHandler(.cancel, preferences)
@@ -9065,6 +9153,39 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         UIApplication.shared.open(targetURL, options: [:], completionHandler: nil)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        if #available(iOS 14.5, *) {
+            if let httpResponse = navigationResponse.response as? HTTPURLResponse {
+                let disposition = (httpResponse.allHeaderFields["Content-Disposition"] as? String ?? httpResponse.allHeaderFields["content-disposition"] as? String ?? "").lowercased()
+                if disposition.contains("attachment") {
+                    decisionHandler(.download)
+                    return
+                }
+            }
+
+            if !navigationResponse.canShowMIMEType {
+                decisionHandler(.download)
+                return
+            }
+        }
+
+        decisionHandler(.allow)
+    }
+
+    @available(iOS 14.5, *)
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        DownloadCoordinator.shared.manage(download: download, suggestedName: navigationAction.request.url?.lastPathComponent)
+    }
+
+    @available(iOS 14.5, *)
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        DownloadCoordinator.shared.manage(download: download, suggestedName: navigationResponse.response.suggestedFilename)
     }
 
     private func shouldIgnoreNavigationError(_ error: Error) -> Bool {
