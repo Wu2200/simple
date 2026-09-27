@@ -482,6 +482,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         configureInstallerObserver()
         configureSessionObservers()
         configureDownloadObservers()
+        configureFaviconObserver()
         restorePreviousSession()
     }
 
@@ -508,6 +509,21 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private func resetProgress() {
         progressView.setProgress(0, animated: false)
         progressView.alpha = 0
+    }
+
+    private func configureFaviconObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleFaviconUpdatedNotification(_:)),
+            name: NSNotification.Name("FaviconUpdatedNotification"),
+            object: nil
+        )
+    }
+
+    @objc private func handleFaviconUpdatedNotification(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.reloadHomeShortcuts()
+        }
     }
 
     private func configureInstallerObserver() {
@@ -954,15 +970,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         iconContainer.layer.cornerRadius = 16
         iconContainer.layer.cornerCurve = .continuous
         iconContainer.layer.shadowColor = UIColor.black.cgColor
-        iconContainer.layer.shadowOpacity = 0.03
-        iconContainer.layer.shadowRadius = 4
+        iconContainer.layer.shadowOpacity = 0.04
+        iconContainer.layer.shadowRadius = 5
         iconContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
         iconContainer.isUserInteractionEnabled = false
 
         let iconImageView = UIImageView()
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.contentMode = .scaleAspectFit
-        iconImageView.layer.cornerRadius = 4
+        iconImageView.layer.cornerRadius = 6
         iconImageView.clipsToBounds = true
         iconImageView.isUserInteractionEnabled = false
 
@@ -972,7 +988,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             } else {
                 iconImageView.image = UIImage(
                     systemName: "globe",
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)
                 )
                 iconImageView.tintColor = .systemBlue
                 FaviconLoader.shared.loadFavicon(for: host) { [weak iconImageView] img in
@@ -992,7 +1008,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.text = shortcut.title
-        label.font = .systemFont(ofSize: 11, weight: .regular)
+        label.font = .systemFont(ofSize: 11.5, weight: .regular)
         label.textColor = UIColor { trait in
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
         }
@@ -1003,7 +1019,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         button.addSubview(label)
 
         NSLayoutConstraint.activate([
-            button.heightAnchor.constraint(equalToConstant: 76),
+            button.heightAnchor.constraint(equalToConstant: 78),
 
             iconContainer.topAnchor.constraint(equalTo: button.topAnchor),
             iconContainer.centerXAnchor.constraint(equalTo: button.centerXAnchor),
@@ -1012,8 +1028,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
             iconImageView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
             iconImageView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 24),
-            iconImageView.heightAnchor.constraint(equalToConstant: 24),
+            iconImageView.widthAnchor.constraint(equalToConstant: 32),
+            iconImageView.heightAnchor.constraint(equalToConstant: 32),
 
             label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 6),
             label.leadingAnchor.constraint(equalTo: button.leadingAnchor),
@@ -2728,9 +2744,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         })
 
         alert.addAction(UIAlertAction(title: "添加到主页", style: .default) { [weak self] _ in
+            guard let self = self else { return }
             HomeShortcutStore.shared.addShortcut(title: resolvedTitle, urlString: url.absoluteString)
-            self?.reloadHomeShortcuts()
-            self?.showToastNotice("已添加到主页")
+            if let host = url.host {
+                FaviconLoader.shared.preloadFavicon(for: host)
+            }
+            self.reloadHomeShortcuts()
+            self.showToastNotice("已添加到主页")
         })
 
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
