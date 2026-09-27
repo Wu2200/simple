@@ -1,9 +1,9 @@
 import UIKit
 
 final class CustomBottomSheetViewController: UIViewController, UIScrollViewDelegate, UITableViewDataSource, UITableViewDelegate {
-    private let titleString: String
+    private var titleString: String
     private var items: [CustomBottomSheetItem]
-    private let layout: CustomBottomSheetLayout
+    private var layout: CustomBottomSheetLayout
 
     private var pageControl: UIPageControl?
     private var pagedScrollView: UIScrollView?
@@ -17,7 +17,25 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         super.init(nibName: nil, bundle: nil)
     }
 
+    convenience init(title: String? = nil, isGrid: Bool = false) {
+        self.init(title: title ?? "", items: [], layout: isGrid ? .grid : .list)
+    }
+
     required init?(coder: NSCoder) { nil }
+
+    func setItems(_ items: [CustomBottomSheetItem]) {
+        self.items = items
+        if isViewLoaded {
+            if layout == .grid {
+                pagedScrollView?.removeFromSuperview()
+                pageControl?.removeFromSuperview()
+                gridButtons.removeAll()
+                setupModernGridLayout()
+            } else {
+                listTableView?.reloadData()
+            }
+        }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
