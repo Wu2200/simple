@@ -2950,7 +2950,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
             self.performCleanData(options: options, completion: completion)
         }
-        cleanVC.onOpenWebsiteDataManager = { [weak self, weak cleanVC] in
+        cleanVC.onOpenWebsiteDataManager = { [weak cleanVC] in
             let manager = WebsiteDataManagerViewController()
             cleanVC?.navigationController?.pushViewController(manager, animated: true)
         }
