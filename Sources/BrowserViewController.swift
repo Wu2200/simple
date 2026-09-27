@@ -112,6 +112,283 @@ final class AddressTextField: UITextField {
     }
 }
 
+final class CalloutMenuButton: UIButton {
+    override var isHighlighted: Bool {
+        didSet {
+            let isDark = traitCollection.userInterfaceStyle == .dark
+            backgroundColor = isHighlighted ?
+                (isDark ? UIColor(white: 1.0, alpha: 0.12) : UIColor(white: 0.0, alpha: 0.08)) :
+                .clear
+        }
+    }
+}
+
+final class CalloutBubbleBackgroundView: UIView {
+    enum ArrowDirection {
+        case up
+        case down
+    }
+
+    var arrowDirection: ArrowDirection = .down {
+        didSet { setNeedsLayout() }
+    }
+
+    var arrowOffset: CGFloat = 136 {
+        didSet { setNeedsLayout() }
+    }
+
+    private let shapeLayer = CAShapeLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupLayer()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupLayer()
+    }
+
+    private func setupLayer() {
+        backgroundColor = .clear
+        layer.addSublayer(shapeLayer)
+        updateColors()
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        updateColors()
+    }
+
+    private func updateColors() {
+        let isDark = traitCollection.userInterfaceStyle == .dark
+        shapeLayer.fillColor = isDark ?
+            UIColor(red: 0.20, green: 0.20, blue: 0.22, alpha: 0.98).cgColor :
+            UIColor(white: 1.0, alpha: 0.98).cgColor
+        shapeLayer.strokeColor = isDark ?
+            UIColor(white: 1.0, alpha: 0.12).cgColor :
+            UIColor(white: 0.0, alpha: 0.06).cgColor
+        shapeLayer.lineWidth = 0.5
+
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = isDark ? 0.35 : 0.12
+        layer.shadowRadius = 10
+        layer.shadowOffset = CGSize(width: 0, height: 3)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        shapeLayer.frame = bounds
+
+        let path = UIBezierPath()
+        let cornerRadius: CGFloat = 12
+        let arrowWidth: CGFloat = 14
+        let arrowHeight: CGFloat = 7
+        let halfArrow = arrowWidth / 2
+
+        let minOffset = cornerRadius + halfArrow + 2
+        let maxOffset = bounds.width - cornerRadius - halfArrow - 2
+        let clampedOffset = min(max(minOffset, arrowOffset), maxOffset)
+
+        if arrowDirection == .down {
+            let bodyHeight = bounds.height - arrowHeight
+
+            path.move(to: CGPoint(x: cornerRadius, y: 0))
+            path.addLine(to: CGPoint(x: bounds.width - cornerRadius, y: 0))
+            path.addArc(
+                withCenter: CGPoint(x: bounds.width - cornerRadius, y: cornerRadius),
+                radius: cornerRadius,
+                startAngle: -CGFloat.pi / 2,
+                endAngle: 0,
+                clockwise: true
+            )
+            path.addLine(to: CGPoint(x: bounds.width, y: bodyHeight - cornerRadius))
+            path.addArc(
+                withCenter: CGPoint(x: bounds.width - cornerRadius, y: bodyHeight - cornerRadius),
+                radius: cornerRadius,
+                startAngle: 0,
+                endAngle: CGFloat.pi / 2,
+                clockwise: true
+            )
+
+            path.addLine(to: CGPoint(x: clampedOffset + halfArrow, y: bodyHeight))
+            path.addLine(to: CGPoint(x: clampedOffset, y: bounds.height))
+            path.addLine(to: CGPoint(x: clampedOffset - halfArrow, y: bodyHeight))
+
+            path.addLine(to: CGPoint(x: cornerRadius, y: bodyHeight))
+            path.addArc(
+                withCenter: CGPoint(x: cornerRadius, y: bodyHeight - cornerRadius),
+                radius: cornerRadius,
+                startAngle: CGFloat.pi / 2,
+                endAngle: CGFloat.pi,
+                clockwise: true
+            )
+            path.addLine(to: CGPoint(x: 0, y: cornerRadius))
+            path.addArc(
+                withCenter: CGPoint(x: cornerRadius, y: cornerRadius),
+                radius: cornerRadius,
+                startAngle: CGFloat.pi,
+                endAngle: -CGFloat.pi / 2,
+                clockwise: true
+            )
+            path.close()
+        } else {
+            let bodyTop = arrowHeight
+
+            path.move(to: CGPoint(x: clampedOffset - halfArrow, y: bodyTop))
+            path.addLine(to: CGPoint(x: clampedOffset, y: 0))
+            path.addLine(to: CGPoint(x: clampedOffset + halfArrow, y: bodyTop))
+
+            path.addLine(to: CGPoint(x: bounds.width - cornerRadius, y: bodyTop))
+            path.addArc(
+                withCenter: CGPoint(x: bounds.width - cornerRadius, y: bodyTop + cornerRadius),
+                radius: cornerRadius,
+                startAngle: -CGFloat.pi / 2,
+                endAngle: 0,
+                clockwise: true
+            )
+            path.addLine(to: CGPoint(x: bounds.width, y: bounds.height - cornerRadius))
+            path.addArc(
+                withCenter: CGPoint(x: bounds.width - cornerRadius, y: bounds.height - cornerRadius),
+                radius: cornerRadius,
+                startAngle: 0,
+                endAngle: CGFloat.pi / 2,
+                clockwise: true
+            )
+
+            path.addLine(to: CGPoint(x: cornerRadius, y: bounds.height))
+            path.addArc(
+                withCenter: CGPoint(x: cornerRadius, y: bounds.height - cornerRadius),
+                radius: cornerRadius,
+                startAngle: CGFloat.pi / 2,
+                endAngle: CGFloat.pi,
+                clockwise: true
+            )
+            path.addLine(to: CGPoint(x: 0, y: bodyTop + cornerRadius))
+            path.addArc(
+                withCenter: CGPoint(x: cornerRadius, y: bodyTop + cornerRadius),
+                radius: cornerRadius,
+                startAngle: CGFloat.pi,
+                endAngle: -CGFloat.pi / 2,
+                clockwise: true
+            )
+            path.close()
+        }
+
+        shapeLayer.path = path.cgPath
+        layer.shadowPath = path.cgPath
+    }
+}
+
+final class AddressCalloutMenuView: UIView {
+    var onCopy: (() -> Void)?
+    var onPaste: (() -> Void)?
+    var onEdit: (() -> Void)?
+    var onPasteAndGo: (() -> Void)?
+
+    private let backgroundView = CalloutBubbleBackgroundView()
+    private let contentView = UIView()
+    private let stackView = UIStackView()
+
+    init(arrowDirection: CalloutBubbleBackgroundView.ArrowDirection, arrowOffset: CGFloat) {
+        super.init(frame: .zero)
+        backgroundView.arrowDirection = arrowDirection
+        backgroundView.arrowOffset = arrowOffset
+        setupUI()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupUI()
+    }
+
+    private func setupUI() {
+        backgroundColor = .clear
+        addSubview(backgroundView)
+        addSubview(contentView)
+
+        contentView.layer.cornerRadius = 12
+        contentView.clipsToBounds = true
+
+        stackView.axis = .horizontal
+        stackView.alignment = .fill
+        stackView.distribution = .fill
+        stackView.spacing = 0
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(stackView)
+
+        NSLayoutConstraint.activate([
+            stackView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            stackView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+
+        let btnCopy = createItemButton(title: "拷贝", action: #selector(handleCopyTapped), width: 56)
+        let btnPaste = createItemButton(title: "粘贴", action: #selector(handlePasteTapped), width: 56)
+        let btnEdit = createItemButton(title: "编辑", action: #selector(handleEditTapped), width: 56)
+        let btnPasteAndGo = createItemButton(title: "粘贴并前往", action: #selector(handlePasteAndGoTapped), width: 94)
+
+        stackView.addArrangedSubview(btnCopy)
+        stackView.addArrangedSubview(makeSeparator())
+        stackView.addArrangedSubview(btnPaste)
+        stackView.addArrangedSubview(makeSeparator())
+        stackView.addArrangedSubview(btnEdit)
+        stackView.addArrangedSubview(makeSeparator())
+        stackView.addArrangedSubview(btnPasteAndGo)
+    }
+
+    private func createItemButton(title: String, action: Selector, width: CGFloat) -> CalloutMenuButton {
+        let btn = CalloutMenuButton(type: .custom)
+        btn.setTitle(title, for: .normal)
+        btn.titleLabel?.font = .systemFont(ofSize: 14.5, weight: .regular)
+        btn.setTitleColor(UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.96, alpha: 1.0) : UIColor(red: 0.12, green: 0.12, blue: 0.14, alpha: 1.0)
+        }, for: .normal)
+        btn.addTarget(self, action: action, for: .touchUpInside)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return btn
+    }
+
+    private func makeSeparator() -> UIView {
+        let sep = UIView()
+        sep.translatesAutoresizingMaskIntoConstraints = false
+        sep.backgroundColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 1.0, alpha: 0.15) : UIColor(white: 0.0, alpha: 0.12)
+        }
+        sep.widthAnchor.constraint(equalToConstant: 0.5).isActive = true
+        return sep
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        backgroundView.frame = bounds
+        let arrowHeight: CGFloat = 7
+        if backgroundView.arrowDirection == .down {
+            contentView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height - arrowHeight)
+        } else {
+            contentView.frame = CGRect(x: 0, y: arrowHeight, width: bounds.width, height: bounds.height - arrowHeight)
+        }
+    }
+
+    @objc private func handleCopyTapped() {
+        onCopy?()
+    }
+
+    @objc private func handlePasteTapped() {
+        onPaste?()
+    }
+
+    @objc private func handleEditTapped() {
+        onEdit?()
+    }
+
+    @objc private func handlePasteAndGoTapped() {
+        onPasteAndGo?()
+    }
+}
+
 final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate, UIGestureRecognizerDelegate {
     private var tabs: [TabItem] = []
     private var activeTabIndex = 0
@@ -172,6 +449,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private var webBottomFullscreenConstraint: NSLayoutConstraint?
 
     private var isShowingLongPressMenu = false
+    private weak var activeCalloutOverlay: UIView?
 
     private var gentleToolbarIconColor: UIColor {
         UIColor { trait in
@@ -1161,7 +1439,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     private func configureAddressLongPressMenu() {
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleAddressLongPress(_:)))
-        longPress.minimumPressDuration = 0.45
+        longPress.minimumPressDuration = 0.42
         addressContentView.addGestureRecognizer(longPress)
     }
 
@@ -1169,9 +1447,89 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard gesture.state == .began else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
-        isShowingLongPressMenu = true
         view.endEditing(true)
+        isShowingLongPressMenu = true
 
+        let targetRect = addressContentView.convert(addressContentView.bounds, to: view)
+        let menuWidth: CGFloat = 272
+        let menuHeight: CGFloat = 51
+
+        let isAbove = targetRect.minY > 120
+        let arrowDir: CalloutBubbleBackgroundView.ArrowDirection = isAbove ? .down : .up
+        let menuY: CGFloat = isAbove ? (targetRect.minY - menuHeight - 6) : (targetRect.maxY + 6)
+        let minX: CGFloat = 16
+        let maxX: CGFloat = view.bounds.width - menuWidth - 16
+        let menuX: CGFloat = min(max(minX, targetRect.midX - menuWidth / 2), maxX)
+        let arrowOffset = targetRect.midX - menuX
+
+        let overlay = UIView(frame: view.bounds)
+        overlay.backgroundColor = .clear
+
+        let tapDismiss = UITapGestureRecognizer(target: self, action: #selector(dismissCalloutMenu))
+        overlay.addGestureRecognizer(tapDismiss)
+
+        let menuView = AddressCalloutMenuView(arrowDirection: arrowDir, arrowOffset: arrowOffset)
+        menuView.frame = CGRect(x: menuX, y: menuY, width: menuWidth, height: menuHeight)
+
+        menuView.onCopy = { [weak self] in
+            self?.dismissCalloutMenuAnimated(menuView, overlay: overlay) {
+                self?.handleCalloutCopy()
+            }
+        }
+
+        menuView.onPaste = { [weak self] in
+            self?.dismissCalloutMenuAnimated(menuView, overlay: overlay) {
+                self?.handleCalloutPaste()
+            }
+        }
+
+        menuView.onEdit = { [weak self] in
+            self?.dismissCalloutMenuAnimated(menuView, overlay: overlay) {
+                self?.handleCalloutEdit()
+            }
+        }
+
+        menuView.onPasteAndGo = { [weak self] in
+            self?.dismissCalloutMenuAnimated(menuView, overlay: overlay) {
+                self?.handleCalloutPasteAndGo()
+            }
+        }
+
+        overlay.addSubview(menuView)
+        view.addSubview(overlay)
+        activeCalloutOverlay = overlay
+
+        menuView.alpha = 0
+        menuView.transform = CGAffineTransform(scaleX: 0.85, y: 0.85)
+
+        UIView.animate(withDuration: 0.18, delay: 0, options: .curveEaseOut) {
+            menuView.alpha = 1
+            menuView.transform = .identity
+        }
+    }
+
+    @objc private func dismissCalloutMenu() {
+        guard let overlay = activeCalloutOverlay else { return }
+        if let menu = overlay.subviews.first(where: { $0 is AddressCalloutMenuView }) {
+            dismissCalloutMenuAnimated(menu, overlay: overlay, completion: nil)
+        } else {
+            overlay.removeFromSuperview()
+            isShowingLongPressMenu = false
+        }
+    }
+
+    private func dismissCalloutMenuAnimated(_ menu: UIView, overlay: UIView, completion: (() -> Void)?) {
+        UIView.animate(withDuration: 0.14, animations: {
+            menu.alpha = 0
+            menu.transform = CGAffineTransform(scaleX: 0.88, y: 0.88)
+        }) { [weak self] _ in
+            overlay.removeFromSuperview()
+            self?.isShowingLongPressMenu = false
+            completion?()
+        }
+    }
+
+    private func handleCalloutCopy() {
         let currentText: String
         if let url = activeTab.url {
             let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
@@ -1179,49 +1537,37 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         } else {
             currentText = addressField.text ?? ""
         }
-
-        let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-
-        alert.addAction(UIAlertAction(title: "拷贝", style: .default) { [weak self] _ in
-            self?.isShowingLongPressMenu = false
-            if !currentText.isEmpty {
-                UIPasteboard.general.string = currentText
-                self?.showToastNotice("已拷贝网址")
-            }
-        })
-
-        alert.addAction(UIAlertAction(title: "粘贴", style: .default) { [weak self] _ in
-            self?.isShowingLongPressMenu = false
-            if let paste = UIPasteboard.general.string {
-                self?.addressField.text = paste
-                self?.addressField.becomeFirstResponder()
-            }
-        })
-
-        alert.addAction(UIAlertAction(title: "编辑", style: .default) { [weak self] _ in
-            self?.isShowingLongPressMenu = false
-            self?.addressField.becomeFirstResponder()
-            self?.addressField.selectAll(nil)
-        })
-
-        alert.addAction(UIAlertAction(title: "粘贴并前往", style: .default) { [weak self] _ in
-            self?.isShowingLongPressMenu = false
-            guard let self = self,
-                  let paste = UIPasteboard.general.string,
-                  let url = self.destinationURL(from: paste) else { return }
-            self.load(url: url)
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
-            self?.isShowingLongPressMenu = false
-        })
-
-        if let popover = alert.popoverPresentationController {
-            popover.sourceView = addressContentView
-            popover.sourceRect = addressContentView.bounds
+        if !currentText.isEmpty {
+            UIPasteboard.general.string = currentText
+            showToastNotice("已拷贝网址")
         }
+    }
 
-        present(alert, animated: true)
+    private func handleCalloutPaste() {
+        if let paste = UIPasteboard.general.string, !paste.isEmpty {
+            addressField.text = paste
+            addressField.becomeFirstResponder()
+            updateAddressEditingAppearance()
+        }
+    }
+
+    private func handleCalloutEdit() {
+        if let url = activeTab.url {
+            let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+            addressField.text = (raw == "about:blank") ? "" : raw
+        }
+        addressField.becomeFirstResponder()
+        addressField.selectAll(nil)
+        updateAddressEditingAppearance()
+    }
+
+    private func handleCalloutPasteAndGo() {
+        guard let paste = UIPasteboard.general.string,
+              let url = destinationURL(from: paste) else {
+            showToastNotice("剪贴板内容非有效网址")
+            return
+        }
+        load(url: url)
     }
 
     @objc private func handleMoreButtonLongPress(_ gesture: UILongPressGestureRecognizer) {
