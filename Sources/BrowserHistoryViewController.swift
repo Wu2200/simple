@@ -222,7 +222,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "创建", style: .default) { [weak self, weak alert] _ in
             guard let name = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return }
-            _ = BookmarkStore.shared.createFolder(title: name, parentId: self?.folderId)
+            BookmarkStore.shared.createFolder(title: name, parentId: self?.folderId)
             self?.loadData()
         })
         present(alert, animated: true)
