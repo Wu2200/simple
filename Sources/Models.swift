@@ -752,7 +752,7 @@ final class CookieLockStore {
         let cleanDomain = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         return locked.contains { lockedDomain in
             let cleanLocked = lockedDomain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            return cleanDomain == cleanLocked || cleanDomain.hasSuffix("." + cleanLocked) || cleanLocked.hasSuffix("." + cleanDomain)
+            return cleanDomain == cleanLocked
         }
     }
 
