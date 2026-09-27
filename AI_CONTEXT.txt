@@ -2955,6 +2955,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     private let bottomPanel = UIView()
     private let addressContainer = UIView()
+    private let addressContentView = UIView()
     private let lockButton = TouchButton()
     private let addressField = AddressTextField()
     private let clearButton = TouchButton()
@@ -3506,17 +3507,20 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         bottomPanel.addSubview(blurView)
 
         addressContainer.translatesAutoresizingMaskIntoConstraints = false
-        addressContainer.backgroundColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
-        }
-        addressContainer.layer.cornerRadius = 22
-        addressContainer.layer.cornerCurve = .continuous
-        addressContainer.layer.borderWidth = 0
+        addressContainer.backgroundColor = .clear
         addressContainer.layer.shadowColor = UIColor.black.cgColor
         addressContainer.layer.shadowOpacity = 0.04
         addressContainer.layer.shadowRadius = 8
         addressContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
         addressContainer.clipsToBounds = false
+
+        addressContentView.translatesAutoresizingMaskIntoConstraints = false
+        addressContentView.backgroundColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
+        }
+        addressContentView.layer.cornerRadius = 22
+        addressContentView.layer.cornerCurve = .continuous
+        addressContentView.clipsToBounds = true
 
         lockButton.translatesAutoresizingMaskIntoConstraints = false
         lockButton.tintColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
@@ -3581,6 +3585,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         progressView.trackTintColor = .clear
         progressView.progress = 0
         progressView.alpha = 0
+        progressView.clipsToBounds = true
 
         navigationStack.translatesAutoresizingMaskIntoConstraints = false
         navigationStack.axis = .horizontal
@@ -3627,10 +3632,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         navigationStack.addArrangedSubview(tabsButton)
         navigationStack.addArrangedSubview(pluginButton)
 
-        addressContainer.addSubview(lockButton)
-        addressContainer.addSubview(addressField)
-        addressContainer.addSubview(clearButton)
-        addressContainer.addSubview(progressView)
+        addressContainer.addSubview(addressContentView)
+        addressContentView.addSubview(lockButton)
+        addressContentView.addSubview(addressField)
+        addressContentView.addSubview(clearButton)
+        addressContentView.addSubview(progressView)
 
         bottomPanel.addSubview(addressContainer)
         bottomPanel.addSubview(navigationStack)
@@ -3703,12 +3709,25 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             addressContainer.heightAnchor.constraint(equalToConstant: 44),
 
+            addressContentView.topAnchor.constraint(
+                equalTo: addressContainer.topAnchor
+            ),
+            addressContentView.leadingAnchor.constraint(
+                equalTo: addressContainer.leadingAnchor
+            ),
+            addressContentView.trailingAnchor.constraint(
+                equalTo: addressContainer.trailingAnchor
+            ),
+            addressContentView.bottomAnchor.constraint(
+                equalTo: addressContainer.bottomAnchor
+            ),
+
             lockButton.leadingAnchor.constraint(
-                equalTo: addressContainer.leadingAnchor,
+                equalTo: addressContentView.leadingAnchor,
                 constant: 10
             ),
             lockButton.centerYAnchor.constraint(
-                equalTo: addressContainer.centerYAnchor
+                equalTo: addressContentView.centerYAnchor
             ),
             lockButton.widthAnchor.constraint(equalToConstant: 24),
             lockButton.heightAnchor.constraint(equalToConstant: 24),
@@ -3718,33 +3737,33 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 constant: 6
             ),
             addressField.trailingAnchor.constraint(
-                equalTo: addressContainer.trailingAnchor,
+                equalTo: addressContentView.trailingAnchor,
                 constant: -12
             ),
             addressField.topAnchor.constraint(
-                equalTo: addressContainer.topAnchor
+                equalTo: addressContentView.topAnchor
             ),
             addressField.bottomAnchor.constraint(
-                equalTo: addressContainer.bottomAnchor
+                equalTo: addressContentView.bottomAnchor
             ),
 
             progressView.leadingAnchor.constraint(
-                equalTo: addressContainer.leadingAnchor
+                equalTo: addressContentView.leadingAnchor
             ),
             progressView.trailingAnchor.constraint(
-                equalTo: addressContainer.trailingAnchor
+                equalTo: addressContentView.trailingAnchor
             ),
             progressView.bottomAnchor.constraint(
-                equalTo: addressContainer.bottomAnchor
+                equalTo: addressContentView.bottomAnchor
             ),
-            progressView.heightAnchor.constraint(equalToConstant: 2),
+            progressView.heightAnchor.constraint(equalToConstant: 2.5),
 
             clearButton.trailingAnchor.constraint(
-                equalTo: addressContainer.trailingAnchor,
+                equalTo: addressContentView.trailingAnchor,
                 constant: -10
             ),
             clearButton.centerYAnchor.constraint(
-                equalTo: addressContainer.centerYAnchor
+                equalTo: addressContentView.centerYAnchor
             ),
             clearButton.widthAnchor.constraint(equalToConstant: 24),
             clearButton.heightAnchor.constraint(equalToConstant: 24),
