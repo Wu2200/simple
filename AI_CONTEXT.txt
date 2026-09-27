@@ -10334,7 +10334,7 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "锁定的站点数据在清理时将被完整保留，绝不退出登录。点击主域名可查看名下所有子域名；支持左滑直接「锁定全站」或逐个锁定。"
+        label.text = "锁定的域名仅保护其登录状态（Cookies 与登录数据），网页缓存文件仍会正常清理以避免积攒占用存储。点击进入可独立锁定/解锁各具体域名。"
         label.textColor = .secondaryLabel
         label.font = .systemFont(ofSize: 13, weight: .regular)
         label.numberOfLines = 0
@@ -10414,7 +10414,7 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
     }
 
     @objc private func handleRemoveAction() {
-        let alert = UIAlertController(title: "移除网站数据", message: "已锁定的站点受到严格保护，不会被删除。", preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: "移除网站数据", message: "已锁定的站点受到严格保护，登录数据不会被删除。", preferredStyle: .actionSheet)
 
         alert.addAction(UIAlertAction(title: "移除所有未锁定数据", style: .destructive) { [weak self] _ in
             WebsiteCleaner.shared.cleanUnprotectedLoginAndData {
@@ -10460,23 +10460,19 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard indexPath.row < filteredGroups.count else { return nil }
         let group = filteredGroups[indexPath.row]
-        let isGroupLocked = group.hasLocked
+        let isMainLocked = CookieLockStore.shared.isLocked(domain: group.mainDomain)
 
         let toggleLockAction = UIContextualAction(
             style: .normal,
-            title: isGroupLocked ? "解锁全站" : "锁定全站"
+            title: isMainLocked ? "解锁主域" : "锁定主域"
         ) { [weak self] _, _, completion in
             guard let self = self else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            if isGroupLocked {
-                CookieLockStore.shared.unlockMainGroup(mainDomain: group.mainDomain, allRecords: group.records)
-            } else {
-                CookieLockStore.shared.lockMainGroup(mainDomain: group.mainDomain, allRecords: group.records)
-            }
+            CookieLockStore.shared.toggleLock(domain: group.mainDomain)
             self.loadData()
             completion(true)
         }
-        toggleLockAction.backgroundColor = isGroupLocked ? .systemGray : UIColor(red: 0.12, green: 0.65, blue: 0.45, alpha: 1.0)
+        toggleLockAction.backgroundColor = isMainLocked ? .systemGray : UIColor(red: 0.12, green: 0.65, blue: 0.45, alpha: 1.0)
 
         let deleteAction = UIContextualAction(style: .destructive, title: "移除未锁定") { [weak self] _, _, completion in
             guard let self = self else { return }
@@ -10503,7 +10499,7 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
     }
 }
 
-// MARK: - 关联域名管理页面 (二级详情页 - 支持全选锁定与逐项锁定)
+// MARK: - 关联域名管理页面 (二级详情页 - 独立勾选/锁定每个域名)
 
 final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let mainDomain: String
@@ -10540,7 +10536,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
     }
 
     private func updateRightBarButton() {
-        let allLocked = records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+        let allLocked = !records.isEmpty && records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
         let title = allLocked ? "全部解锁" : "全部锁定"
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: title,
@@ -10551,12 +10547,15 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
     }
 
     @objc private func handleToggleAllLock() {
-        let allLocked = records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+        let allLocked = !records.isEmpty && records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+        let allNames = records.map { $0.displayName }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         if allLocked {
-            CookieLockStore.shared.unlockMainGroup(mainDomain: mainDomain, allRecords: records)
+            CookieLockStore.shared.unlockAll(domains: allNames)
+            CookieLockStore.shared.unlock(domain: mainDomain)
         } else {
-            CookieLockStore.shared.lockMainGroup(mainDomain: mainDomain, allRecords: records)
+            CookieLockStore.shared.lockAll(domains: allNames)
+            CookieLockStore.shared.lock(domain: mainDomain)
         }
         updateRightBarButton()
         tableView.reloadData()
@@ -10568,7 +10567,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "主站点 [ \(mainDomain) ] 共有 \(records.count) 个域名。点击单项可切换锁定；右上角支持一键全选锁定。已锁定的站点数据在清理时受到保护，登录状态绝不丢失。"
+        label.text = "主站点 [ \(mainDomain) ] 共有 \(records.count) 个域名。点击单项可独立切换锁定；锁定的站点仅保护登录凭据（Cookies 与登录数据），缓存文件在清理时仍会被正常释放。"
         label.textColor = .secondaryLabel
         label.font = .systemFont(ofSize: 13, weight: .regular)
         label.numberOfLines = 0
@@ -11322,18 +11321,19 @@ final class UserScriptEditorViewController: UIViewController {
 
         NSLayoutConstraint.activate([
             nameField.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            nameField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            nameField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            nameField.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            nameField.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            nameField.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             nameField.heightAnchor.constraint(equalToConstant: 42),
 
             matchField.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 10),
-            matchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            matchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            matchField.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            matchField.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             matchField.heightAnchor.constraint(equalToConstant: 42),
 
             textView.topAnchor.constraint(equalTo: matchField.bottomAnchor, constant: 12),
-            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            textView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            textView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             textView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
         ])
     }
