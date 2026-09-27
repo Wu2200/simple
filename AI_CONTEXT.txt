@@ -2982,6 +2982,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private let lockButton = TouchButton()
     private let addressField = AddressTextField()
     private let clearButton = TouchButton()
+    private let reloadButton = TouchButton()
     private let progressView = UIProgressView(progressViewStyle: .default)
 
     private let navigationStack = UIStackView()
@@ -3187,6 +3188,37 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 cg.move(to: CGPoint(x: 1.5, y: y))
                 cg.addLine(to: CGPoint(x: 18.5, y: y))
             }
+            cg.strokePath()
+        }
+        return img.withRenderingMode(.alwaysTemplate)
+    }
+
+    private func makeAddBookmarkIcon() -> UIImage {
+        let size = CGSize(width: 24, height: 24)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let strokeColor = gentleToolbarIconColor.resolvedColor(with: traitCollection)
+        let img = renderer.image { ctx in
+            let cg = ctx.cgContext
+            cg.setStrokeColor(strokeColor.cgColor)
+            cg.setFillColor(strokeColor.cgColor)
+
+            if let star = UIImage(systemName: "star", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)) {
+                star.draw(in: CGRect(x: 0.5, y: 0.5, width: 19, height: 19))
+            }
+
+            cg.setBlendMode(.clear)
+            cg.fillEllipse(in: CGRect(x: 12, y: 12, width: 12, height: 12))
+
+            cg.setBlendMode(.normal)
+            cg.setLineWidth(1.4)
+            cg.strokeEllipse(in: CGRect(x: 13, y: 13, width: 10, height: 10))
+
+            cg.setLineWidth(1.3)
+            cg.setLineCap(.round)
+            cg.move(to: CGPoint(x: 15.5, y: 18))
+            cg.addLine(to: CGPoint(x: 20.5, y: 18))
+            cg.move(to: CGPoint(x: 18, y: 15.5))
+            cg.addLine(to: CGPoint(x: 18, y: 20.5))
             cg.strokePath()
         }
         return img.withRenderingMode(.alwaysTemplate)
@@ -3582,6 +3614,25 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             for: .editingChanged
         )
 
+        reloadButton.translatesAutoresizingMaskIntoConstraints = false
+        reloadButton.tintColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
+        reloadButton.setImage(
+            UIImage(
+                systemName: "arrow.clockwise",
+                withConfiguration: UIImage.SymbolConfiguration(
+                    pointSize: 13.5,
+                    weight: .medium
+                )
+            ),
+            for: .normal
+        )
+        reloadButton.hitTestInsets = UIEdgeInsets(top: -8, left: -8, bottom: -8, right: -8)
+        reloadButton.addTarget(
+            self,
+            action: #selector(handleAddressReload),
+            for: .touchUpInside
+        )
+
         clearButton.translatesAutoresizingMaskIntoConstraints = false
         clearButton.tintColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
         clearButton.setImage(
@@ -3658,6 +3709,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         addressContainer.addSubview(addressContentView)
         addressContentView.addSubview(lockButton)
         addressContentView.addSubview(addressField)
+        addressContentView.addSubview(reloadButton)
         addressContentView.addSubview(clearButton)
         addressContentView.addSubview(progressView)
 
@@ -3761,7 +3813,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             addressField.trailingAnchor.constraint(
                 equalTo: addressContentView.trailingAnchor,
-                constant: -12
+                constant: -38
             ),
             addressField.topAnchor.constraint(
                 equalTo: addressContentView.topAnchor
@@ -3780,6 +3832,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 equalTo: addressContentView.bottomAnchor
             ),
             progressView.heightAnchor.constraint(equalToConstant: 2.5),
+
+            reloadButton.trailingAnchor.constraint(
+                equalTo: addressContentView.trailingAnchor,
+                constant: -10
+            ),
+            reloadButton.centerYAnchor.constraint(
+                equalTo: addressContentView.centerYAnchor
+            ),
+            reloadButton.widthAnchor.constraint(equalToConstant: 24),
+            reloadButton.heightAnchor.constraint(equalToConstant: 24),
 
             clearButton.trailingAnchor.constraint(
                 equalTo: addressContentView.trailingAnchor,
@@ -3809,6 +3871,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             navigationStack.heightAnchor.constraint(equalToConstant: 40)
         ])
+
+        updateAddressRightButtons()
     }
 
     @objc private func handleMoreButtonLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -3951,6 +4015,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         persistCurrentSession()
         updateUIState()
+        updateAddressRightButtons()
     }
 
     private func closeTab(at index: Int) {
@@ -4001,11 +4066,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                       self.homeView.alpha < 0.5,
                       !self.activeTab.isDisplayingFailurePage else {
                     self?.resetProgress()
+                    self?.updateAddressRightButtons()
                     return
                 }
 
                 self.progressView.alpha = 1
                 self.progressView.setProgress(Float(observedWebView.estimatedProgress), animated: true)
+                self.updateAddressRightButtons()
             }
         }
     }
@@ -4020,6 +4087,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         activeTab.webView.load(URLRequest(url: url))
 
         persistCurrentSession()
+        updateAddressRightButtons()
     }
 
     private func showHomeUI() {
@@ -4032,6 +4100,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         homeSearchField.resignFirstResponder()
         resetProgress()
         updateUIState()
+        updateAddressRightButtons()
     }
 
     private func showBrowserUI() {
@@ -4040,6 +4109,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureOverlayView.isHidden = true
         homeSearchField.resignFirstResponder()
         updateUIState()
+        updateAddressRightButtons()
     }
 
     private func showFailureUI(for tab: TabItem) {
@@ -4056,6 +4126,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         addressField.text = hostStr
         resetProgress()
         updateUIState()
+        updateAddressRightButtons()
     }
 
     private func updateUIState() {
@@ -4069,6 +4140,49 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         backButton.isEnabled = !isHome && canGoBack
         forwardButton.isEnabled = !isHome && activeTab.webView.canGoForward
         moreButton.isEnabled = true
+    }
+
+    private func updateAddressRightButtons() {
+        let isEditing = addressField.isFirstResponder
+        let isHome = homeView.alpha > 0.5
+        let hasText = !(addressField.text?.isEmpty ?? true)
+
+        if isEditing {
+            reloadButton.isHidden = true
+            reloadButton.alpha = 0
+            let showClear = hasText
+            clearButton.isHidden = !showClear
+            clearButton.alpha = showClear ? 1 : 0
+        } else {
+            clearButton.isHidden = true
+            clearButton.alpha = 0
+            let showReload = !isHome && (activeTab.url != nil || activeTab.isDisplayingFailurePage)
+            reloadButton.isHidden = !showReload
+            reloadButton.alpha = showReload ? 1 : 0
+            let iconName = activeTab.isLoading ? "xmark" : "arrow.clockwise"
+            reloadButton.setImage(
+                UIImage(
+                    systemName: iconName,
+                    withConfiguration: UIImage.SymbolConfiguration(
+                        pointSize: 13.5,
+                        weight: .medium
+                    )
+                ),
+                for: .normal
+            )
+        }
+    }
+
+    @objc private func handleAddressReload() {
+        if activeTab.isDisplayingFailurePage {
+            handleFailureReload()
+        } else if activeTab.isLoading {
+            activeTab.webView.stopLoading()
+            resetProgress()
+            updateAddressRightButtons()
+        } else {
+            activeTab.webView.reload()
+        }
     }
 
     private func destinationURL(from input: String) -> URL? {
@@ -4127,13 +4241,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func updateAddressEditingAppearance() {
-        let editing = addressField.isFirstResponder
-
-        clearButton.isHidden = !editing
-
-        UIView.animate(withDuration: 0.12) {
-            self.clearButton.alpha = editing ? 1 : 0
-        }
+        updateAddressRightButtons()
     }
 
     func tabRequestNewTab(url: URL) {
@@ -4178,6 +4286,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         updateUIState()
+        updateAddressRightButtons()
         persistCurrentSession()
     }
 
@@ -4319,6 +4428,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureOverlayView.isHidden = true
         activeTab.webView.load(URLRequest(url: targetURL))
         updateUIState()
+        updateAddressRightButtons()
     }
 
     @objc private func goBack() {
@@ -4648,7 +4758,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 2. 电脑版
+        // 2. 电脑版 (长按进入标识设置)
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
             title: isDesktop ? "移动版" : "电脑版",
@@ -4664,6 +4774,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 self.activeTab.webView.configuration.defaultWebpagePreferences.preferredContentMode = (newMode == .desktop) ? .desktop : .mobile
                 self.activeTab.reloadUserScripts()
                 self.activeTab.webView.reloadFromOrigin()
+            },
+            longPressHandler: { [weak self] in
+                self?.showUserAgentManager()
             }
         ))
 
@@ -4692,7 +4805,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 5. 全屏浏览
+        // 5. 添加书签 (放置在原全屏浏览位置)
+        items.append(CustomBottomSheetItem(
+            title: "添加书签",
+            customImage: makeAddBookmarkIcon(),
+            dismissOnTap: true,
+            handler: { [weak self] in
+                self?.addCurrentPageToBookmarks()
+            }
+        ))
+
+        // 6. 全屏浏览 (移动到原标识设置位置)
         items.append(CustomBottomSheetItem(
             title: isFullscreen ? "退出全屏" : "全屏浏览",
             iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
@@ -4703,27 +4826,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 6. 标识设置 (UA/标签设置)
-        items.append(CustomBottomSheetItem(
-            title: "标识设置",
-            iconName: "slider.horizontal.3",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showUserAgentManager()
-            }
-        ))
-
-        // 7. 清除数据
-        items.append(CustomBottomSheetItem(
-            title: "清除数据",
-            iconName: "trash",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showCleanDataMenu()
-            }
-        ))
-
-        // 8. 广告过滤 (点击开关拦截，长按进入规则编辑)
+        // 7. 广告过滤 (与清除数据交换位置)
         let isAdBlockOn = AdBlockManager.shared.isEnabled
         items.append(CustomBottomSheetItem(
             title: "广告过滤",
@@ -4742,14 +4845,24 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // Page 2: Secondary items
-        // 9. 添加书签
+        // 8. 清除数据 (与广告过滤交换位置)
         items.append(CustomBottomSheetItem(
-            title: "添加书签",
-            iconName: "star.badge.plus",
+            title: "清除数据",
+            iconName: "trash",
             dismissOnTap: true,
             handler: { [weak self] in
-                self?.addCurrentPageToBookmarks()
+                self?.showCleanDataMenu()
+            }
+        ))
+
+        // Page 2: Secondary items
+        // 9. 标识设置 (移动到第二页)
+        items.append(CustomBottomSheetItem(
+            title: "标识设置",
+            iconName: "slider.horizontal.3",
+            dismissOnTap: true,
+            handler: { [weak self] in
+                self?.showUserAgentManager()
             }
         ))
 
@@ -4771,16 +4884,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             dismissOnTap: true,
             handler: { [weak self] in
                 self?.extractPageText()
-            }
-        ))
-
-        // 12. 网站设置
-        items.append(CustomBottomSheetItem(
-            title: "网站设置",
-            iconName: "gearshape",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showSiteDomainSettings()
             }
         ))
 
