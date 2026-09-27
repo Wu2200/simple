@@ -1,6 +1,6 @@
 import UIKit
 
-public typealias CleanDataViewController = CleanDataSelectionViewController
+typealias CleanDataViewController = CleanDataSelectionViewController
 
 final class CleanDataSelectionViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private var selectedOptions: Set<CleanOption> = [.cache]
