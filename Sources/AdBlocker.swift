@@ -1,6 +1,8 @@
 import UIKit
 import WebKit
 
+public typealias AdBlockerViewController = AdBlockManagerViewController
+
 struct AdBlockSubscription: Codable, Equatable {
     var id: String
     var name: String
