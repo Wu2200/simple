@@ -16,7 +16,7 @@ struct MainDomainGroup {
     }
 
     var hasLocked: Bool {
-        return records.contains { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+        return CookieLockStore.shared.isLocked(domain: mainDomain) || records.contains { CookieLockStore.shared.isLocked(domain: $0.displayName) }
     }
 
     var allLocked: Bool {
@@ -795,13 +795,15 @@ final class EyeProtectionManager {
         case high = 2
 
         var alpha: CGFloat {
-            switch self {
-            case .low:
-                return 0.245
-            case .medium:
-                return 0.35
-            case .high:
-                return 0.455
+            switch self.lowLevelAlpha(for: self)
+            }
+        }
+
+        private func lowLevelAlpha(for l: Level) -> CGFloat {
+            switch l {
+            case .low: return 0.245
+            case .medium: return 0.35
+            case .high: return 0.455
             }
         }
 
@@ -891,11 +893,11 @@ final class DomainSettingsStore {
     }
 }
 
-// MARK: - Cookie 与网站数据锁定管理器 (全面支持主根域与全子域凭据保护)
+// MARK: - Cookie 与网站登录数据锁定管理器 (支持单个域名精确独立锁定，清理时保护登录凭据)
 
 final class CookieLockStore {
     static let shared = CookieLockStore()
-    private let key = "locked_cookie_domains_v1"
+    private let key = "locked_cookie_domains_v2"
 
     private init() {}
 
@@ -903,80 +905,88 @@ final class CookieLockStore {
         return UserDefaults.standard.stringArray(forKey: key) ?? []
     }
 
+    /// 严格精确匹配：针对 UI 显示与单个域名的独立锁定状态，绝不隐式强制连带其他域名
     func isLocked(domain: String) -> Bool {
-        let locked = getLockedDomains()
-        if locked.isEmpty { return false }
-        let clean = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let clean = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         guard !clean.isEmpty else { return false }
+        let locked = getLockedDomains().map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+        return locked.contains(clean)
+    }
 
-        let cleanRoot = DomainRelationEngine.rootDomain(of: clean)
+    /// 登录凭据保护判定：用于清理时识别该 Cookie 是否属于用户锁定的网站认证范围
+    func isCookieProtected(cookieDomain: String) -> Bool {
+        let locked = getLockedDomains().map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+        if locked.isEmpty { return false }
+        let cleanCookie = cookieDomain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        guard !cleanCookie.isEmpty else { return false }
 
-        for lockedDomain in locked {
-            let lockedClean = lockedDomain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            guard !lockedClean.isEmpty else { continue }
-            let lockedRoot = DomainRelationEngine.rootDomain(of: lockedClean)
-
+        for l in locked {
             // 1. 完全精确匹配
-            if clean == lockedClean { return true }
+            if cleanCookie == l { return true }
+            // 2. Cookie 属于锁定站点的父域或主域（例如锁定 accounts.google.com，保护 .google.com 的核心认证 Cookie）
+            if l.hasSuffix("." + cleanCookie) { return true }
+            // 3. Cookie 属于锁定站点的子域（例如锁定 google.com，保护 accounts.google.com 的 Cookie）
+            if cleanCookie.hasSuffix("." + l) { return true }
+            // 4. 同一主根域保护（例如锁定 google.com，保护 accounts.google.com 的 Cookie）
+            let r1 = DomainRelationEngine.rootDomain(of: cleanCookie)
+            let r2 = DomainRelationEngine.rootDomain(of: l)
+            if !r1.isEmpty && r1 == r2 { return true }
+            // 5. 伴随认证关联（如 gstatic.com / google.com）
+            if DomainRelationEngine.areDomainsAssociated(cleanCookie, l) { return true }
+        }
+        return false
+    }
 
-            // 2. 当前待查域名为锁定域名的子域名 (如 accounts.google.com 包含在 google.com 保护下)
-            if clean.hasSuffix("." + lockedClean) { return true }
+    /// 登录记录保护判定：用于清理 WKWebsiteDataRecord 时识别是否包含受保护登录数据
+    func isRecordLoginProtected(recordDisplayName: String) -> Bool {
+        let cleanName = recordDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        guard !cleanName.isEmpty else { return false }
+        let locked = getLockedDomains().map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
 
-            // 3. 锁定域名为当前待查域名的子域名 (如锁定了 accounts.google.com，父域 google.com 的 Cookie 同样需保护以维持登录)
-            if lockedClean.hasSuffix("." + clean) { return true }
-
-            // 4. 根域名相同且非空 (如 accounts.google.com 与 google.com、myaccount.google.com)
-            if !cleanRoot.isEmpty && !lockedRoot.isEmpty && cleanRoot == lockedRoot {
-                return true
-            }
-
-            // 5. 跨域伴随认证域名关联 (如 gstatic.com / googleusercontent.com 与 google.com)
-            if DomainRelationEngine.areDomainsAssociated(clean, lockedClean) {
-                return true
-            }
+        for l in locked {
+            if cleanName == l { return true }
+            if l.hasSuffix("." + cleanName) || cleanName.hasSuffix("." + l) { return true }
+            let r1 = DomainRelationEngine.rootDomain(of: cleanName)
+            let r2 = DomainRelationEngine.rootDomain(of: l)
+            if !r1.isEmpty && r1 == r2 { return true }
+            if DomainRelationEngine.areDomainsAssociated(cleanName, l) { return true }
         }
         return false
     }
 
     func lock(domain: String) {
         var locked = getLockedDomains()
-        let cleanDomain = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        if !cleanDomain.isEmpty && !locked.contains(cleanDomain) {
-            locked.append(cleanDomain)
+        let clean = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        if !clean.isEmpty && !locked.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == clean }) {
+            locked.append(clean)
             UserDefaults.standard.set(locked, forKey: key)
         }
     }
 
     func unlock(domain: String) {
+        let clean = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         var locked = getLockedDomains()
-        let cleanDomain = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        locked.removeAll { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == cleanDomain }
+        locked.removeAll { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == clean }
         UserDefaults.standard.set(locked, forKey: key)
     }
 
     func toggleLock(domain: String) {
-        let cleanDomain = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        guard !cleanDomain.isEmpty else { return }
-        var locked = getLockedDomains()
-        if locked.contains(where: { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == cleanDomain }) {
-            locked.removeAll { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == cleanDomain }
+        if isLocked(domain: domain) {
+            unlock(domain: domain)
         } else {
-            locked.append(cleanDomain)
-        }
-        UserDefaults.standard.set(locked, forKey: key)
-    }
-
-    func lockMainGroup(mainDomain: String, allRecords: [WKWebsiteDataRecord]) {
-        lock(domain: mainDomain)
-        for r in allRecords {
-            lock(domain: r.displayName)
+            lock(domain: domain)
         }
     }
 
-    func unlockMainGroup(mainDomain: String, allRecords: [WKWebsiteDataRecord]) {
-        unlock(domain: mainDomain)
-        for r in allRecords {
-            unlock(domain: r.displayName)
+    func lockAll(domains: [String]) {
+        for d in domains {
+            lock(domain: d)
+        }
+    }
+
+    func unlockAll(domains: [String]) {
+        for d in domains {
+            unlock(domain: d)
         }
     }
 }
@@ -1256,97 +1266,100 @@ final class ScriptDataStore {
     }
 }
 
-// MARK: - 严密网站数据清理引擎 (精确锁定保护)
+// MARK: - 严密网站数据清理引擎 (网页缓存彻底清空，登录凭据受锁定保护)
 
 final class WebsiteCleaner {
     static let shared = WebsiteCleaner()
     private init() {}
+
+    static let cacheDataTypes: Set<String> = [
+        WKWebsiteDataTypeDiskCache,
+        WKWebsiteDataTypeMemoryCache,
+        WKWebsiteDataTypeOfflineWebApplicationCache,
+        WKWebsiteDataTypeFetchCache
+    ]
+
+    static let loginDataTypes: Set<String> = [
+        WKWebsiteDataTypeCookies,
+        WKWebsiteDataTypeLocalStorage,
+        WKWebsiteDataTypeIndexedDBDatabases,
+        WKWebsiteDataTypeWebSQLDatabases,
+        WKWebsiteDataTypeSessionStorage
+    ]
 
     func clean(
         cache: Bool,
         loginAndData: Bool,
         completion: (() -> Void)? = nil
     ) {
+        // 1. 系统 URL 缓存彻底清理
         URLCache.shared.removeAllCachedResponses()
 
-        var types: Set<String> = []
+        let store = WKWebsiteDataStore.default()
+        let group = DispatchGroup()
+
+        // 2. 勾选了网页缓存：所有网站（无论是否锁定）的网页缓存、图片临时文件全部无差别清空！
+        // 彻底解决锁定网站后缓存无限积攒占用空间的问题！
+        if cache {
+            group.enter()
+            store.removeData(ofTypes: Self.cacheDataTypes, modifiedSince: .distantPast) {
+                group.leave()
+            }
+        }
+
+        // 3. 勾选了登录与本地数据：严格识别锁定名单，锁定的网站保留其登录 Cookies 和本地数据库，未锁定的予以清除
         if loginAndData {
-            types.formUnion(WKWebsiteDataStore.allWebsiteDataTypes())
+            group.enter()
+
+            // 清理系统 HTTPCookieStorage
             if let sharedCookies = HTTPCookieStorage.shared.cookies {
                 for c in sharedCookies {
-                    if !CookieLockStore.shared.isLocked(domain: c.domain) {
+                    if !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) {
                         HTTPCookieStorage.shared.deleteCookie(c)
                     }
                 }
             }
-        } else if cache {
-            types.formUnion([
-                WKWebsiteDataTypeDiskCache,
-                WKWebsiteDataTypeMemoryCache,
-                WKWebsiteDataTypeOfflineWebApplicationCache,
-                WKWebsiteDataTypeFetchCache
-            ])
-        }
 
-        guard !types.isEmpty else {
-            completion?()
-            return
-        }
-
-        let store = WKWebsiteDataStore.default()
-        let lockedDomains = CookieLockStore.shared.getLockedDomains()
-
-        if lockedDomains.isEmpty {
-            store.removeData(ofTypes: types, modifiedSince: .distantPast) {
-                if loginAndData {
-                    store.httpCookieStore.getAllCookies { cookies in
-                        let group = DispatchGroup()
-                        for c in cookies {
-                            group.enter()
-                            store.httpCookieStore.delete(c) {
-                                group.leave()
-                            }
-                        }
-                        group.notify(queue: .main) {
-                            completion?()
-                        }
-                    }
-                } else {
-                    DispatchQueue.main.async { completion?() }
+            // 获取 WebKit 记录并按锁定状态精准过滤
+            store.fetchDataRecords(ofTypes: Self.loginDataTypes) { records in
+                let unprotectedRecords = records.filter { record in
+                    !CookieLockStore.shared.isRecordLoginProtected(recordDisplayName: record.displayName)
                 }
-            }
-        } else {
-            store.fetchDataRecords(ofTypes: types) { records in
-                let unprotected = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
-                let group = DispatchGroup()
 
-                if !unprotected.isEmpty {
-                    group.enter()
-                    store.removeData(ofTypes: types, for: unprotected) {
-                        group.leave()
+                let subGroup = DispatchGroup()
+
+                if !unprotectedRecords.isEmpty {
+                    subGroup.enter()
+                    store.removeData(ofTypes: Self.loginDataTypes, for: unprotectedRecords) {
+                        subGroup.leave()
                     }
                 }
 
-                if loginAndData {
-                    group.enter()
-                    store.httpCookieStore.getAllCookies { cookies in
-                        let cookieGroup = DispatchGroup()
-                        for c in cookies where !CookieLockStore.shared.isLocked(domain: c.domain) {
+                // 逐个匹配清理 CookieStore，受保护登录凭据完整留存
+                subGroup.enter()
+                store.httpCookieStore.getAllCookies { cookies in
+                    let cookieGroup = DispatchGroup()
+                    for c in cookies {
+                        if !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) {
                             cookieGroup.enter()
                             store.httpCookieStore.delete(c) {
                                 cookieGroup.leave()
                             }
                         }
-                        cookieGroup.notify(queue: .main) {
-                            group.leave()
-                        }
+                    }
+                    cookieGroup.notify(queue: .main) {
+                        subGroup.leave()
                     }
                 }
 
-                group.notify(queue: .main) {
-                    completion?()
+                subGroup.notify(queue: .main) {
+                    group.leave()
                 }
             }
+        }
+
+        group.notify(queue: .main) {
+            completion?()
         }
     }
 
@@ -1359,23 +1372,14 @@ final class WebsiteCleaner {
     }
 
     func cleanSingleDomain(record: WKWebsiteDataRecord, cacheOnly: Bool, completion: (() -> Void)? = nil) {
-        let types: Set<String>
-        if cacheOnly {
-            types = [
-                WKWebsiteDataTypeDiskCache,
-                WKWebsiteDataTypeMemoryCache,
-                WKWebsiteDataTypeOfflineWebApplicationCache,
-                WKWebsiteDataTypeFetchCache
-            ]
-        } else {
-            types = WKWebsiteDataStore.allWebsiteDataTypes()
-        }
+        let types: Set<String> = cacheOnly ? Self.cacheDataTypes : WKWebsiteDataStore.allWebsiteDataTypes()
         let store = WKWebsiteDataStore.default()
+
         store.removeData(ofTypes: types, for: [record]) {
             if !cacheOnly {
                 store.httpCookieStore.getAllCookies { cookies in
                     let group = DispatchGroup()
-                    for c in cookies where CookieLockStore.shared.isLocked(domain: c.domain) == false &&
+                    for c in cookies where !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) &&
                                           (c.domain.contains(record.displayName) || record.displayName.contains(c.domain)) {
                         group.enter()
                         store.httpCookieStore.delete(c) {
@@ -1461,7 +1465,6 @@ final class FaviconLoader {
 
         let root = DomainRelationEngine.rootDomain(of: cleanDomain)
 
-        // 高清图标候选源 (优先网站原生 Apple Touch Icon，清晰度通常为 180x180 或更大)
         var candidateURLs: [URL] = []
         if let u1 = URL(string: "https://\(cleanDomain)/apple-touch-icon.png") { candidateURLs.append(u1) }
         if root != cleanDomain, let u2 = URL(string: "https://\(root)/apple-touch-icon.png") { candidateURLs.append(u2) }
