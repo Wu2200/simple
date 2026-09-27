@@ -5300,7 +5300,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     func tabProcessTerminated(_ tab: TabItem) {
         guard !tabs.isEmpty, tab.id == activeTab.id else { return }
         resetProgress()
-        activeTab.webView.reload()
+        if let targetURL = tab.url ?? tab.sessionURL() {
+            showBrowserUI()
+            tab.webView.load(URLRequest(url: targetURL))
+        }
     }
 
     func tabDidUpdate(_ tab: TabItem) {
@@ -5908,8 +5911,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 let newUA = UserAgentStore.shared.getSelectedUA()
                 self.activeTab.webView.customUserAgent = newUA
                 self.activeTab.webView.configuration.defaultWebpagePreferences.preferredContentMode = (newMode == .desktop) ? .desktop : .mobile
-                self.activeTab.reloadUserScripts()
-                self.activeTab.webView.reloadFromOrigin()
+                if let currentURL = self.activeTab.url, self.homeView.alpha < 0.5 {
+                    self.showBrowserUI()
+                    self.activeTab.reloadUserScripts()
+                    self.activeTab.webView.load(URLRequest(url: currentURL))
+                } else {
+                    self.activeTab.reloadUserScripts()
+                }
             },
             longPressHandler: { [weak self] in
                 self?.showUserAgentManager()
@@ -6073,8 +6081,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             let isDesktop = UserAgentStore.shared.currentMode == .desktop
             self.activeTab.webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
             self.activeTab.webView.configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
-            self.activeTab.reloadUserScripts()
-            self.activeTab.webView.reloadFromOrigin()
+            if let currentURL = self.activeTab.url, self.homeView.alpha < 0.5 {
+                self.showBrowserUI()
+                self.activeTab.reloadUserScripts()
+                self.activeTab.webView.load(URLRequest(url: currentURL))
+            } else {
+                self.activeTab.reloadUserScripts()
+            }
         }
         let nav = UINavigationController(rootViewController: manager)
         present(nav, animated: true)
@@ -6087,12 +6100,21 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 completion()
                 return
             }
-            self.performCleanData(options: options, completion: completion)
+            self.performCleanData(options: options) { [weak self] in
+                guard let self = self else {
+                    completion()
+                    return
+                }
+                if let currentURL = self.activeTab.url, self.homeView.alpha < 0.5 {
+                    self.showBrowserUI()
+                    self.activeTab.webView.load(URLRequest(url: currentURL))
+                }
+                completion()
+            }
         }
-        cleanVC.onOpenWebsiteDataManager = { [weak self] in
+        cleanVC.onOpenWebsiteDataManager = { [weak cleanVC] in
             let manager = WebsiteDataManagerViewController()
-            let nav = UINavigationController(rootViewController: manager)
-            self?.present(nav, animated: true)
+            cleanVC?.navigationController?.pushViewController(manager, animated: true)
         }
         let nav = UINavigationController(rootViewController: cleanVC)
         present(nav, animated: true)
