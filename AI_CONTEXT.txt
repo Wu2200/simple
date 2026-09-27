@@ -3304,7 +3304,7 @@ public final class BrowserViewController: UIViewController, UITextFieldDelegate,
 
         let tintColor = UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0)
         let cfg = UIImage.SymbolConfiguration(pointSize: 16.5, weight: .medium)
-        let smallCfg = UIImage.SymbolConfiguration(pointSize: 14.8, weight: .medium)
+        let smallCfg = UIImage.SymbolConfiguration(pointSize: 15.0, weight: .medium)
 
         backButton.setImage(UIImage(systemName: "chevron.left", withConfiguration: cfg), for: .normal)
         forwardButton.setImage(UIImage(systemName: "chevron.right", withConfiguration: cfg), for: .normal)
@@ -3735,38 +3735,31 @@ public final class BrowserViewController: UIViewController, UITextFieldDelegate,
         present(alert, animated: true)
     }
 
-    // MARK: - TabItemDelegate 回调
-    public func tabItemDidStartLoading(_ item: TabItem) {
-        guard item == activeTab else { return }
-        progressView.alpha = 1.0
-        progressView.setProgress(0.15, animated: true)
+    // MARK: - TabItemDelegate 核心实现
+    public func tabDidUpdate(_ tab: TabItem) {
+        guard tab == activeTab else { return }
         updateAddressRightButtons()
-    }
-
-    public func tabItem(_ item: TabItem, didUpdateProgress progress: Double) {
-        guard item == activeTab else { return }
-        progressView.setProgress(Float(progress), animated: true)
-        if progress >= 1.0 {
-            UIView.animate(withDuration: 0.25, delay: 0.1, options: .curveEaseOut, animations: {
-                self.progressView.alpha = 0
-            }) { _ in
-                self.progressView.setProgress(0, animated: false)
-            }
-        }
-    }
-
-    public func tabItemDidFinishLoading(_ item: TabItem) {
-        guard item == activeTab else { return }
-        updateAddressRightButtons()
-        if let url = item.currentURL {
+        if let url = tab.currentURL {
             addressField.text = url.absoluteString
-            BrowserHistoryStore.shared.record(title: item.title, url: url.absoluteString)
+            BrowserHistoryStore.shared.record(title: tab.title, url: url.absoluteString)
         }
     }
 
-    public func tabItem(_ item: TabItem, didFailLoadingWithError error: Error) {
-        guard item == activeTab else { return }
+    public func tabDidFail(_ tab: TabItem, error: Error) {
+        guard tab == activeTab else { return }
         updateAddressRightButtons()
+    }
+
+    public func tabRequestNewTab(url: URL) {
+        createNewTab(url: url)
+    }
+
+    public func tabProcessTerminated(_ tab: TabItem) {
+        tab.reload()
+    }
+
+    public func tabRequestGoBack(_ tab: TabItem) {
+        handleBack()
     }
 
     // MARK: - 底部导航事件
@@ -3855,8 +3848,8 @@ public final class BrowserViewController: UIViewController, UITextFieldDelegate,
         let page1: [CustomBottomSheetItem] = [
             CustomBottomSheetItem(iconName: "star", title: "书签/历史", action: { [weak self] in
                 let histVC = BrowserHistoryViewController()
-                histVC.onSelectURL = { url in
-                    self?.loadInputText(url)
+                histVC.onSelectURL = { [weak self] url in
+                    self?.loadInputText(url.absoluteString)
                 }
                 self?.present(UINavigationController(rootViewController: histVC), animated: true)
             }),
@@ -4372,6 +4365,136 @@ public final class UserAgentSettingsViewController: UIViewController, UITableVie
             return UISwipeActionsConfiguration(actions: [delete])
         }
         return nil
+    }
+}
+
+// MARK: - 下载管理器视图控制器
+public final class DownloadManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentInteractionControllerDelegate {
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private var downloadFiles: [URL] = []
+    private var documentInteractionController: UIDocumentInteractionController?
+
+    public override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "下载管理"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "清空", style: .plain, target: self, action: #selector(handleClearAll))
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "DownloadFileCell")
+        view.addSubview(tableView)
+
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        loadFiles()
+    }
+
+    private func loadFiles() {
+        let destDir = DownloadCoordinator.getDownloadsDirectory()
+        let fm = FileManager.default
+        if let urls = try? fm.contentsOfDirectory(at: destDir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: .skipsHiddenFiles) {
+            downloadFiles = urls.sorted { (u1, u2) in
+                let d1 = (try? u1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
+                let d2 = (try? u2.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
+                return d1 > d2
+            }
+        } else {
+            downloadFiles = []
+        }
+        tableView.reloadData()
+    }
+
+    @objc private func handleDone() {
+        dismiss(animated: true)
+    }
+
+    @objc private func handleClearAll() {
+        guard !downloadFiles.isEmpty else { return }
+        let alert = UIAlertController(title: "清空下载记录", message: "确定要删除所有已下载的文件吗？", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
+            let fm = FileManager.default
+            for u in self?.downloadFiles ?? [] {
+                try? fm.removeItem(at: u)
+            }
+            self?.loadFiles()
+        })
+        present(alert, animated: true)
+    }
+
+    public func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return downloadFiles.count
+    }
+
+    public func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "DownloadFileCell")
+        cell.backgroundColor = .secondarySystemGroupedBackground
+
+        let fileURL = downloadFiles[indexPath.row]
+        let filename = fileURL.lastPathComponent
+        let attr = (try? fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]))
+        let size = attr?.fileSize ?? 0
+        let date = attr?.contentModificationDate ?? Date()
+
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let sizeString = formatter.string(fromByteCount: Int64(size))
+
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "yyyy-MM-dd HH:mm"
+
+        cell.textLabel?.text = filename
+        cell.textLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+        cell.textLabel?.lineBreakMode = .byTruncatingMiddle
+        cell.detailTextLabel?.text = "\(sizeString)  •  \(dateFmt.string(from: date))"
+        cell.detailTextLabel?.textColor = .secondaryLabel
+        cell.imageView?.image = UIImage(systemName: "doc.fill")
+        cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+        cell.accessoryType = .disclosureIndicator
+
+        return cell
+    }
+
+    public func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        let fileURL = downloadFiles[indexPath.row]
+        documentInteractionController = UIDocumentInteractionController(url: fileURL)
+        documentInteractionController?.delegate = self
+        documentInteractionController?.presentPreview(animated: true)
+    }
+
+    public func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
+        return self
+    }
+
+    public func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let fileURL = downloadFiles[indexPath.row]
+
+        let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
+            try? FileManager.default.removeItem(at: fileURL)
+            self?.downloadFiles.remove(at: indexPath.row)
+            tableView.deleteRows(at: [indexPath], with: .automatic)
+            completion(true)
+        }
+
+        let share = UIContextualAction(style: .normal, title: "共享") { [weak self] (_, _, completion) in
+            guard let self = self else { return }
+            let ac = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+            self.present(ac, animated: true)
+            completion(true)
+        }
+        share.backgroundColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+
+        return UISwipeActionsConfiguration(actions: [delete, share])
     }
 }
 
