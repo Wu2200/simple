@@ -3688,6 +3688,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(handlePromptBlobExportNotification(_:)),
+            name: NSNotification.Name("PromptBlobExportNotification"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(handleDownloadNotification(_:)),
             name: NSNotification.Name("DownloadStartedNotification"),
             object: nil
@@ -3709,27 +3716,72 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc private func handlePromptDownloadNotification(_ notification: Notification) {
-        guard let url = notification.object as? URL else { return }
-        let filename = (notification.userInfo?["filename"] as? String) ?? url.lastPathComponent
+        let url = notification.object as? URL
+        let filename = (notification.userInfo?["filename"] as? String) ?? url?.lastPathComponent ?? "文件"
         let displayName = filename.isEmpty ? "文件" : filename
+        let onConfirm = notification.userInfo?["onConfirm"] as? ((Bool) -> Void)
 
         let alert = UIAlertController(
             title: "下载文件",
-            message: "\(displayName)\n\n来源: \(url.host ?? url.absoluteString)",
+            message: "\(displayName)\n\n来源: \(url?.host ?? url?.absoluteString ?? "未知来源")",
             preferredStyle: .alert
         )
 
         alert.addAction(UIAlertAction(title: "下载文件", style: .default) { _ in
-            DownloadCoordinator.shared.startDownload(url: url, filename: displayName)
+            if let onConfirm = onConfirm {
+                onConfirm(true)
+            } else if let url = url {
+                DownloadCoordinator.shared.startDownload(url: url, filename: displayName)
+            }
         })
 
         alert.addAction(UIAlertAction(title: "复制下载链接", style: .default) { [weak self] _ in
-            UIPasteboard.general.string = url.absoluteString
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            self?.showToastNotice("已复制下载链接")
+            if let url = url {
+                UIPasteboard.general.string = url.absoluteString
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                self?.showToastNotice("已复制下载链接")
+            }
+            onConfirm?(false)
         })
 
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            onConfirm?(false)
+        })
+
+        present(alert, animated: true)
+    }
+
+    @objc private func handlePromptBlobExportNotification(_ notification: Notification) {
+        guard let fileURL = notification.object as? URL else { return }
+        let filename = (notification.userInfo?["filename"] as? String) ?? fileURL.lastPathComponent
+        let fileSize = (notification.userInfo?["fileSize"] as? Int) ?? 0
+        let sizeString = ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file)
+
+        let alert = UIAlertController(
+            title: "网页文件已准备就绪",
+            message: "\(filename) (\(sizeString))\n\n该文件已在网页中生成完毕，您可以直接导出或保存至下载管理。",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(UIAlertAction(title: "导出 / 共享文件", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+            if let popover = activity.popoverPresentationController {
+                popover.sourceView = self.view
+                popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+            self.present(activity, animated: true)
+        })
+
+        alert.addAction(UIAlertAction(title: "存入下载管理", style: .default) { [weak self] _ in
+            self?.showToastNotice("已存入下载管理: \(filename)")
+        })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            try? FileManager.default.removeItem(at: fileURL)
+        })
+
         present(alert, animated: true)
     }
 
@@ -5291,6 +5343,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             editingDimmingView.isHidden = false
             UIView.animate(withDuration: 0.2) {
                 self.editingDimmingView.alpha = 1
+            }
+
+            // 点击地址栏后默认全选网址
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak textField] in
+                textField?.selectAll(nil)
+            }
+        } else if textField == homeSearchField {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak textField] in
+                textField?.selectAll(nil)
             }
         }
     }
