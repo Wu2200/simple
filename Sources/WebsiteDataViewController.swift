@@ -74,9 +74,29 @@ final class WebsiteDataManagerViewController: UITableViewController, UISearchRes
 
         var content = cell.defaultContentConfiguration()
         content.text = record.displayName
-        content.image = UIImage(systemName: "globe")
         content.imageProperties.maximumSize = CGSize(width: 24, height: 24)
         content.imageProperties.cornerRadius = 4
+
+        let domain = record.displayName
+        if let cached = FaviconLoader.shared.cachedFavicon(for: domain) {
+            content.image = cached
+        } else {
+            content.image = UIImage(systemName: "globe")
+            FaviconLoader.shared.loadFavicon(for: domain) { [weak tableView] image in
+                guard let image = image else { return }
+                DispatchQueue.main.async {
+                    if let currentCell = tableView?.cellForRow(at: indexPath) {
+                        var updatedContent = currentCell.defaultContentConfiguration()
+                        updatedContent.text = record.displayName
+                        updatedContent.image = image
+                        updatedContent.imageProperties.maximumSize = CGSize(width: 24, height: 24)
+                        updatedContent.imageProperties.cornerRadius = 4
+                        currentCell.contentConfiguration = updatedContent
+                    }
+                }
+            }
+        }
+
         cell.contentConfiguration = content
         cell.selectionStyle = .none
 
@@ -86,20 +106,6 @@ final class WebsiteDataManagerViewController: UITableViewController, UISearchRes
             cell.accessoryView = lockView
         } else {
             cell.accessoryView = nil
-        }
-
-        FaviconLoader.shared.loadFavicon(for: record.displayName) { [weak tableView] image in
-            guard let image = image else { return }
-            DispatchQueue.main.async {
-                if let currentCell = tableView?.cellForRow(at: indexPath) {
-                    var updatedContent = currentCell.defaultContentConfiguration()
-                    updatedContent.text = record.displayName
-                    updatedContent.image = image
-                    updatedContent.imageProperties.maximumSize = CGSize(width: 24, height: 24)
-                    updatedContent.imageProperties.cornerRadius = 4
-                    currentCell.contentConfiguration = updatedContent
-                }
-            }
         }
 
         return cell
