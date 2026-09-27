@@ -6493,8 +6493,11 @@ final class CleanDataSelectionViewController: UIViewController, UITableViewDataS
         } else if indexPath.section == 1 {
             requestCleanConfirmation()
         } else {
-            dismiss(animated: true) { [weak self] in
-                self?.onOpenWebsiteDataManager?()
+            if let onOpen = onOpenWebsiteDataManager {
+                onOpen()
+            } else {
+                let manager = WebsiteDataManagerViewController()
+                navigationController?.pushViewController(manager, animated: true)
             }
         }
     }
