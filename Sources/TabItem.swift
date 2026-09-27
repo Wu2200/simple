@@ -1,14 +1,16 @@
 import UIKit
 import WebKit
 
-// MARK: - 下载核心协调器（提供手动确认弹窗与沙盒落盘）
-public final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate {
-    public static let shared = DownloadCoordinator()
+protocol TabItemDelegate: AnyObject {
+    func tabDidUpdate(_ tab: TabItem)
+    func tabDidFail(_ tab: TabItem, error: Error)
+    func tabRequestNewTab(url: URL)
+    func tabProcessTerminated(_ tab: TabItem)
+    func tabRequestGoBack(_ tab: TabItem)
+}
 
-    public static let promptNotification = Notification.Name("PromptDownloadConfirmationNotification")
-    public static let startedNotification = Notification.Name("DownloadStartedNotification")
-    public static let finishedNotification = Notification.Name("DownloadFinishedNotification")
-    public static let failedNotification = Notification.Name("DownloadFailedNotification")
+final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate {
+    static let shared = DownloadCoordinator()
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
@@ -21,189 +23,736 @@ public final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate {
         super.init()
     }
 
-    /// 请求弹出下载手动确认提示框（绝不自动下载）
-    public func requestDownloadPrompt(url: URL, suggestedFilename: String? = nil) {
-        let name: String
-        if let s = suggestedFilename, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            name = s
-        } else if !url.lastPathComponent.isEmpty {
-            name = url.lastPathComponent
-        } else {
-            name = "download_\(Int(Date().timeIntervalSince1970))"
+    static func getDownloadsDirectory() -> URL {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let downloads = docs.appendingPathComponent("Downloads", isDirectory: true)
+        if !fm.fileExists(atPath: downloads.path) {
+            try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
         }
-
-        NotificationCenter.default.post(
-            name: Self.promptNotification,
-            object: nil,
-            userInfo: [
-                "url": url,
-                "filename": name
-            ]
-        )
+        return downloads
     }
 
-    /// 用户手动确认后开始真实下载
-    public func startDownload(url: URL, filename: String) {
-        let fileManager = FileManager.default
-        guard let docsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        let downloadsDir = docsURL.appendingPathComponent("Downloads")
-        try? fileManager.createDirectory(at: downloadsDir, withIntermediateDirectories: true)
+    func startDownload(url: URL, filename: String) {
+        let destDir = Self.getDownloadsDirectory()
+        let rawName = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackName = "download_\(Int(Date().timeIntervalSince1970))"
+        let baseFilename = rawName.isEmpty ? fallbackName : rawName
 
-        var targetURL = downloadsDir.appendingPathComponent(filename)
+        let fm = FileManager.default
+        var targetURL = destDir.appendingPathComponent(baseFilename)
         var counter = 1
-        let nameWithoutExt = (filename as NSString).deletingPathExtension
-        let ext = (filename as NSString).pathExtension
+        let nameWithoutExt = (baseFilename as NSString).deletingPathExtension
+        let ext = (baseFilename as NSString).pathExtension
 
-        while fileManager.fileExists(atPath: targetURL.path) {
+        while fm.fileExists(atPath: targetURL.path) {
             let newName = ext.isEmpty ? "\(nameWithoutExt)_\(counter)" : "\(nameWithoutExt)_\(counter).\(ext)"
-            targetURL = downloadsDir.appendingPathComponent(newName)
+            targetURL = destDir.appendingPathComponent(newName)
             counter += 1
         }
 
         let task = session.downloadTask(with: url)
-        downloadTasks[task] = (filename, targetURL)
+        downloadTasks[task] = (baseFilename, targetURL)
         task.resume()
 
         NotificationCenter.default.post(
-            name: Self.startedNotification,
-            object: nil,
-            userInfo: [
-                "filename": filename,
-                "url": url
-            ]
+            name: NSNotification.Name("DownloadStartedNotification"),
+            object: baseFilename
         )
     }
 
-    // MARK: - URLSessionDownloadDelegate
-    public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard let info = downloadTasks[downloadTask] else { return }
         downloadTasks.removeValue(forKey: downloadTask)
 
+        let fm = FileManager.default
         do {
-            if FileManager.default.fileExists(atPath: info.targetURL.path) {
-                try FileManager.default.removeItem(at: info.targetURL)
+            if fm.fileExists(atPath: info.targetURL.path) {
+                try fm.removeItem(at: info.targetURL)
             }
-            try FileManager.default.moveItem(at: location, to: info.targetURL)
+            try fm.moveItem(at: location, to: info.targetURL)
             NotificationCenter.default.post(
-                name: Self.finishedNotification,
-                object: nil,
-                userInfo: [
-                    "filename": info.filename,
-                    "fileURL": info.targetURL
-                ]
+                name: NSNotification.Name("DownloadFinishedNotification"),
+                object: info.targetURL.lastPathComponent
             )
         } catch {
             NotificationCenter.default.post(
-                name: Self.failedNotification,
-                object: nil,
-                userInfo: [
-                    "filename": info.filename,
-                    "error": error.localizedDescription
-                ]
+                name: NSNotification.Name("DownloadFailedNotification"),
+                object: error.localizedDescription
             )
         }
     }
 
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let downloadTask = task as? URLSessionDownloadTask, let error = error else { return }
         if let info = downloadTasks[downloadTask] {
             downloadTasks.removeValue(forKey: downloadTask)
             NotificationCenter.default.post(
-                name: Self.failedNotification,
-                object: nil,
-                userInfo: [
-                    "filename": info.filename,
-                    "error": error.localizedDescription
-                ]
+                name: NSNotification.Name("DownloadFailedNotification"),
+                object: error.localizedDescription
             )
         }
     }
 }
 
-// MARK: - 标签页模型
-public final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate {
-    public let id: UUID
-    public var title: String
-    public var url: URL?
-    public var webView: WKWebView
-    public var screenshot: UIImage?
-    public var lastAccessTime: Date
-    public var isDesktopMode: Bool = false
+final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    let id = UUID()
+    let webView: WKWebView
+    var title = "主页"
+    var url: URL?
+    var isLoading = false
+    var snapshot: UIImage?
+    var registeredCommands: [RegisteredMenuCommand] = []
 
-    public init(id: UUID = UUID(), title: String = "新标签页", url: URL? = nil, webView: WKWebView? = nil) {
-        self.id = id
-        self.title = title
-        self.url = url
-        self.lastAccessTime = Date()
+    var sourceTabID: UUID?
+    var failedURL: URL?
+    var failureError: Error?
+    var isDisplayingFailurePage = false
+    var previousURL: URL?
+    var failureOriginURL: URL?
+    private var pendingRestoreURL: URL?
 
-        if let existing = webView {
-            self.webView = existing
-        } else {
-            let config = WKWebViewConfiguration()
-            config.allowsInlineMediaPlayback = true
-            config.mediaTypesRequiringUserActionForPlayback = []
-            self.webView = WKWebView(frame: .zero, configuration: config)
-        }
+    private var hasInjectedScriptsForCurrentPage = false
+    private var isLoadingFailureDocument = false
+    private var navigationActionURL: URL?
+    weak var delegate: TabItemDelegate?
 
+    override init() {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.allowsPictureInPictureMediaPlayback = true
+
+        let selectedItem = UserAgentStore.shared.getSelectedItem()
+        let isDesktop = selectedItem.category == .desktop || selectedItem.id == "default_mac"
+        configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
+
+        let userContentController = WKUserContentController()
+        configuration.userContentController = userContentController
+
+        webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
-        self.webView.navigationDelegate = self
-        self.webView.uiDelegate = self
-        self.webView.allowsBackForwardNavigationGestures = true
+
+        webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
+
+        AdBlockManager.shared.attach(to: webView)
+        userContentController.add(self, name: "GM")
+
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        webView.scrollView.keyboardDismissMode = .onDrag
+        webView.scrollView.contentInsetAdjustmentBehavior = .automatic
+        webView.backgroundColor = .white
+        webView.scrollView.backgroundColor = .white
+        webView.isOpaque = true
     }
 
-    public func snapshot(completion: @escaping (UIImage?) -> Void) {
-        let config = WKSnapshotConfiguration()
-        config.rect = webView.bounds
-        webView.takeSnapshot(with: config) { [weak self] image, _ in
-            self?.screenshot = image
-            completion(image)
+    deinit {
+        destroy()
+    }
+
+    func destroy() {
+        AdBlockManager.shared.detach(from: webView)
+        delegate = nil
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.stopLoading()
+        webView.evaluateJavaScript("""
+        (function(){
+            try {
+                var media = document.querySelectorAll('audio, video');
+                for(var i=0; i<media.length; i++){
+                    media[i].pause();
+                    media[i].src = '';
+                    media[i].load();
+                }
+            } catch(e){}
+        })();
+        """, completionHandler: nil)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "GM")
+        webView.load(URLRequest(url: URL(string: "about:blank")!))
+        webView.removeFromSuperview()
+        snapshot = nil
+    }
+
+    func clearFailureState() {
+        isDisplayingFailurePage = false
+        failedURL = nil
+        failureError = nil
+        failureOriginURL = nil
+    }
+
+    func restoreSession(url: URL?, title: String) {
+        self.url = url
+        self.title = title.isEmpty ? (url?.host ?? "新标签页") : title
+        self.pendingRestoreURL = url
+        self.isDisplayingFailurePage = false
+        self.failedURL = nil
+        self.failureError = nil
+        self.failureOriginURL = nil
+    }
+
+    func consumePendingRestoreURL() -> URL? {
+        let url = pendingRestoreURL
+        pendingRestoreURL = nil
+        return url
+    }
+
+    func sessionURL() -> URL? {
+        if isDisplayingFailurePage {
+            return failedURL ?? url
+        }
+        return pendingRestoreURL ?? url
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any], let action = body["action"] as? String else { return }
+
+        if action == "goBackAction" {
+            delegate?.tabRequestGoBack(self)
+        } else if action == "registerMenuCommand", let cmdId = body["id"] as? Int, let caption = body["caption"] as? String {
+            let scriptId = (body["scriptId"] as? String) ?? ""
+            registeredCommands.removeAll { $0.cmdId == cmdId || ($0.scriptId == scriptId && $0.caption == caption) }
+            registeredCommands.append(RegisteredMenuCommand(scriptId: scriptId, cmdId: cmdId, caption: caption))
+        } else if action == "unregisterMenuCommand", let cmdId = body["id"] as? Int {
+            registeredCommands.removeAll { $0.cmdId == cmdId }
+        } else if action == "setValue", let scriptId = body["scriptId"] as? String, let name = body["name"] as? String, let value = body["value"] {
+            ScriptDataStore.shared.setValue(scriptId: scriptId, name: name, value: value)
+        } else if action == "deleteValue", let scriptId = body["scriptId"] as? String, let name = body["name"] as? String {
+            ScriptDataStore.shared.deleteValue(scriptId: scriptId, name: name)
+        } else if action == "xhr", let reqId = body["id"] as? String, let urlString = body["url"] as? String, let targetURL = URL(string: urlString) {
+            let method = (body["method"] as? String) ?? "GET"
+            var request = URLRequest(url: targetURL)
+            request.httpMethod = method
+
+            if let headers = body["headers"] as? [String: String] {
+                for (k, v) in headers {
+                    request.setValue(v, forHTTPHeaderField: k)
+                }
+            }
+
+            if let dataString = body["data"] as? String {
+                request.httpBody = dataString.data(using: .utf8)
+            }
+
+            let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                DispatchQueue.main.async {
+                    if let error = error {
+                        let errData = (try? JSONSerialization.data(withJSONObject: [error.localizedDescription], options: [])) ?? Data()
+                        let errJSON = String(data: errData, encoding: .utf8) ?? "[\"\"]"
+                        let unwrappedErr = String(errJSON.dropFirst().dropLast())
+                        self?.webView.evaluateJavaScript("window.__gm_handleXhrError('\(reqId)', \(unwrappedErr))", completionHandler: nil)
+                        return
+                    }
+
+                    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
+                    let responseText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    let jsonTextData = try? JSONSerialization.data(withJSONObject: [responseText], options: [])
+                    let jsonText = jsonTextData.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+                    let unwrappedText = String(jsonText.dropFirst().dropLast())
+
+                    self?.webView.evaluateJavaScript("window.__gm_handleXhrResponse('\(reqId)', \(statusCode), \(unwrappedText))", completionHandler: nil)
+                }
+            }
+            task.resume()
         }
     }
 
-    public func reload() {
+    private func applyDesktopViewAdaptationIfNeeded() {
+        let selectedItem = UserAgentStore.shared.getSelectedItem()
+        let isDesktop = selectedItem.category == .desktop || selectedItem.id == "default_mac"
+        guard isDesktop else { return }
+
+        let js = """
+        (function() {
+            try {
+                var meta = document.querySelector('meta[name="viewport"]');
+                if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    (document.head || document.documentElement).appendChild(meta);
+                }
+                var screenW = window.screen.width || 390;
+                var targetW = 1024;
+                var scale = (screenW / targetW).toFixed(2);
+                meta.content = 'width=' + targetW + ', initial-scale=' + scale + ', minimum-scale=0.1, maximum-scale=5.0, user-scalable=yes';
+
+                var styleId = '__desktop_overflow_fix__';
+                if (!document.getElementById(styleId)) {
+                    var style = document.createElement('style');
+                    style.id = styleId;
+                    style.type = 'text/css';
+                    style.innerHTML = `
+                        html { overflow-x: auto !important; }
+                        body { max-width: 100% !important; overflow-x: auto !important; }
+                        video, iframe, object, embed { max-width: 100% !important; }
+                        .player-container, #player, .video-player, .html5-video-player { max-width: 100% !important; }
+                    `;
+                    (document.head || document.documentElement).appendChild(style);
+                }
+            } catch(e) {}
+        })();
+        """
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    private func injectInlineVideoHelper() {
+        let js = """
+        (function() {
+            try {
+                function fixInlineVideo(v) {
+                    if (!v) return;
+                    v.setAttribute('playsinline', 'true');
+                    v.setAttribute('webkit-playsinline', 'true');
+                    v.playsInline = true;
+                    if (v.webkitSupportsPresentationMode && typeof v.webkitSetPresentationMode === 'function') {
+                        if (v.webkitPresentationMode === 'fullscreen') {
+                            v.webkitSetPresentationMode('inline');
+                        }
+                    }
+                }
+
+                var videos = document.querySelectorAll('video');
+                for (var i = 0; i < videos.length; i++) {
+                    fixInlineVideo(videos[i]);
+                }
+
+                var observer = new MutationObserver(function(mutations) {
+                    for (var i = 0; i < mutations.length; i++) {
+                        var added = mutations[i].addedNodes;
+                        for (var j = 0; j < added.length; j++) {
+                            var node = added[j];
+                            if (node.tagName === 'VIDEO') {
+                                fixInlineVideo(node);
+                            } else if (node.querySelectorAll) {
+                                var innerVideos = node.querySelectorAll('video');
+                                for (var k = 0; k < innerVideos.length; k++) {
+                                    fixInlineVideo(innerVideos[k]);
+                                }
+                            }
+                        }
+                    }
+                });
+
+                observer.observe(document.documentElement || document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            } catch(e) {}
+        })();
+        """
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    func injectAndRunUserScripts() {
+        applyDesktopViewAdaptationIfNeeded()
+        injectInlineVideoHelper()
+
+        let currentUrlStr = url?.absoluteString ?? ""
+        let matchingScripts = UserScriptStore.shared.loadScripts().filter {
+            UserScriptStore.shared.isScriptMatching(script: $0, urlString: currentUrlStr)
+        }
+
+        let gmPolyfillBase = """
+        if (!window.__gm_polyfilled__) {
+            window.__gm_polyfilled__ = true;
+            window.unsafeWindow = window;
+            window.__gm_menu_commands__ = window.__gm_menu_commands__ || {};
+
+            window.__gm_invokeMenuCommand = function(id) {
+                var fn = window.__gm_menu_commands__[id];
+                if (typeof fn === 'function') { fn(); }
+            };
+            window.GM_addStyle = function(css) {
+                var style = document.createElement('style');
+                style.type = 'text/css';
+                style.appendChild(document.createTextNode(css));
+                (document.head || document.documentElement).appendChild(style);
+                return style;
+            };
+            window.GM_log = function(msg) {
+                console.log('[Tampermonkey]', msg);
+            };
+            window.GM_xmlhttpRequest = function(opts) {
+                var id = 'xhr_' + Math.random().toString(36).substr(2, 9);
+                window.__gm_xhr_callbacks__ = window.__gm_xhr_callbacks__ || {};
+                window.__gm_xhr_callbacks__[id] = opts;
+                try {
+                    window.webkit.messageHandlers.GM.postMessage({
+                        action: 'xhr',
+                        id: id,
+                        method: opts.method || 'GET',
+                        url: opts.url,
+                        headers: opts.headers || {},
+                        data: opts.data || null,
+                        timeout: opts.timeout || 0
+                    });
+                } catch(e) {
+                    if (opts.onerror) opts.onerror({ status: 0, responseText: e.toString() });
+                }
+            };
+            window.__gm_handleXhrResponse = function(id, status, text) {
+                var opts = window.__gm_xhr_callbacks__[id];
+                if (!opts) return;
+                delete window.__gm_xhr_callbacks__[id];
+                var res = {
+                    status: status,
+                    statusText: status === 200 ? 'OK' : 'Error',
+                    responseText: text,
+                    response: text,
+                    readyState: 4,
+                    finalUrl: opts.url
+                };
+                if (opts.onload) opts.onload(res);
+                if (opts.onreadystatechange) opts.onreadystatechange(res);
+            };
+            window.__gm_handleXhrError = function(id, errorText) {
+                var opts = window.__gm_xhr_callbacks__[id];
+                if (!opts) return;
+                delete window.__gm_xhr_callbacks__[id];
+                var res = { status: 0, statusText: errorText, responseText: errorText, response: errorText, readyState: 4 };
+                if (opts.onerror) opts.onerror(res);
+            };
+        }
+        """
+
+        var fullJS = gmPolyfillBase + "\n"
+        for script in matchingScripts {
+            let valuesJSON = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
+            fullJS += """
+            (function(scriptId, initialValues) {
+                var values = initialValues || {};
+                var GM_setValue = function(name, val) {
+                    values[name] = val;
+                    try {
+                        window.webkit.messageHandlers.GM.postMessage({
+                            action: 'setValue',
+                            scriptId: scriptId,
+                            name: name,
+                            value: val
+                        });
+                    } catch(e) {}
+                };
+                var GM_getValue = function(name, defaultValue) {
+                    return (name in values) ? values[name] : defaultValue;
+                };
+                var GM_deleteValue = function(name) {
+                    delete values[name];
+                    try {
+                        window.webkit.messageHandlers.GM.postMessage({
+                            action: 'deleteValue',
+                            scriptId: scriptId,
+                            name: name
+                        });
+                    } catch(e) {}
+                };
+                var GM_registerMenuCommand = function(caption, commandFunc) {
+                    var id = Math.floor(Math.random() * 1000000);
+                    window.__gm_menu_commands__[id] = commandFunc;
+                    try {
+                        window.webkit.messageHandlers.GM.postMessage({
+                            action: 'registerMenuCommand',
+                            id: id,
+                            scriptId: scriptId,
+                            caption: caption
+                        });
+                    } catch(e) {}
+                    return id;
+                };
+                var GM_unregisterMenuCommand = function(id) {
+                    delete window.__gm_menu_commands__[id];
+                    try {
+                        window.webkit.messageHandlers.GM.postMessage({
+                            action: 'unregisterMenuCommand',
+                            id: id
+                        });
+                    } catch(e) {}
+                };
+                var GM_xmlhttpRequest = window.GM_xmlhttpRequest;
+                var GM = {
+                    getValue: function(k, d) { return Promise.resolve(GM_getValue(k, d)); },
+                    setValue: function(k, v) { GM_setValue(k, v); return Promise.resolve(); },
+                    deleteValue: function(k) { GM_deleteValue(k); return Promise.resolve(); },
+                    xmlHttpRequest: function(opts) {
+                        return new Promise(function(resolve, reject) {
+                            var origOnload = opts.onload;
+                            var origOnerror = opts.onerror;
+                            opts.onload = function(res) {
+                                if (origOnload) origOnload(res);
+                                resolve(res);
+                            };
+                            opts.onerror = function(res) {
+                                if (origOnerror) origOnerror(res);
+                                reject(res);
+                            };
+                            GM_xmlhttpRequest(opts);
+                        });
+                    },
+                    addStyle: window.GM_addStyle,
+                    registerMenuCommand: function(c, f) { return Promise.resolve(GM_registerMenuCommand(c, f)); }
+                };
+
+                try {
+                    \(script.code)
+                } catch(e) {
+                    console.error('[UserScript Error]', e);
+                }
+            })('\(script.id)', \(valuesJSON));
+            \n
+            """
+        }
+
+        webView.evaluateJavaScript(fullJS, completionHandler: nil)
+    }
+
+    func reloadUserScripts() {
+        hasInjectedScriptsForCurrentPage = false
+        registeredCommands.removeAll()
         webView.reload()
     }
 
-    // MARK: - WKNavigationDelegate 下载手动拦截（严禁自动下载，必须弹出提示框由用户选择）
-    public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let reqURL = navigationAction.request.url else {
-            decisionHandler(.allow)
+    func updateSnapshot(completion: (() -> Void)? = nil) {
+        guard webView.bounds.width > 0, webView.bounds.height > 0, !webView.isLoading else {
+            completion?()
             return
         }
 
-        let downloadableExtensions: Set<String> = [
-            "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "bz2", "xz",
-            "dmg", "pkg", "deb", "torrent", "pdf", "mp4", "mov", "avi", "mkv",
-            "mp3", "flac", "wav", "exe", "iso", "bin", "doc", "docx", "xls", "xlsx", "ppt", "pptx"
-        ]
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = webView.bounds
 
-        let ext = reqURL.pathExtension.lowercased()
-        if downloadableExtensions.contains(ext) {
-            decisionHandler(.cancel)
-            DownloadCoordinator.shared.requestDownloadPrompt(url: reqURL, suggestedFilename: reqURL.lastPathComponent)
-            return
+        webView.takeSnapshot(with: configuration) { [weak self] image, _ in
+            if let image = image {
+                self?.snapshot = image
+            }
+            completion?()
         }
-
-        decisionHandler(.allow)
     }
 
-    public func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        if let httpResponse = navigationResponse.response as? HTTPURLResponse {
-            let isAttachment = httpResponse.allHeaderFields.contains { key, value in
-                guard let k = key as? String, k.lowercased() == "content-disposition" else { return false }
-                return (value as? String)?.lowercased().contains("attachment") ?? false
-            }
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let targetURL = navigationAction.request.url {
+            delegate?.tabRequestNewTab(url: targetURL)
+        }
+        return nil
+    }
 
-            if isAttachment || !navigationResponse.canShowMIMEType {
-                decisionHandler(.cancel)
-                let name = navigationResponse.response.suggestedFilename ?? navigationResponse.response.url?.lastPathComponent ?? "file"
-                if let url = navigationResponse.response.url {
-                    DownloadCoordinator.shared.requestDownloadPrompt(url: url, suggestedFilename: name)
-                }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        isLoading = true
+        if !isLoadingFailureDocument {
+            isDisplayingFailurePage = false
+        }
+        hasInjectedScriptsForCurrentPage = false
+        registeredCommands.removeAll()
+        delegate?.tabDidUpdate(self)
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if !isDisplayingFailurePage, let currentURL = webView.url, !currentURL.absoluteString.contains("about:blank") {
+            if previousURL != currentURL {
+                previousURL = url
+            }
+            url = currentURL
+            title = webView.title ?? url?.host ?? "新标签页"
+        }
+        applyDesktopViewAdaptationIfNeeded()
+        injectInlineVideoHelper()
+        if !hasInjectedScriptsForCurrentPage {
+            hasInjectedScriptsForCurrentPage = true
+            injectAndRunUserScripts()
+        }
+        delegate?.tabDidUpdate(self)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        isLoading = false
+        if !isDisplayingFailurePage {
+            url = webView.url
+            title = webView.title ?? url?.host ?? "新标签页"
+        }
+        applyDesktopViewAdaptationIfNeeded()
+        injectInlineVideoHelper()
+        if !hasInjectedScriptsForCurrentPage {
+            hasInjectedScriptsForCurrentPage = true
+            injectAndRunUserScripts()
+        }
+        DispatchQueue.main.async { [weak webView] in
+            webView?.setNeedsLayout()
+            webView?.layoutIfNeeded()
+        }
+        updateSnapshot()
+        delegate?.tabDidUpdate(self)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        isLoading = false
+        delegate?.tabProcessTerminated(self)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        isLoading = false
+        if shouldIgnoreNavigationError(error) {
+            delegate?.tabDidUpdate(self)
+            return
+        }
+        isDisplayingFailurePage = true
+        failedURL = navigationActionURL ?? webView.url
+        failureError = error
+        delegate?.tabDidFail(self, error: error)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFail navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        isLoading = false
+        if shouldIgnoreNavigationError(error) {
+            delegate?.tabDidUpdate(self)
+            return
+        }
+        isDisplayingFailurePage = true
+        failedURL = navigationActionURL ?? webView.url
+        failureError = error
+        delegate?.tabDidFail(self, error: error)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        preferences: WKWebpagePreferences,
+        decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
+    ) {
+        guard let targetURL = navigationAction.request.url else {
+            decisionHandler(.cancel, preferences)
+            return
+        }
+
+        navigationActionURL = targetURL
+
+        let selectedItem = UserAgentStore.shared.getSelectedItem()
+        let isDesktopMode = selectedItem.category == .desktop || selectedItem.id == "default_mac"
+        preferences.preferredContentMode = isDesktopMode ? .desktop : .mobile
+
+        let scheme = targetURL.scheme?.lowercased() ?? ""
+
+        if ["http", "https"].contains(scheme),
+           navigationAction.targetFrame != nil,
+           targetURL != url {
+            failureOriginURL = url
+        }
+
+        if targetURL.path.hasSuffix(".user.js") || targetURL.absoluteString.hasSuffix(".user.js") {
+            decisionHandler(.cancel, preferences)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("InstallUserScriptNotification"),
+                object: targetURL
+            )
+            return
+        }
+
+        if #available(iOS 14.5, *) {
+            let ext = targetURL.pathExtension.lowercased()
+            let knownDownloadExtensions: Set<String> = [
+                "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "dmg", "pkg", "deb",
+                "torrent", "iso"
+            ]
+            if navigationAction.shouldPerformDownload || knownDownloadExtensions.contains(ext) {
+                decisionHandler(.cancel, preferences)
+                let name = targetURL.lastPathComponent.isEmpty ? "download_\(Int(Date().timeIntervalSince1970))" : targetURL.lastPathComponent
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("PromptDownloadNotification"),
+                    object: targetURL,
+                    userInfo: ["filename": name]
+                )
                 return
             }
         }
 
+        if ["http", "https", "about", "data", "blob"].contains(scheme) {
+            if navigationAction.targetFrame == nil {
+                decisionHandler(.cancel, preferences)
+                delegate?.tabRequestNewTab(url: targetURL)
+                return
+            }
+
+            decisionHandler(.allow, preferences)
+            return
+        }
+
+        decisionHandler(.cancel, preferences)
+
+        if scheme == "intent", let fallbackURL = fallbackURL(from: targetURL) {
+            webView.load(URLRequest(url: fallbackURL))
+            return
+        }
+
+        UIApplication.shared.open(targetURL, options: [:], completionHandler: nil)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        if #available(iOS 14.5, *) {
+            if let httpResponse = navigationResponse.response as? HTTPURLResponse {
+                let disposition = (httpResponse.allHeaderFields["Content-Disposition"] as? String ?? httpResponse.allHeaderFields["content-disposition"] as? String ?? "").lowercased()
+                if disposition.contains("attachment") || !navigationResponse.canShowMIMEType {
+                    decisionHandler(.cancel)
+                    let suggested = navigationResponse.response.suggestedFilename ?? navigationResponse.response.url?.lastPathComponent ?? "file"
+                    if let downloadURL = navigationResponse.response.url {
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("PromptDownloadNotification"),
+                            object: downloadURL,
+                            userInfo: ["filename": suggested]
+                        )
+                    }
+                    return
+                }
+            }
+        }
+
         decisionHandler(.allow)
+    }
+
+    private func shouldIgnoreNavigationError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return true
+        }
+
+        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 {
+            return true
+        }
+
+        if nsError.domain == WKError.errorDomain {
+            if nsError.code == WKError.Code.webContentProcessTerminated.rawValue {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func fallbackURL(from intentURL: URL) -> URL? {
+        let value = intentURL.absoluteString
+
+        guard let range = value.range(of: "S.browser_fallback_url=") else {
+            return nil
+        }
+
+        let content = String(value[range.upperBound...])
+        let encoded = content.components(separatedBy: ";").first ?? content
+        let decoded = encoded.removingPercentEncoding ?? encoded
+
+        return URL(string: decoded)
     }
 }
