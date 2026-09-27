@@ -86,10 +86,59 @@ final class SearchEngineStore {
     }
 }
 
+struct BookmarkItem: Codable, Equatable {
+    var id: String
+    var title: String
+    var urlString: String
+    var createdAt: Date
+}
+
+final class BookmarkStore {
+    static let shared = BookmarkStore()
+    private let key = "browser_bookmarks_v1"
+    private init() {}
+
+    func loadBookmarks() -> [BookmarkItem] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let items = try? JSONDecoder().decode([BookmarkItem].self, from: data) else {
+            return []
+        }
+        return items
+    }
+
+    func addBookmark(title: String, urlString: String) {
+        var items = loadBookmarks()
+        let resolvedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? urlString : title
+        items.removeAll { $0.urlString == urlString }
+        items.insert(BookmarkItem(id: UUID().uuidString, title: resolvedTitle, urlString: urlString, createdAt: Date()), at: 0)
+        saveBookmarks(items)
+    }
+
+    func deleteBookmark(id: String) {
+        var items = loadBookmarks()
+        items.removeAll { $0.id == id }
+        saveBookmarks(items)
+    }
+
+    func isBookmarked(urlString: String) -> Bool {
+        return loadBookmarks().contains { $0.urlString == urlString }
+    }
+
+    func clearBookmarks() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    private func saveBookmarks(_ items: [BookmarkItem]) {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+}
+
 struct CustomBottomSheetItem {
     let title: String
     var iconName: String? = nil
     var isDestructive: Bool = false
+    var isSwitchOn: Bool? = nil
     let handler: (() -> Void)?
     let longPressHandler: (() -> Void)?
 
@@ -97,12 +146,14 @@ struct CustomBottomSheetItem {
         title: String,
         iconName: String? = nil,
         isDestructive: Bool = false,
+        isSwitchOn: Bool? = nil,
         handler: (() -> Void)?,
         longPressHandler: (() -> Void)? = nil
     ) {
         self.title = title
         self.iconName = iconName
         self.isDestructive = isDestructive
+        self.isSwitchOn = isSwitchOn
         self.handler = handler
         self.longPressHandler = longPressHandler
     }
@@ -119,21 +170,21 @@ final class UserAgentStore {
         UserAgentItem(
             id: "default_safari",
             name: "iPhone Safari",
-            uaString: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/605.1.15",
+            uaString: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
             isCustom: false,
             category: .mobile
         ),
         UserAgentItem(
             id: "default_chrome",
             name: "iPhone Chrome",
-            uaString: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/125.0.6422.80 Mobile/15E148 Safari/604.1",
+            uaString: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/125.0.6422.80 Mobile/15E148 Safari/604.1",
             isCustom: false,
             category: .mobile
         ),
         UserAgentItem(
             id: "default_ipad",
             name: "iPad Safari",
-            uaString: "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/605.1.15",
+            uaString: "Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
             isCustom: false,
             category: .mobile
         ),
@@ -157,7 +208,7 @@ final class UserAgentStore {
         UserAgentItem(
             id: "default_mac_safari",
             name: "macOS Safari",
-            uaString: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+            uaString: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
             isCustom: false,
             category: .desktop
         ),
