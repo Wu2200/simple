@@ -149,10 +149,10 @@ jobs:
 
       - name: Release IPA
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: SimpleBrowser 最新打包版本
-          body: |
-            自动编译打包产物（支持 TrollStore / 巨魔、自签名工具直接安装）
-          files: SimpleBrowser.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v1.0.${{ github.run_number }}"
+          git tag -f "$TAG"
+          git push -f origin "$TAG" || true
+          gh release create "$TAG" SimpleBrowser.ipa --title "SimpleBrowser 构建 #$GITHUB_RUN_NUMBER" --notes "自动打包版本（支持巨魔 / 自签直接安装）"
