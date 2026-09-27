@@ -759,35 +759,52 @@ final class WebsiteCleaner {
     private init() {}
 
     func cleanCacheOnly(completion: (() -> Void)? = nil) {
+        URLCache.shared.removeAllCachedResponses()
         let cacheTypes: Set<String> = [
             WKWebsiteDataTypeDiskCache,
             WKWebsiteDataTypeMemoryCache,
             WKWebsiteDataTypeOfflineWebApplicationCache,
             WKWebsiteDataTypeFetchCache
         ]
-        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: allTypes) { records in
-            let unprotected = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
-            guard !unprotected.isEmpty else {
+
+        if CookieLockStore.shared.getLockedDomains().isEmpty {
+            WKWebsiteDataStore.default().removeData(ofTypes: cacheTypes, modifiedSince: .distantPast) {
                 DispatchQueue.main.async { completion?() }
-                return
             }
-            WKWebsiteDataStore.default().removeData(ofTypes: cacheTypes, for: unprotected) {
-                DispatchQueue.main.async { completion?() }
+        } else {
+            let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+            WKWebsiteDataStore.default().fetchDataRecords(ofTypes: allTypes) { records in
+                let unprotected = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
+                guard !unprotected.isEmpty else {
+                    DispatchQueue.main.async { completion?() }
+                    return
+                }
+                WKWebsiteDataStore.default().removeData(ofTypes: cacheTypes, for: unprotected) {
+                    DispatchQueue.main.async { completion?() }
+                }
             }
         }
     }
 
     func cleanUnprotectedLoginAndData(completion: (() -> Void)? = nil) {
+        URLCache.shared.removeAllCachedResponses()
+        HTTPCookieStorage.shared.removeCookies(since: .distantPast)
         let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: allTypes) { records in
-            let unprotected = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
-            guard !unprotected.isEmpty else {
+
+        if CookieLockStore.shared.getLockedDomains().isEmpty {
+            WKWebsiteDataStore.default().removeData(ofTypes: allTypes, modifiedSince: .distantPast) {
                 DispatchQueue.main.async { completion?() }
-                return
             }
-            WKWebsiteDataStore.default().removeData(ofTypes: allTypes, for: unprotected) {
-                DispatchQueue.main.async { completion?() }
+        } else {
+            WKWebsiteDataStore.default().fetchDataRecords(ofTypes: allTypes) { records in
+                let unprotected = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
+                guard !unprotected.isEmpty else {
+                    DispatchQueue.main.async { completion?() }
+                    return
+                }
+                WKWebsiteDataStore.default().removeData(ofTypes: allTypes, for: unprotected) {
+                    DispatchQueue.main.async { completion?() }
+                }
             }
         }
     }
