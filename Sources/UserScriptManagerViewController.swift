@@ -1,5 +1,164 @@
 import UIKit
 
+// MARK: - 用户脚本模型
+struct UserScript: Codable, Equatable {
+    let id: String
+    var name: String
+    var match: String
+    var code: String
+    var isEnabled: Bool
+
+    init(id: String = UUID().uuidString, name: String, match: String, code: String, isEnabled: Bool = true) {
+        self.id = id
+        self.name = name
+        self.match = match
+        self.code = code
+        self.isEnabled = isEnabled
+    }
+}
+
+// MARK: - 脚本持久化管理器
+final class UserScriptStore {
+    static let shared = UserScriptStore()
+    private let key = "UserScriptsList_V1"
+
+    private(set) var scripts: [UserScript] = []
+
+    private init() {
+        loadScripts()
+    }
+
+    func addScript(_ script: UserScript) {
+        scripts.append(script)
+        saveScripts()
+    }
+
+    func updateScript(_ script: UserScript) {
+        guard let idx = scripts.firstIndex(where: { $0.id == script.id }) else { return }
+        scripts[idx] = script
+        saveScripts()
+    }
+
+    func deleteScript(id: String) {
+        scripts.removeAll { $0.id == id }
+        saveScripts()
+    }
+
+    func toggleScript(id: String) {
+        guard let idx = scripts.firstIndex(where: { $0.id == id }) else { return }
+        scripts[idx].isEnabled.toggle()
+        saveScripts()
+    }
+
+    private func saveScripts() {
+        if let data = try? JSONEncoder().encode(scripts) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private func loadScripts() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let list = try? JSONDecoder().decode([UserScript].self, from: data) {
+            scripts = list
+        }
+    }
+}
+
+// MARK: - 脚本管理器视图控制器
+final class UserScriptManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private var scripts: [UserScript] = []
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "用户脚本管理"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(handleAdd))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "ScriptCell")
+        view.addSubview(tableView)
+
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        loadScripts()
+    }
+
+    private func loadScripts() {
+        scripts = UserScriptStore.shared.scripts
+        tableView.reloadData()
+    }
+
+    @objc private func handleDone() {
+        dismiss(animated: true)
+    }
+
+    @objc private func handleAdd() {
+        let editor = UserScriptEditorViewController(script: nil) { [weak self] newScript in
+            UserScriptStore.shared.addScript(newScript)
+            self?.loadScripts()
+        }
+        present(UINavigationController(rootViewController: editor), animated: true)
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return scripts.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "ScriptCell", for: indexPath)
+        let item = scripts[indexPath.row]
+
+        cell.textLabel?.text = item.name
+        cell.textLabel?.font = .systemFont(ofSize: 15.5, weight: .medium)
+        cell.backgroundColor = .secondarySystemGroupedBackground
+
+        let sw = UISwitch()
+        sw.isOn = item.isEnabled
+        sw.tag = indexPath.row
+        sw.addTarget(self, action: #selector(handleSwitch(_:)), for: .valueChanged)
+        cell.accessoryView = sw
+
+        return cell
+    }
+
+    @objc private func handleSwitch(_ sender: UISwitch) {
+        let script = scripts[sender.tag]
+        UserScriptStore.shared.toggleScript(id: script.id)
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        let script = scripts[indexPath.row]
+        let editor = UserScriptEditorViewController(script: script) { [weak self] updated in
+            UserScriptStore.shared.updateScript(updated)
+            self?.loadScripts()
+        }
+        present(UINavigationController(rootViewController: editor), animated: true)
+    }
+
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let script = scripts[indexPath.row]
+        let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
+            UserScriptStore.shared.deleteScript(id: script.id)
+            self?.scripts.remove(at: indexPath.row)
+            tableView.deleteRows(at: [indexPath], with: .fade)
+            completion(true)
+        }
+        return UISwipeActionsConfiguration(actions: [delete])
+    }
+}
+
 // MARK: - 脚本代码编辑控制器
 final class UserScriptEditorViewController: UIViewController {
 
