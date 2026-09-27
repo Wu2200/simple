@@ -1,6 +1,8 @@
 import UIKit
 import WebKit
 
+public typealias WebsiteDataViewController = WebsiteDataManagerViewController
+
 // MARK: - 主域名聚合数据模型
 
 struct MainDomainGroup {
