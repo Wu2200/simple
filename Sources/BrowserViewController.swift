@@ -2644,9 +2644,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 self?.createNewTab(loadURL: nil)
             }
 
-            let navigationController = UINavigationController(rootViewController: manager)
-            navigationController.modalPresentationStyle = .pageSheet
-            self.present(navigationController, animated: true)
+            manager.modalPresentationStyle = .overFullScreen
+            manager.modalTransitionStyle = .crossDissolve
+            self.present(manager, animated: true)
         }
     }
 
