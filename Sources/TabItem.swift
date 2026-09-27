@@ -728,8 +728,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let targetURL = navigationAction.request.url {
-            delegate?.tabRequestNewTab(url: targetURL)
+        if navigationAction.targetFrame == nil {
+            webView.load(navigationAction.request)
         }
         return nil
     }
@@ -873,8 +873,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         if ["http", "https", "about", "data", "blob"].contains(scheme) {
             if navigationAction.targetFrame == nil {
+                // 保留完整的原始请求(包含POST Body、Headers、Referer等)，直接在当前页面平滑载入，解决跨页跳转返回原页问题
                 decisionHandler(.cancel, preferences)
-                delegate?.tabRequestNewTab(url: targetURL)
+                webView.load(navigationAction.request)
                 return
             }
 
