@@ -6631,6 +6631,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     var snapshot: UIImage?
     var registeredCommands: [RegisteredMenuCommand] = []
 
+    var currentURL: URL? {
+        return webView.url ?? url
+    }
+
     var sourceTabID: UUID?
     var failedURL: URL?
     var failureError: Error?
@@ -6764,6 +6768,44 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     deinit {
         destroy()
+    }
+
+    public func load(url: URL) {
+        self.url = url
+        self.isDisplayingFailurePage = false
+        webView.load(URLRequest(url: url))
+    }
+
+    public func reload() {
+        webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
+        let isDesktop = UserAgentStore.shared.isDesktopMode
+        webView.configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
+        webView.reload()
+    }
+
+    public func stopLoading() {
+        webView.stopLoading()
+    }
+
+    public func goBack() {
+        if webView.canGoBack {
+            webView.goBack()
+        }
+    }
+
+    public func goForward() {
+        if webView.canGoForward {
+            webView.goForward()
+        }
+    }
+
+    public func setAdBlockEnabled(_ enabled: Bool) {
+        AdBlockManager.shared.isEnabled = enabled
+        AdBlockManager.shared.applyRules(to: webView)
+    }
+
+    public func startRealDownload(url: URL, filename: String) {
+        DownloadCoordinator.shared.startDownload(url: url, filename: filename)
     }
 
     func destroy() {
