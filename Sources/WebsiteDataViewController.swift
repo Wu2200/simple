@@ -2,11 +2,11 @@ import UIKit
 import WebKit
 
 // MARK: - 主域名聚合数据模型
-public struct PrimaryDomainGroup {
-    public let rootDomain: String
-    public var records: [WKWebsiteDataRecord]
+struct PrimaryDomainGroup {
+    let rootDomain: String
+    var records: [WKWebsiteDataRecord]
 
-    public var allDataTypes: Set<String> {
+    var allDataTypes: Set<String> {
         var types = Set<String>()
         for r in records {
             types.formUnion(r.dataTypes)
@@ -14,26 +14,22 @@ public struct PrimaryDomainGroup {
         return types
     }
 
-    public var hasAnyLocked: Bool {
-        return records.contains { CookieLockStore.shared.isLocked(domain: $0.displayName) }
-    }
-
-    public var isFullyLocked: Bool {
+    var isFullyLocked: Bool {
         guard !records.isEmpty else { return false }
-        return records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+        return records.allSatisfy { CookieLockStore.shared.isLocked(host: $0.displayName) }
     }
 
-    public var lockedCount: Int {
-        return records.filter { CookieLockStore.shared.isLocked(domain: $0.displayName) }.count
+    var hasAnyLocked: Bool {
+        return records.contains { CookieLockStore.shared.isLocked(host: $0.displayName) }
     }
 
-    public var hasCookies: Bool {
+    var hasCookies: Bool {
         return records.contains { $0.dataTypes.contains(WKWebsiteDataTypeCookies) }
     }
 }
 
-// MARK: - 网站数据管理主页面（仅展示主域名）
-final class WebsiteDataViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
+// MARK: - 网站数据管理主页面
+final class WebsiteDataManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let searchController = UISearchController(searchResultsController: nil)
@@ -49,7 +45,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
 
     private let headerDescriptionLabel: UILabel = {
         let label = UILabel()
-        label.text = "数据可能会减少跟踪，但也可能允许网站退出登录。点击主域名可展开查看其名下的所有子域名与关联域名，并可单独对其锁定。"
+        label.text = "数据可能会减少跟踪，但也可能允许网站退出登录。点击主域名可展开查看其名下的所有关联域名，并可单独对其锁定。"
         label.font = .systemFont(ofSize: 13, weight: .regular)
         label.textColor = .secondaryLabel
         label.numberOfLines = 0
@@ -189,7 +185,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
             return UITableViewCell()
         }
         let group = isSearching ? filteredGroups[indexPath.row] : domainGroups[indexPath.row]
-        cell.configureForGroup(group: group)
+        cell.configureForGroup(group: group, showDisclosure: true)
         return cell
     }
 
@@ -213,7 +209,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
 
         let deleteAction = UIContextualAction(style: .destructive, title: "移除未锁定") { [weak self] (_, _, completion) in
             guard let self = self else { return }
-            let unlocked = group.records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
+            let unlocked = group.records.filter { !CookieLockStore.shared.isLocked(host: $0.displayName) }
             if unlocked.isEmpty {
                 let alert = UIAlertController(title: "域名已被锁定", message: "该主域名下的所有子域名均处于锁定保护状态，无法直接移除。", preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "确定", style: .default))
@@ -250,7 +246,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
     }
 
     private func removeUnlockedData() {
-        let unlocked = allRawRecords.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
+        let unlocked = allRawRecords.filter { !CookieLockStore.shared.isLocked(host: $0.displayName) }
         guard !unlocked.isEmpty else { return }
 
         activityIndicator.startAnimating()
@@ -263,7 +259,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
     }
 }
 
-// MARK: - 关联域名管理二级页面（逐个单项锁定）
+// MARK: - 关联域名管理二级页面
 final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
     private let rootDomain: String
@@ -295,7 +291,6 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
     private func setupUI() {
         title = rootDomain
         view.backgroundColor = .systemGroupedBackground
-        navigationItem.rightBarButtonItem = nil
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
@@ -306,7 +301,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
 
         let headerView = UIView()
         let infoLabel = UILabel()
-        infoLabel.text = "主站点 [ \(rootDomain) ] 下共发现 \(records.count) 个域名。每个域名均须单独点击进行锁定或解锁，已锁定的域名在清理缓存时受到保护。"
+        infoLabel.text = "主站点 [ \(rootDomain) ] 下共包含 \(records.count) 个域名。每个域名均单独点击进行锁定或解锁，已锁定的域名在清理缓存时受到保护。"
         infoLabel.font = .systemFont(ofSize: 13, weight: .regular)
         infoLabel.textColor = .secondaryLabel
         infoLabel.numberOfLines = 0
@@ -338,7 +333,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
             return UITableViewCell()
         }
         let record = records[indexPath.row]
-        let isLocked = CookieLockStore.shared.isLocked(domain: record.displayName)
+        let isLocked = CookieLockStore.shared.isLocked(host: record.displayName)
         cell.configureForSingleRecord(record: record, isLocked: isLocked)
         return cell
     }
@@ -346,7 +341,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let record = records[indexPath.row]
-        _ = CookieLockStore.shared.toggleLock(domain: record.displayName)
+        _ = CookieLockStore.shared.toggleLock(host: record.displayName)
 
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         tableView.reloadRows(at: [indexPath], with: .automatic)
@@ -354,10 +349,10 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         let record = records[indexPath.row]
-        let isLocked = CookieLockStore.shared.isLocked(domain: record.displayName)
+        let isLocked = CookieLockStore.shared.isLocked(host: record.displayName)
 
         let lockAction = UIContextualAction(style: .normal, title: isLocked ? "解锁" : "锁定") { [weak self] (_, _, completion) in
-            _ = CookieLockStore.shared.toggleLock(domain: record.displayName)
+            _ = CookieLockStore.shared.toggleLock(host: record.displayName)
             self?.tableView.reloadRows(at: [indexPath], with: .automatic)
             completion(true)
         }
@@ -365,7 +360,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
 
         let deleteAction = UIContextualAction(style: .destructive, title: "移除") { [weak self] (_, _, completion) in
             guard let self = self else { return }
-            if CookieLockStore.shared.isLocked(domain: record.displayName) {
+            if CookieLockStore.shared.isLocked(host: record.displayName) {
                 let alert = UIAlertController(title: "域名已被锁定", message: "若要移除该域名的数据，请先解除锁定。", preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "确定", style: .default))
                 self.present(alert, animated: true)
@@ -471,7 +466,7 @@ final class WebsiteDataUnifiedCell: UITableViewCell {
         ])
     }
 
-    func configureForGroup(group: PrimaryDomainGroup) {
+    func configureForGroup(group: PrimaryDomainGroup, showDisclosure: Bool) {
         domainLabel.text = group.rootDomain
         dataTypesLabel.text = Self.formatDataTypes(group.allDataTypes)
 
@@ -488,7 +483,7 @@ final class WebsiteDataUnifiedCell: UITableViewCell {
             domainLabel.textColor = .label
         }
 
-        accessoryType = .disclosureIndicator
+        accessoryType = showDisclosure ? .disclosureIndicator : .none
         rightBadgeLabel.text = "\(group.records.count) 个域名"
         rightBadgeLabel.isHidden = false
 
@@ -520,50 +515,29 @@ final class WebsiteDataUnifiedCell: UITableViewCell {
     }
 
     private func loadFavicon(for host: String) {
-        let clean = host.lowercased()
-        guard let url = URL(string: "https://www.google.com/s2/favicons?domain=\(clean)&sz=64") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let self = self, let data = data, let img = UIImage(data: data) else { return }
-            DispatchQueue.main.async {
-                self.faviconImageView.image = img
-            }
-        }.resume()
+        FaviconLoader.shared.loadFavicon(for: host) { [weak self] img in
+            self?.faviconImageView.image = img ?? UIImage(systemName: "globe")
+        }
     }
 
     static func formatDataTypes(_ types: Set<String>) -> String {
         var items: [String] = []
-        if types.contains(WKWebsiteDataTypeCookies) {
-            items.append("Cookies")
-        }
-        if types.contains(WKWebsiteDataTypeDiskCache) {
-            items.append("磁盘缓存")
-        }
-        if types.contains(WKWebsiteDataTypeMemoryCache) {
-            items.append("内存缓存")
-        }
-        if types.contains(WKWebsiteDataTypeIndexedDBDatabases) {
-            items.append("索引数据库")
-        }
-        if types.contains(WKWebsiteDataTypeLocalStorage) {
-            items.append("本地存储")
-        }
-        if types.contains(WKWebsiteDataTypeSessionStorage) {
-            items.append("会话存储")
-        }
-        if types.contains(WKWebsiteDataTypeWebSQLDatabases) {
-            items.append("WebSQL")
-        }
-        if items.isEmpty {
-            return "本地网站数据"
-        }
+        if types.contains(WKWebsiteDataTypeCookies) { items.append("Cookies") }
+        if types.contains(WKWebsiteDataTypeDiskCache) { items.append("磁盘缓存") }
+        if types.contains(WKWebsiteDataTypeMemoryCache) { items.append("内存缓存") }
+        if types.contains(WKWebsiteDataTypeIndexedDBDatabases) { items.append("索引数据库") }
+        if types.contains(WKWebsiteDataTypeLocalStorage) { items.append("本地存储") }
+        if types.contains(WKWebsiteDataTypeSessionStorage) { items.append("会话存储") }
+        if types.contains(WKWebsiteDataTypeWebSQLDatabases) { items.append("WebSQL") }
+        if items.isEmpty { return "本地网站数据" }
         return items.joined(separator: ", ")
     }
 }
 
 // MARK: - 关联域名拓扑识别引擎
-public enum DomainRelationEngine {
+enum DomainRelationEngine {
 
-    public static func findRelatedRecords(for rootDomain: String, in records: [WKWebsiteDataRecord]) -> [WKWebsiteDataRecord] {
+    static func findRelatedRecords(for rootDomain: String, in records: [WKWebsiteDataRecord]) -> [WKWebsiteDataRecord] {
         var matched: [WKWebsiteDataRecord] = []
         for record in records {
             let host = record.displayName
@@ -576,8 +550,8 @@ public enum DomainRelationEngine {
         return matched.sorted { (r1, r2) -> Bool in
             if r1.displayName == rootDomain { return true }
             if r2.displayName == rootDomain { return false }
-            let l1 = CookieLockStore.shared.isLocked(domain: r1.displayName)
-            let l2 = CookieLockStore.shared.isLocked(domain: r2.displayName)
+            let l1 = CookieLockStore.shared.isLocked(host: r1.displayName)
+            let l2 = CookieLockStore.shared.isLocked(host: r2.displayName)
             if l1 != l2 { return l1 && !l2 }
             let c1 = r1.dataTypes.contains(WKWebsiteDataTypeCookies)
             let c2 = r2.dataTypes.contains(WKWebsiteDataTypeCookies)
@@ -586,7 +560,7 @@ public enum DomainRelationEngine {
         }
     }
 
-    public static func extractRootDomain(from host: String) -> String {
+    static func extractRootDomain(from host: String) -> String {
         let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let parts = clean.split(separator: ".")
         guard parts.count >= 2 else { return clean }

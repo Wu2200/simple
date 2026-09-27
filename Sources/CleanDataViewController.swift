@@ -1,13 +1,12 @@
 import UIKit
 import WebKit
 
-// MARK: - 清理数据选择控制器
-final class CleanDataViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+final class CleanDataSelectionViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private var selectedOptions: Set<CleanDataType> = Set(CleanDataType.allCases)
+    private var selectedTypes: Set<CleanDataType> = [.cache, .history, .loginAndData, .scriptData]
 
-    private let optionsList: [CleanDataType] = [
+    private let items: [CleanDataType] = [
         .cache,
         .history,
         .loginAndData,
@@ -16,92 +15,98 @@ final class CleanDataViewController: UIViewController, UITableViewDataSource, UI
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        setupUI()
+    }
+
+    private func setupUI() {
         title = "清除浏览数据"
         view.backgroundColor = .systemGroupedBackground
 
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(handleCancel))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "确定清理", style: .done, target: self, action: #selector(handleConfirmClean))
-        navigationItem.rightBarButtonItem?.tintColor = .systemRed
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "取消",
+            style: .plain,
+            target: self,
+            action: #selector(handleCancel)
+        )
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.rowHeight = 56
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "CleanOptionCell")
+        tableView.rowHeight = 52
         view.addSubview(tableView)
+
+        let footerView = UIView()
+        let cleanButton = UIButton(type: .system)
+        cleanButton.translatesAutoresizingMaskIntoConstraints = false
+        cleanButton.setTitle("立即清除", for: .normal)
+        cleanButton.titleLabel?.font = .systemFont(ofSize: 16.5, weight: .semibold)
+        cleanButton.setTitleColor(.white, for: .normal)
+        cleanButton.backgroundColor = .systemRed
+        cleanButton.layer.cornerRadius = 14
+        cleanButton.layer.cornerCurve = .continuous
+        cleanButton.addTarget(self, action: #selector(handleClean), for: .touchUpInside)
+        footerView.addSubview(cleanButton)
 
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            cleanButton.topAnchor.constraint(equalTo: footerView.topAnchor, constant: 24),
+            cleanButton.leadingAnchor.constraint(equalTo: footerView.leadingAnchor, constant: 16),
+            cleanButton.trailingAnchor.constraint(equalTo: footerView.trailingAnchor, constant: -16),
+            cleanButton.heightAnchor.constraint(equalToConstant: 50)
         ])
+
+        footerView.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: 90)
+        tableView.tableFooterView = footerView
     }
 
     @objc private func handleCancel() {
         dismiss(animated: true)
     }
 
-    @objc private func handleConfirmClean() {
-        guard !selectedOptions.isEmpty else {
+    @objc private func handleClean() {
+        guard !selectedTypes.isEmpty else {
             dismiss(animated: true)
             return
         }
 
-        WebsiteCleaner.clean(options: selectedOptions) { [weak self] in
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        WebsiteCleaner.clean(options: selectedTypes) { [weak self] in
             DispatchQueue.main.async {
                 self?.dismiss(animated: true)
             }
         }
     }
 
+    // MARK: - UITableViewDataSource
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return optionsList.count
+        return items.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "CleanOptionCell")
+        let cell = tableView.dequeueReusableCell(withIdentifier: "CleanOptionCell", for: indexPath)
+        let item = items[indexPath.row]
         cell.backgroundColor = .secondarySystemGroupedBackground
-
-        let option = optionsList[indexPath.row]
-        cell.textLabel?.text = option.rawValue
+        cell.textLabel?.text = item.rawValue
         cell.textLabel?.font = .systemFont(ofSize: 16, weight: .regular)
-
-        switch option {
-        case .cache:
-            cell.detailTextLabel?.text = "临时文件、已缓存的图片和网页资源"
-            cell.imageView?.image = UIImage(systemName: "internaldrive")
-        case .history:
-            cell.detailTextLabel?.text = "访问过的网页记录与地址栏搜索词"
-            cell.imageView?.image = UIImage(systemName: "clock")
-        case .loginAndData:
-            cell.detailTextLabel?.text = "Cookie 与本地数据库（已锁定的网站数据除外）"
-            cell.imageView?.image = UIImage(systemName: "person.crop.circle.badge.checkmark")
-        case .scriptData:
-            cell.detailTextLabel?.text = "油猴脚本存储在本地的数据缓存"
-            cell.imageView?.image = UIImage(systemName: "puzzlepiece.extension")
-        }
-
-        cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-        cell.detailTextLabel?.textColor = .secondaryLabel
-
-        if selectedOptions.contains(option) {
-            cell.accessoryType = .checkmark
-            cell.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-        } else {
-            cell.accessoryType = .none
-        }
-
+        cell.accessoryType = selectedTypes.contains(item) ? .checkmark : .none
+        cell.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let option = optionsList[indexPath.row]
-        if selectedOptions.contains(option) {
-            selectedOptions.remove(option)
+        let item = items[indexPath.row]
+        if selectedTypes.contains(item) {
+            selectedTypes.remove(item)
         } else {
-            selectedOptions.insert(option)
+            selectedTypes.insert(item)
         }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         tableView.reloadRows(at: [indexPath], with: .automatic)
     }
 }
