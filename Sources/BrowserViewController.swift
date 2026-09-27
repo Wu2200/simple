@@ -480,6 +480,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         configureAddressLongPressMenu()
         configureInstallerObserver()
         configureSessionObservers()
+        configureDownloadObservers()
         restorePreviousSession()
     }
 
@@ -531,6 +532,49 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             name: UIApplication.willTerminateNotification,
             object: nil
         )
+    }
+
+    private func configureDownloadObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDownloadNotification(_:)),
+            name: NSNotification.Name("DownloadStartedNotification"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDownloadNotification(_:)),
+            name: NSNotification.Name("DownloadFinishedNotification"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDownloadNotification(_:)),
+            name: NSNotification.Name("DownloadFailedNotification"),
+            object: nil
+        )
+    }
+
+    @objc private func handleDownloadNotification(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            if notification.name == NSNotification.Name("DownloadStartedNotification") {
+                if let filename = notification.object as? String {
+                    self?.showToastNotice("开始下载: \(filename)")
+                } else {
+                    self?.showToastNotice("已开始下载任务")
+                }
+            } else if notification.name == NSNotification.Name("DownloadFinishedNotification") {
+                self?.showToastNotice("下载完成，已存入下载管理")
+            } else if notification.name == NSNotification.Name("DownloadFailedNotification") {
+                if let err = notification.object as? String {
+                    self?.showToastNotice("下载失败: \(err)")
+                } else {
+                    self?.showToastNotice("下载失败")
+                }
+            }
+        }
     }
 
     @objc private func handleSessionPersistenceNotification() {
@@ -1239,11 +1283,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         configureToolbarButton(
             tabsButton,
             imageName: "square.on.square",
+            pointSize: 16.2,
             action: #selector(showTabsManager)
         )
         configureToolbarButton(
             pluginButton,
             imageName: "puzzlepiece.extension",
+            pointSize: 16.2,
             action: #selector(showPluginPanel)
         )
 
@@ -1602,14 +1648,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func configureToolbarButton(_ button: TouchButton, imageName: String, action: Selector?) {
+    private func configureToolbarButton(_ button: TouchButton, imageName: String, pointSize: CGFloat = 18, action: Selector?) {
         var configuration = UIButton.Configuration.plain()
         if imageName == "line.3.horizontal" {
             configuration.image = makeSpacedThreeLinesIcon()
         } else {
             configuration.image = UIImage(
                 systemName: imageName,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
             )
         }
         configuration.baseForegroundColor = gentleToolbarIconColor
@@ -2720,7 +2766,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let panel = CustomBottomSheetViewController(title: "选项", items: items, layout: .grid)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                presentation.detents = [.custom { _ in 280 }]
+                presentation.detents = [.custom { _ in 260 }]
                 presentation.prefersGrabberVisible = false
                 presentation.preferredCornerRadius = 24
             }
@@ -2836,13 +2882,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
     }
 
     private func getDownloadsDirectory() -> URL {
-        let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let downloads = docs.appendingPathComponent("Downloads", isDirectory: true)
-        if !fm.fileExists(atPath: downloads.path) {
-            try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
-        }
-        return downloads
+        return DownloadCoordinator.getDownloadsDirectory()
     }
 
     private func loadDownloadedFiles() {
