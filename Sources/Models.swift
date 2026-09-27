@@ -137,6 +137,7 @@ final class BookmarkStore {
 struct CustomBottomSheetItem {
     let title: String
     var iconName: String? = nil
+    var customImage: UIImage? = nil
     var isDestructive: Bool = false
     var isSwitchOn: Bool? = nil
     var dismissOnTap: Bool = true
@@ -146,6 +147,7 @@ struct CustomBottomSheetItem {
     init(
         title: String,
         iconName: String? = nil,
+        customImage: UIImage? = nil,
         isDestructive: Bool = false,
         isSwitchOn: Bool? = nil,
         dismissOnTap: Bool = true,
@@ -154,6 +156,7 @@ struct CustomBottomSheetItem {
     ) {
         self.title = title
         self.iconName = iconName
+        self.customImage = customImage
         self.isDestructive = isDestructive
         self.isSwitchOn = isSwitchOn
         self.dismissOnTap = dismissOnTap
