@@ -3026,6 +3026,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private let addressContentView = UIView()
     private let lockButton = TouchButton()
     private let addressField = AddressTextField()
+    private let expandButton = TouchButton()
     private let clearButton = TouchButton()
     private let reloadButton = TouchButton()
     private let progressView = UIProgressView(progressViewStyle: .default)
@@ -3659,6 +3660,25 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             for: .editingChanged
         )
 
+        expandButton.translatesAutoresizingMaskIntoConstraints = false
+        expandButton.tintColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
+        expandButton.setImage(
+            UIImage(
+                systemName: "arrow.up.left.and.arrow.down.right",
+                withConfiguration: UIImage.SymbolConfiguration(
+                    pointSize: 11.5,
+                    weight: .medium
+                )
+            ),
+            for: .normal
+        )
+        expandButton.hitTestInsets = UIEdgeInsets(top: -8, left: -4, bottom: -8, right: -4)
+        expandButton.addTarget(
+            self,
+            action: #selector(handleExpandAddress),
+            for: .touchUpInside
+        )
+
         reloadButton.translatesAutoresizingMaskIntoConstraints = false
         reloadButton.tintColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
         reloadButton.setImage(
@@ -3754,6 +3774,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         addressContainer.addSubview(addressContentView)
         addressContentView.addSubview(lockButton)
         addressContentView.addSubview(addressField)
+        addressContentView.addSubview(expandButton)
         addressContentView.addSubview(reloadButton)
         addressContentView.addSubview(clearButton)
         addressContentView.addSubview(progressView)
@@ -3852,32 +3873,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             lockButton.widthAnchor.constraint(equalToConstant: 24),
             lockButton.heightAnchor.constraint(equalToConstant: 24),
 
-            addressField.leadingAnchor.constraint(
-                equalTo: lockButton.trailingAnchor,
-                constant: 6
-            ),
-            addressField.trailingAnchor.constraint(
-                equalTo: addressContentView.trailingAnchor,
-                constant: -38
-            ),
-            addressField.topAnchor.constraint(
-                equalTo: addressContentView.topAnchor
-            ),
-            addressField.bottomAnchor.constraint(
-                equalTo: addressContentView.bottomAnchor
-            ),
-
-            progressView.leadingAnchor.constraint(
-                equalTo: addressContentView.leadingAnchor
-            ),
-            progressView.trailingAnchor.constraint(
-                equalTo: addressContentView.trailingAnchor
-            ),
-            progressView.bottomAnchor.constraint(
-                equalTo: addressContentView.bottomAnchor
-            ),
-            progressView.heightAnchor.constraint(equalToConstant: 2.5),
-
             reloadButton.trailingAnchor.constraint(
                 equalTo: addressContentView.trailingAnchor,
                 constant: -10
@@ -3897,6 +3892,42 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             clearButton.widthAnchor.constraint(equalToConstant: 24),
             clearButton.heightAnchor.constraint(equalToConstant: 24),
+
+            expandButton.trailingAnchor.constraint(
+                equalTo: reloadButton.leadingAnchor,
+                constant: -4
+            ),
+            expandButton.centerYAnchor.constraint(
+                equalTo: addressContentView.centerYAnchor
+            ),
+            expandButton.widthAnchor.constraint(equalToConstant: 24),
+            expandButton.heightAnchor.constraint(equalToConstant: 24),
+
+            addressField.leadingAnchor.constraint(
+                equalTo: lockButton.trailingAnchor,
+                constant: 6
+            ),
+            addressField.trailingAnchor.constraint(
+                equalTo: expandButton.leadingAnchor,
+                constant: -6
+            ),
+            addressField.topAnchor.constraint(
+                equalTo: addressContentView.topAnchor
+            ),
+            addressField.bottomAnchor.constraint(
+                equalTo: addressContentView.bottomAnchor
+            ),
+
+            progressView.leadingAnchor.constraint(
+                equalTo: addressContentView.leadingAnchor
+            ),
+            progressView.trailingAnchor.constraint(
+                equalTo: addressContentView.trailingAnchor
+            ),
+            progressView.bottomAnchor.constraint(
+                equalTo: addressContentView.bottomAnchor
+            ),
+            progressView.heightAnchor.constraint(equalToConstant: 2.5),
 
             navigationStack.topAnchor.constraint(
                 equalTo: addressContainer.bottomAnchor,
@@ -4048,6 +4079,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
             let hostString = url.host?.removingPercentEncoding ?? url.host ?? rawString
             addressField.text = hostString
+            if let host = url.host {
+                FaviconLoader.shared.preloadFavicon(for: host)
+            }
         } else {
             showHomeUI()
         }
@@ -4131,6 +4165,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         addressField.text = url.absoluteString.removingPercentEncoding ?? url.absoluteString
         activeTab.webView.load(URLRequest(url: url))
 
+        if let host = url.host {
+            FaviconLoader.shared.preloadFavicon(for: host)
+        }
+
         persistCurrentSession()
         updateAddressRightButtons()
     }
@@ -4193,6 +4231,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             reloadButton.alpha = 0
             clearButton.isHidden = true
             clearButton.alpha = 0
+            expandButton.isHidden = true
+            expandButton.alpha = 0
             return
         }
 
@@ -4200,6 +4240,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let isEditing = addressField.isFirstResponder
         let isHome = homeView.alpha > 0.5
         let hasText = !(addressField.text?.isEmpty ?? true)
+
+        let showExpand = !isHome || isEditing || hasText
+        expandButton.isHidden = !showExpand
+        expandButton.alpha = showExpand ? 1 : 0
 
         if isEditing {
             reloadButton.isHidden = true
@@ -4225,6 +4269,24 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 for: .normal
             )
         }
+    }
+
+    @objc private func handleExpandAddress() {
+        dismissKeyboard()
+        let currentText = activeTab.url?.absoluteString ?? addressField.text ?? ""
+        let editor = ExpandedURLEditorViewController(initialURL: currentText) { [weak self] newURLString in
+            guard let self = self, let url = self.destinationURL(from: newURLString) else { return }
+            self.load(url: url)
+        }
+        let nav = UINavigationController(rootViewController: editor)
+        if #available(iOS 15.0, *) {
+            if let presentation = nav.sheetPresentationController {
+                presentation.detents = [.medium(), .large()]
+                presentation.prefersGrabberVisible = true
+                presentation.preferredCornerRadius = 24
+            }
+        }
+        present(nav, animated: true)
     }
 
     @objc private func handleAddressReload() {
@@ -4324,6 +4386,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
                 let hostString = url.host?.removingPercentEncoding ?? url.host ?? rawString
                 addressField.text = hostString
+                if let host = url.host {
+                    FaviconLoader.shared.preloadFavicon(for: host)
+                }
             }
         }
 
@@ -4554,7 +4619,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private func extractPageText() {
         activeTab.webView.evaluateJavaScript("document.body.innerText") { [weak self] result, error in
             guard let self = self else { return }
-            guard let text = result as? String, !text.isEmpty else { return }
+            guard let text = result as? String, !text.isEmpty else {
+                self.showToastNotice("未能提取到网页正文")
+                return
+            }
             let vc = UIViewController()
             vc.title = "网页正文内容"
             vc.view.backgroundColor = .systemBackground
@@ -4573,7 +4641,24 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 textView.bottomAnchor.constraint(equalTo: vc.view.bottomAnchor)
             ])
 
-            vc.navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(self.dismissModalVC))
+            vc.navigationItem.rightBarButtonItem = UIBarButtonItem(
+                title: "完成",
+                style: .done,
+                target: self,
+                action: #selector(self.dismissModalVC)
+            )
+
+            let copyAction = UIAction { [weak self, weak vc] _ in
+                UIPasteboard.general.string = text
+                let alert = UIAlertController(title: nil, message: "已复制到剪贴板", preferredStyle: .alert)
+                vc?.present(alert, animated: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    alert.dismiss(animated: true)
+                }
+                self?.showToastNotice("已复制到剪贴板")
+            }
+            vc.navigationItem.leftBarButtonItem = UIBarButtonItem(title: "复制", primaryAction: copyAction)
+
             let nav = UINavigationController(rootViewController: vc)
             self.present(nav, animated: true)
         }
@@ -4630,10 +4715,18 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        let panel = CustomBottomSheetViewController(title: "正在运行的脚本", items: items, layout: .list)
-        if #available(iOS 15.0, *) {
+        let panel = CustomBottomSheetViewController(title: "", items: items, layout: .list)
+        if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
-                presentation.detents = [.medium(), .large()]
+                let rowHeight: CGFloat = 54
+                let totalHeight: CGFloat = CGFloat(items.count) * rowHeight + 40
+                presentation.detents = [.custom { _ in totalHeight }]
+                presentation.prefersGrabberVisible = true
+                presentation.preferredCornerRadius = 24
+            }
+        } else if #available(iOS 15.0, *) {
+            if let presentation = panel.sheetPresentationController {
+                presentation.detents = [.medium()]
                 presentation.prefersGrabberVisible = true
                 presentation.preferredCornerRadius = 24
             }
@@ -5037,6 +5130,137 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             self?.activeTab.webView.reload()
             completion()
         }
+    }
+}
+
+final class ExpandedURLEditorViewController: UIViewController {
+    private let initialURL: String
+    private let onConfirm: (String) -> Void
+    private let textView = UITextView()
+
+    init(initialURL: String, onConfirm: @escaping (String) -> Void) {
+        self.initialURL = initialURL
+        self.onConfirm = onConfirm
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "编辑网址"
+        view.backgroundColor = .systemBackground
+
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "取消",
+            style: .plain,
+            target: self,
+            action: #selector(handleCancel)
+        )
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "前往",
+            style: .done,
+            target: self,
+            action: #selector(handleGo)
+        )
+
+        let toolbarStack = UIStackView()
+        toolbarStack.translatesAutoresizingMaskIntoConstraints = false
+        toolbarStack.axis = .horizontal
+        toolbarStack.distribution = .fillEqually
+        toolbarStack.spacing = 10
+
+        let clearBtn = createToolButton(title: "清空", action: #selector(handleClear))
+        let pasteBtn = createToolButton(title: "粘贴", action: #selector(handlePaste))
+        let copyBtn = createToolButton(title: "复制", action: #selector(handleCopy))
+
+        toolbarStack.addArrangedSubview(clearBtn)
+        toolbarStack.addArrangedSubview(pasteBtn)
+        toolbarStack.addArrangedSubview(copyBtn)
+
+        let container = UIView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.backgroundColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0)
+        }
+        container.layer.cornerRadius = 14
+        container.layer.cornerCurve = .continuous
+        container.clipsToBounds = true
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.backgroundColor = .clear
+        textView.font = .systemFont(ofSize: 15, weight: .regular)
+        textView.textColor = .label
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .no
+        textView.text = initialURL
+        textView.keyboardType = .webSearch
+        textView.returnKeyType = .go
+
+        container.addSubview(textView)
+        view.addSubview(toolbarStack)
+        view.addSubview(container)
+
+        NSLayoutConstraint.activate([
+            toolbarStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            toolbarStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            toolbarStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            toolbarStack.heightAnchor.constraint(equalToConstant: 34),
+
+            container.topAnchor.constraint(equalTo: toolbarStack.bottomAnchor, constant: 12),
+            container.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            container.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            container.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+
+            textView.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            textView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            textView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            textView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8)
+        ])
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.textView.becomeFirstResponder()
+        }
+    }
+
+    private func createToolButton(title: String, action: Selector) -> TouchButton {
+        let btn = TouchButton()
+        var config = UIButton.Configuration.gray()
+        config.title = title
+        config.cornerStyle = .capsule
+        config.buttonSize = .mini
+        config.baseForegroundColor = .label
+        btn.configuration = config
+        btn.addTarget(self, action: action, for: .touchUpInside)
+        return btn
+    }
+
+    @objc private func handleCancel() {
+        dismiss(animated: true)
+    }
+
+    @objc private func handleGo() {
+        let text = textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        dismiss(animated: true) { [weak self] in
+            if !text.isEmpty {
+                self?.onConfirm(text)
+            }
+        }
+    }
+
+    @objc private func handleClear() {
+        textView.text = ""
+    }
+
+    @objc private func handlePaste() {
+        if let pasteString = UIPasteboard.general.string {
+            textView.text = pasteString
+        }
+    }
+
+    @objc private func handleCopy() {
+        UIPasteboard.general.string = textView.text
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 }
 ```
