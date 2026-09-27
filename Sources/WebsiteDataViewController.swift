@@ -1,85 +1,152 @@
 import UIKit
 import WebKit
 
-public struct DomainDataGroup {
-    public let displayName: String
-    public var records: [WKWebsiteDataRecord]
-    public var dataTypes: Set<String>
+// MARK: - 主域名聚合数据模型
 
-    public init(displayName: String, records: [WKWebsiteDataRecord] = [], dataTypes: Set<String> = []) {
-        self.displayName = displayName
-        self.records = records
-        self.dataTypes = dataTypes
+struct MainDomainGroup {
+    let mainDomain: String
+    var records: [WKWebsiteDataRecord]
+
+    var allDataTypes: Set<String> {
+        var types = Set<String>()
+        for r in records {
+            types.formUnion(r.dataTypes)
+        }
+        return types
+    }
+
+    var hasLocked: Bool {
+        return records.contains { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+    }
+
+    var allLocked: Bool {
+        return !records.isEmpty && records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+    }
+
+    var hasCookies: Bool {
+        return records.contains { $0.dataTypes.contains(WKWebsiteDataTypeCookies) }
     }
 }
 
-public final class WebsiteDataManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
+// MARK: - 管理网站数据主页面（仅展示主域名）
 
-    private var allGroups: [DomainDataGroup] = []
-    private var filteredGroups: [DomainDataGroup] = []
+final class WebsiteDataManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
+    private var allGroups: [MainDomainGroup] = []
+    private var filteredGroups: [MainDomainGroup] = []
+    private let tableView = UITableView(frame: .zero, style: .plain)
     private let searchController = UISearchController(searchResultsController: nil)
 
-    private let tableView: UITableView = {
-        let tv = UITableView(frame: .zero, style: .insetGrouped)
-        tv.translatesAutoresizingMaskIntoConstraints = false
-        return tv
-    }()
-
-    private let emptyLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "没有找到网站数据"
-        label.textColor = .secondaryLabel
-        label.textAlignment = .center
-        label.font = UIFont.systemFont(ofSize: 15)
-        label.isHidden = true
-        return label
-    }()
-
-    public override func viewDidLoad() {
+    override func viewDidLoad() {
         super.viewDidLoad()
+        view.backgroundColor = .systemBackground
         title = "管理网站数据"
-        view.backgroundColor = .systemGroupedBackground
 
         setupNavigationBar()
+        setupHeaderView()
+        setupTableView()
         setupSearchController()
-        setupLayout()
+        loadData()
+    }
 
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "DomainCell")
-
-        loadWebsiteData()
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        loadData()
     }
 
     private func setupNavigationBar() {
-        if let nav = navigationController, nav.viewControllers.count > 1 {
-            let backButton = UIBarButtonItem(
-                image: UIImage(systemName: "chevron.left"),
-                style: .plain,
-                target: self,
-                action: #selector(handleBack)
-            )
-            navigationItem.leftBarButtonItem = backButton
+        let isPushed = (navigationController?.viewControllers.count ?? 0) > 1
+        let leftItem: UIBarButtonItem
+        if isPushed {
+            let backImage = UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
+            leftItem = UIBarButtonItem(image: backImage, style: .plain, target: self, action: #selector(handleDone))
         } else {
-            let doneButton = UIBarButtonItem(
-                title: "完成",
-                style: .done,
-                target: self,
-                action: #selector(handleBack)
-            )
-            navigationItem.leftBarButtonItem = doneButton
+            leftItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
         }
+        navigationItem.leftBarButtonItem = leftItem
 
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "全部清除",
-            style: .plain,
-            target: self,
-            action: #selector(handleClearAllTapped)
-        )
+        let removeButton = UIBarButtonItem(title: "移除", style: .plain, target: self, action: #selector(handleRemoveAction))
+        removeButton.tintColor = .systemRed
+        navigationItem.rightBarButtonItem = removeButton
     }
 
-    @objc private func handleBack() {
+    private func setupHeaderView() {
+        let header = UIView()
+        header.backgroundColor = .clear
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "数据可能会减少跟踪，但也可能允许网站退出登录。点击主域名可查看名下的所有子域名与关联域名，域名需单独逐个锁定。"
+        label.textColor = .secondaryLabel
+        label.font = .systemFont(ofSize: 13, weight: .regular)
+        label.numberOfLines = 0
+
+        header.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: header.topAnchor, constant: 12),
+            label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -12),
+            label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16)
+        ])
+
+        let targetSize = CGSize(width: UIScreen.main.bounds.width, height: UIView.layoutFittingCompressedSize.height)
+        let size = header.systemLayoutSizeFitting(targetSize, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        header.frame = CGRect(x: 0, y: 0, width: size.width, height: max(size.height, 46))
+        tableView.tableHeaderView = header
+    }
+
+    private func setupTableView() {
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.backgroundColor = .systemBackground
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(WebsiteDataDetailCell.self, forCellReuseIdentifier: WebsiteDataDetailCell.reuseIdentifier)
+        tableView.rowHeight = 64
+        tableView.separatorInset = UIEdgeInsets(top: 0, left: 60, bottom: 0, right: 0)
+
+        view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+    }
+
+    private func setupSearchController() {
+        searchController.searchResultsUpdater = self
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.placeholder = "搜索主域名或数据类型(如Cookie)"
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
+        definesPresentationContext = true
+    }
+
+    private func loadData() {
+        let types = WKWebsiteDataStore.allWebsiteDataTypes()
+        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: types) { [weak self] records in
+            DispatchQueue.main.async {
+                self?.allGroups = DomainRelationEngine.groupRecordsIntoMainDomains(records)
+                self?.updateSearchResults(for: self?.searchController ?? UISearchController())
+            }
+        }
+    }
+
+    func updateSearchResults(for searchController: UISearchController) {
+        let searchText = searchController.searchBar.text?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        if searchText.isEmpty {
+            filteredGroups = allGroups
+        } else {
+            filteredGroups = allGroups.filter { group in
+                let mainMatches = group.mainDomain.lowercased().contains(searchText)
+                let subMatches = group.records.contains { $0.displayName.lowercased().contains(searchText) }
+                let typeMatches = WebsiteDataDetailCell.formatDataTypes(group.allDataTypes).lowercased().contains(searchText)
+                return mainMatches || subMatches || typeMatches
+            }
+        }
+        tableView.reloadData()
+    }
+
+    @objc private func handleDone() {
         if let nav = navigationController, nav.viewControllers.count > 1 {
             nav.popViewController(animated: true)
         } else {
@@ -87,435 +154,1013 @@ public final class WebsiteDataManagerViewController: UIViewController, UITableVi
         }
     }
 
-    private func setupSearchController() {
-        searchController.searchResultsUpdater = self
-        searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "搜索网站域名"
-        navigationItem.searchController = searchController
-        navigationItem.hidesSearchBarWhenScrolling = false
-        definesPresentationContext = true
-    }
+    @objc private func handleRemoveAction() {
+        let alert = UIAlertController(title: "移除网站数据", message: "已锁定的域名受到严格保护，不会被删除。", preferredStyle: .actionSheet)
 
-    private func setupLayout() {
-        view.addSubview(tableView)
-        view.addSubview(emptyLabel)
-
-        NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.topAnchor),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor)
-        ])
-    }
-
-    private func loadWebsiteData() {
-        let types = WKWebsiteDataStore.allWebsiteDataTypes()
-        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: types) { [weak self] records in
-            DispatchQueue.main.async {
-                self?.aggregateRecords(records)
+        alert.addAction(UIAlertAction(title: "移除所有未锁定数据", style: .destructive) { [weak self] _ in
+            WebsiteCleaner.shared.cleanUnprotectedLoginAndData {
+                self?.loadData()
             }
-        }
-    }
+        })
 
-    private func aggregateRecords(_ records: [WKWebsiteDataRecord]) {
-        var groupMap: [String: DomainDataGroup] = [:]
-        for record in records {
-            let name = record.displayName
-            if var existing = groupMap[name] {
-                existing.records.append(record)
-                existing.dataTypes.formUnion(record.dataTypes)
-                groupMap[name] = existing
-            } else {
-                groupMap[name] = DomainDataGroup(displayName: name, records: [record], dataTypes: record.dataTypes)
-            }
-        }
-
-        allGroups = groupMap.values.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-        applySearchFilter()
-    }
-
-    public func updateSearchResults(for searchController: UISearchController) {
-        applySearchFilter()
-    }
-
-    private func applySearchFilter() {
-        let query = searchController.searchBar.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if query.isEmpty {
-            filteredGroups = allGroups
-        } else {
-            filteredGroups = allGroups.filter { $0.displayName.localizedCaseInsensitiveContains(query) }
-        }
-        emptyLabel.isHidden = !filteredGroups.isEmpty
-        tableView.reloadData()
-    }
-
-    public func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return filteredGroups.count
-    }
-
-    public func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let group = filteredGroups[indexPath.row]
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "DomainCell")
-        cell.textLabel?.text = group.displayName
-        cell.textLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
-
-        var typeDescriptions: [String] = []
-        if group.dataTypes.contains(WKWebsiteDataTypeCookies) { typeDescriptions.append("Cookies") }
-        if group.dataTypes.contains(WKWebsiteDataTypeDiskCache) || group.dataTypes.contains(WKWebsiteDataTypeMemoryCache) { typeDescriptions.append("缓存") }
-        if group.dataTypes.contains(WKWebsiteDataTypeLocalStorage) { typeDescriptions.append("本地存储") }
-        if group.dataTypes.contains(WKWebsiteDataTypeIndexedDBDatabases) { typeDescriptions.append("数据库") }
-
-        cell.detailTextLabel?.text = typeDescriptions.isEmpty ? "网站数据" : typeDescriptions.joined(separator: " · ")
-        cell.detailTextLabel?.textColor = .secondaryLabel
-        return cell
-    }
-
-    public func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        return true
-    }
-
-    public func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-        guard editingStyle == .delete else { return }
-
-        let group = filteredGroups[indexPath.row]
-        let types = group.dataTypes
-        let records = group.records
-
-        WKWebsiteDataStore.default().removeData(ofTypes: types, for: records) { [weak self] in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.allGroups.removeAll { $0.displayName == group.displayName }
-                self.filteredGroups.remove(at: indexPath.row)
-                tableView.deleteRows(at: [indexPath], with: .automatic)
-                self.emptyLabel.isHidden = !self.filteredGroups.isEmpty
-                NotificationCenter.default.post(name: NSNotification.Name("WebsiteDataClearedNotification"), object: nil)
-            }
-        }
-    }
-
-    @objc private func handleClearAllTapped() {
-        guard !allGroups.isEmpty else { return }
-
-        let alert = UIAlertController(
-            title: "全部清除",
-            message: "确定要清除所有网站的数据与Cookies吗？",
-            preferredStyle: .actionSheet
-        )
-
-        let confirm = UIAlertAction(title: "全部清除", style: .destructive) { [weak self] _ in
-            let types = WKWebsiteDataStore.allWebsiteDataTypes()
-            let allRecords = self?.allGroups.flatMap { $0.records } ?? []
-            WKWebsiteDataStore.default().removeData(ofTypes: types, for: allRecords) {
-                DispatchQueue.main.async {
-                    self?.allGroups.removeAll()
-                    self?.filteredGroups.removeAll()
-                    self?.tableView.reloadData()
-                    self?.emptyLabel.isHidden = false
-                    NotificationCenter.default.post(name: NSNotification.Name("WebsiteDataClearedNotification"), object: nil)
-                }
-            }
-        }
-
-        let cancel = UIAlertAction(title: "取消", style: .cancel)
-        alert.addAction(confirm)
-        alert.addAction(cancel)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
 
         if let popover = alert.popoverPresentationController {
             popover.barButtonItem = navigationItem.rightBarButtonItem
         }
-
         present(alert, animated: true)
     }
+
+    // MARK: - UITableViewDataSource & Delegate
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return filteredGroups.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        guard let cell = tableView.dequeueReusableCell(withIdentifier: WebsiteDataDetailCell.reuseIdentifier, for: indexPath) as? WebsiteDataDetailCell else {
+            return UITableViewCell()
+        }
+        let group = filteredGroups[indexPath.row]
+        let countText = group.records.count > 1 ? "\(group.records.count)个域名" : ""
+        cell.configureForMainGroup(group: group, countText: countText)
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row < filteredGroups.count else { return }
+        let group = filteredGroups[indexPath.row]
+
+        let detailVC = WebsiteRelatedDomainsViewController(mainDomain: group.mainDomain, records: group.records) { [weak self] in
+            self?.loadData()
+        }
+        navigationController?.pushViewController(detailVC, animated: true)
+    }
+
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard indexPath.row < filteredGroups.count else { return nil }
+        let group = filteredGroups[indexPath.row]
+
+        let deleteAction = UIContextualAction(style: .destructive, title: "移除未锁定") { [weak self] _, _, completion in
+            guard let self = self else { return }
+            let unlocked = group.records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
+
+            if unlocked.isEmpty {
+                let alert = UIAlertController(title: "域名已被锁定", message: "该主域名下的所有域名均处于锁定保护状态，无法直接移除。", preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "确定", style: .default))
+                self.present(alert, animated: true)
+                completion(false)
+                return
+            }
+
+            let types = WKWebsiteDataStore.allWebsiteDataTypes()
+            WKWebsiteDataStore.default().removeData(ofTypes: types, for: unlocked) {
+                DispatchQueue.main.async {
+                    self.loadData()
+                    completion(true)
+                }
+            }
+        }
+
+        return UISwipeActionsConfiguration(actions: [deleteAction])
+    }
 }
 
-public struct CustomUserAgentItem: Codable, Equatable {
-    public let id: String
-    public var name: String
-    public var value: String
-    public var isMobile: Bool
+// MARK: - 关联域名管理页面 (二级详情页 - 仅支持逐个单项锁定)
 
-    public init(id: String = UUID().uuidString, name: String, value: String, isMobile: Bool) {
-        self.id = id
-        self.name = name
-        self.value = value
-        self.isMobile = isMobile
+final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    private let mainDomain: String
+    private var records: [WKWebsiteDataRecord]
+    private let onDataChanged: () -> Void
+    private let tableView = UITableView(frame: .zero, style: .plain)
+
+    init(mainDomain: String, records: [WKWebsiteDataRecord], onDataChanged: @escaping () -> Void) {
+        self.mainDomain = mainDomain
+        self.records = records
+        self.onDataChanged = onDataChanged
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        title = mainDomain
+
+        setupNavigationBar()
+        setupHeaderView()
+        setupTableView()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        onDataChanged()
+    }
+
+    private func setupNavigationBar() {
+        navigationItem.rightBarButtonItem = nil
+    }
+
+    private func setupHeaderView() {
+        let header = UIView()
+        header.backgroundColor = .clear
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "主站点 [ \(mainDomain) ] 共有 \(records.count) 个域名。点击任意域名可对其单独锁定或解锁，锁定的网站数据在清理时将被保留。"
+        label.textColor = .secondaryLabel
+        label.font = .systemFont(ofSize: 13, weight: .regular)
+        label.numberOfLines = 0
+
+        header.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: header.topAnchor, constant: 12),
+            label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -12),
+            label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16)
+        ])
+
+        let targetSize = CGSize(width: UIScreen.main.bounds.width, height: UIView.layoutFittingCompressedSize.height)
+        let size = header.systemLayoutSizeFitting(targetSize, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        header.frame = CGRect(x: 0, y: 0, width: size.width, height: max(size.height, 46))
+        tableView.tableHeaderView = header
+    }
+
+    private func setupTableView() {
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.backgroundColor = .systemBackground
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(WebsiteDataDetailCell.self, forCellReuseIdentifier: WebsiteDataDetailCell.reuseIdentifier)
+        tableView.rowHeight = 64
+        tableView.separatorInset = UIEdgeInsets(top: 0, left: 60, bottom: 0, right: 0)
+
+        view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+    }
+
+    // MARK: - UITableViewDataSource & Delegate
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return records.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        guard let cell = tableView.dequeueReusableCell(withIdentifier: WebsiteDataDetailCell.reuseIdentifier, for: indexPath) as? WebsiteDataDetailCell else {
+            return UITableViewCell()
+        }
+        let record = records[indexPath.row]
+        let isLocked = CookieLockStore.shared.isLocked(domain: record.displayName)
+        cell.configure(record: record, isLocked: isLocked, showChevron: false, countText: "")
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row < records.count else { return }
+        let record = records[indexPath.row]
+
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        CookieLockStore.shared.toggleLock(domain: record.displayName)
+
+        if let cell = tableView.cellForRow(at: indexPath) as? WebsiteDataDetailCell {
+            let isLocked = CookieLockStore.shared.isLocked(domain: record.displayName)
+            cell.configure(record: record, isLocked: isLocked, showChevron: false, countText: "")
+        }
+    }
+
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard indexPath.row < records.count else { return nil }
+        let record = records[indexPath.row]
+        let isLocked = CookieLockStore.shared.isLocked(domain: record.displayName)
+
+        let deleteAction = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
+            WebsiteCleaner.shared.cleanSingleDomain(record: record, cacheOnly: false) {
+                guard let self = self else { return }
+                self.records.removeAll { $0.displayName == record.displayName }
+                self.tableView.reloadData()
+                completion(true)
+            }
+        }
+
+        let lockActionTitle = isLocked ? "解锁" : "锁定"
+        let lockAction = UIContextualAction(style: .normal, title: lockActionTitle) { [weak self] _, _, completion in
+            CookieLockStore.shared.toggleLock(domain: record.displayName)
+            self?.tableView.reloadRows(at: [indexPath], with: .automatic)
+            completion(true)
+        }
+        lockAction.backgroundColor = isLocked ? .systemGray : UIColor(red: 0.12, green: 0.65, blue: 0.45, alpha: 1.0)
+
+        return UISwipeActionsConfiguration(actions: [deleteAction, lockAction])
     }
 }
 
-public final class UserAgentManager {
-    public static let shared = UserAgentManager()
+// MARK: - 关联域名拓扑识别引擎
 
-    private let customUAsKey = "SimpleBrowser.CustomUAs.List"
-    private let activeMobileIdKey = "SimpleBrowser.ActiveMobileUAId"
-    private let activeDesktopIdKey = "SimpleBrowser.ActiveDesktopUAId"
+enum DomainRelationEngine {
+    static func groupRecordsIntoMainDomains(_ records: [WKWebsiteDataRecord]) -> [MainDomainGroup] {
+        var dict: [String: [WKWebsiteDataRecord]] = [:]
 
-    public let presetMobileUAs: [CustomUserAgentItem] = [
-        CustomUserAgentItem(id: "preset_m_safari", name: "iPhone (Safari 默认)", value: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1", isMobile: true),
-        CustomUserAgentItem(id: "preset_m_chrome", name: "iPhone (Chrome Mobile)", value: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.6312.52 Mobile/15E148 Safari/604.1", isMobile: true),
-        CustomUserAgentItem(id: "preset_m_android", name: "Android (Pixel Chrome)", value: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.80 Mobile Safari/537.36", isMobile: true)
-    ]
-
-    public let presetDesktopUAs: [CustomUserAgentItem] = [
-        CustomUserAgentItem(id: "preset_d_mac", name: "Mac (Safari 默认)", value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15", isMobile: false),
-        CustomUserAgentItem(id: "preset_d_win_chrome", name: "Windows (Chrome)", value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36", isMobile: false),
-        CustomUserAgentItem(id: "preset_d_win_edge", name: "Windows (Edge)", value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.2420.65", isMobile: false)
-    ]
-
-    private init() {}
-
-    public func getCustomUAs() -> [CustomUserAgentItem] {
-        guard let data = UserDefaults.standard.data(forKey: customUAsKey),
-              let list = try? JSONDecoder().decode([CustomUserAgentItem].self, from: data) else {
-            return []
+        for record in records {
+            let host = record.displayName.trimmingCharacters(in: .whitespaces).lowercased()
+            let root = rootDomain(of: host)
+            dict[root, default: []].append(record)
         }
-        return list
-    }
 
-    public func saveCustomUAs(_ list: [CustomUserAgentItem]) {
-        if let data = try? JSONEncoder().encode(list) {
-            UserDefaults.standard.set(data, forKey: customUAsKey)
+        let companionMap: [(keyword: String, targetRoot: String)] = [
+            ("oaistatic.com", "chatgpt.com"),
+            ("oaiusercontent.com", "chatgpt.com"),
+            ("githubassets.com", "github.com"),
+            ("githubusercontent.com", "github.com"),
+            ("hdslb.com", "bilibili.com"),
+            ("bilivideo.com", "bilibili.com"),
+            ("bdstatic.com", "baidu.com"),
+            ("baidupcs.com", "baidu.com"),
+            ("gstatic.com", "google.com"),
+            ("googleusercontent.com", "google.com"),
+            ("ytimg.com", "youtube.com"),
+            ("zhimg.com", "zhihu.com"),
+            ("uxengine.net", "v2ex.com")
+        ]
+
+        for item in companionMap {
+            if let compRecs = dict[item.keyword], dict[item.targetRoot] != nil {
+                dict[item.targetRoot]?.append(contentsOf: compRecs)
+                dict.removeValue(forKey: item.keyword)
+            }
+        }
+
+        var groups: [MainDomainGroup] = []
+        for (mainDomain, groupRecords) in dict {
+            var seen = Set<String>()
+            var uniqueRecords: [WKWebsiteDataRecord] = []
+            for r in groupRecords {
+                if !seen.contains(r.displayName) {
+                    seen.insert(r.displayName)
+                    uniqueRecords.append(r)
+                }
+            }
+
+            let sortedRecords = uniqueRecords.sorted { r1, r2 in
+                let h1 = r1.displayName.lowercased()
+                let h2 = r2.displayName.lowercased()
+                if h1 == mainDomain { return true }
+                if h2 == mainDomain { return false }
+                let lock1 = CookieLockStore.shared.isLocked(domain: r1.displayName)
+                let lock2 = CookieLockStore.shared.isLocked(domain: r2.displayName)
+                if lock1 != lock2 { return lock1 && !lock2 }
+                let c1 = r1.dataTypes.contains(WKWebsiteDataTypeCookies)
+                let c2 = r2.dataTypes.contains(WKWebsiteDataTypeCookies)
+                if c1 != c2 { return c1 && !c2 }
+                return h1 < h2
+            }
+
+            groups.append(MainDomainGroup(mainDomain: mainDomain, records: sortedRecords))
+        }
+
+        return groups.sorted { g1, g2 in
+            let lock1 = g1.hasLocked
+            let lock2 = g2.hasLocked
+            if lock1 != lock2 { return lock1 && !lock2 }
+            let cookie1 = g1.hasCookies
+            let cookie2 = g2.hasCookies
+            if cookie1 != cookie2 { return cookie1 && !cookie2 }
+            return g1.mainDomain.localizedCaseInsensitiveCompare(g2.mainDomain) == .orderedAscending
         }
     }
 
-    public func getActiveMobileId() -> String {
-        return UserDefaults.standard.string(forKey: activeMobileIdKey) ?? presetMobileUAs[0].id
+    static func rootDomain(of domain: String) -> String {
+        let clean = domain.trimmingCharacters(in: .whitespaces).lowercased()
+        let parts = clean.split(separator: ".").map(String.init)
+        guard parts.count >= 2 else { return clean }
+
+        if parts.allSatisfy({ Int($0) != nil }) && parts.count == 4 {
+            return clean
+        }
+        if clean.contains(":") {
+            return clean
+        }
+
+        let multiSuffixes: Set<String> = [
+            "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn",
+            "co.uk", "org.uk", "me.uk", "co.jp", "ne.jp",
+            "com.hk", "org.hk", "com.tw", "com.au", "co.nz"
+        ]
+
+        if parts.count >= 3 {
+            let lastTwo = "\(parts[parts.count - 2]).\(parts[parts.count - 1])"
+            if multiSuffixes.contains(lastTwo) {
+                return "\(parts[parts.count - 3]).\(lastTwo)"
+            }
+        }
+
+        return "\(parts[parts.count - 2]).\(parts[parts.count - 1])"
+    }
+}
+
+// MARK: - 自定义网站数据单元格
+
+final class WebsiteDataDetailCell: UITableViewCell {
+    static let reuseIdentifier = "WebsiteDataDetailCell"
+
+    private let logoImageView = UIImageView()
+    private let domainLabel = UILabel()
+    private let lockBadge = UIView()
+    private let lockIcon = UIImageView()
+    private let detailLabel = UILabel()
+    private let countBadgeLabel = UILabel()
+    private var lockBadgeWidthConstraint: NSLayoutConstraint?
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+
+        logoImageView.translatesAutoresizingMaskIntoConstraints = false
+        logoImageView.contentMode = .scaleAspectFit
+        logoImageView.layer.cornerRadius = 6
+        logoImageView.clipsToBounds = true
+
+        domainLabel.translatesAutoresizingMaskIntoConstraints = false
+        domainLabel.font = .systemFont(ofSize: 15.5, weight: .semibold)
+        domainLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        lockBadge.translatesAutoresizingMaskIntoConstraints = false
+        lockBadge.backgroundColor = UIColor(red: 0.12, green: 0.65, blue: 0.45, alpha: 1.0)
+        lockBadge.layer.cornerRadius = 8.5
+        lockBadge.clipsToBounds = true
+
+        lockIcon.translatesAutoresizingMaskIntoConstraints = false
+        let lockConfig = UIImage.SymbolConfiguration(pointSize: 9.5, weight: .bold)
+        lockIcon.image = UIImage(systemName: "lock.fill", withConfiguration: lockConfig)
+        lockIcon.tintColor = .white
+        lockIcon.contentMode = .scaleAspectFit
+        lockBadge.addSubview(lockIcon)
+
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = .systemFont(ofSize: 12.5, weight: .regular)
+        detailLabel.textColor = .secondaryLabel
+        detailLabel.lineBreakMode = .byTruncatingTail
+
+        countBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        countBadgeLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        countBadgeLabel.textColor = .tertiaryLabel
+        countBadgeLabel.textAlignment = .right
+
+        contentView.addSubview(logoImageView)
+        contentView.addSubview(domainLabel)
+        contentView.addSubview(lockBadge)
+        contentView.addSubview(detailLabel)
+        contentView.addSubview(countBadgeLabel)
+
+        let badgeWidth = lockBadge.widthAnchor.constraint(equalToConstant: 17)
+        lockBadgeWidthConstraint = badgeWidth
+
+        NSLayoutConstraint.activate([
+            logoImageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            logoImageView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            logoImageView.widthAnchor.constraint(equalToConstant: 28),
+            logoImageView.heightAnchor.constraint(equalToConstant: 28),
+
+            domainLabel.leadingAnchor.constraint(equalTo: logoImageView.trailingAnchor, constant: 14),
+            domainLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+
+            lockBadge.leadingAnchor.constraint(equalTo: domainLabel.trailingAnchor, constant: 6),
+            lockBadge.centerYAnchor.constraint(equalTo: domainLabel.centerYAnchor),
+            lockBadge.trailingAnchor.constraint(lessThanOrEqualTo: countBadgeLabel.leadingAnchor, constant: -6),
+            badgeWidth,
+            lockBadge.heightAnchor.constraint(equalToConstant: 17),
+
+            lockIcon.centerXAnchor.constraint(equalTo: lockBadge.centerXAnchor),
+            lockIcon.centerYAnchor.constraint(equalTo: lockBadge.centerYAnchor),
+            lockIcon.widthAnchor.constraint(equalToConstant: 10),
+            lockIcon.heightAnchor.constraint(equalToConstant: 10),
+
+            countBadgeLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            countBadgeLabel.centerYAnchor.constraint(equalTo: domainLabel.centerYAnchor),
+
+            detailLabel.leadingAnchor.constraint(equalTo: domainLabel.leadingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: domainLabel.bottomAnchor, constant: 3),
+            detailLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            detailLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -10)
+        ])
     }
 
-    public func setActiveMobileId(_ id: String) {
-        UserDefaults.standard.set(id, forKey: activeMobileIdKey)
-    }
+    required init?(coder: NSCoder) { nil }
 
-    public func getActiveDesktopId() -> String {
-        return UserDefaults.standard.string(forKey: activeDesktopIdKey) ?? presetDesktopUAs[0].id
-    }
+    func configureForMainGroup(group: MainDomainGroup, countText: String) {
+        domainLabel.text = group.mainDomain
+        detailLabel.text = Self.formatDataTypes(group.allDataTypes)
+        countBadgeLabel.text = countText
+        accessoryType = .disclosureIndicator
 
-    public func setActiveDesktopId(_ id: String) {
-        UserDefaults.standard.set(id, forKey: activeDesktopIdKey)
-    }
-
-    public func getCurrentUserAgent(isDesktopMode: Bool) -> String {
-        if isDesktopMode {
-            let activeId = getActiveDesktopId()
-            let all = presetDesktopUAs + getCustomUAs().filter { !$0.isMobile }
-            return all.first(where: { $0.id == activeId })?.value ?? presetDesktopUAs[0].value
+        let greenColor = UIColor(red: 0.12, green: 0.65, blue: 0.45, alpha: 1.0)
+        if group.hasLocked {
+            lockBadge.isHidden = false
+            lockBadgeWidthConstraint?.constant = 17
+            domainLabel.textColor = group.allLocked ? greenColor : .label
         } else {
-            let activeId = getActiveMobileId()
-            let all = presetMobileUAs + getCustomUAs().filter { $0.isMobile }
-            return all.first(where: { $0.id == activeId })?.value ?? presetMobileUAs[0].value
+            lockBadge.isHidden = true
+            lockBadgeWidthConstraint?.constant = 0
+            domainLabel.textColor = .label
         }
+
+        loadFavicon(for: group.mainDomain)
+    }
+
+    func configure(record: WKWebsiteDataRecord, isLocked: Bool, showChevron: Bool = true, countText: String = "") {
+        domainLabel.text = record.displayName
+        detailLabel.text = Self.formatDataTypes(record.dataTypes)
+        countBadgeLabel.text = countText
+
+        accessoryType = showChevron ? .disclosureIndicator : .none
+
+        let greenColor = UIColor(red: 0.12, green: 0.65, blue: 0.45, alpha: 1.0)
+        if isLocked {
+            domainLabel.textColor = greenColor
+            lockBadge.isHidden = false
+            lockBadgeWidthConstraint?.constant = 17
+        } else {
+            domainLabel.textColor = .label
+            lockBadge.isHidden = true
+            lockBadgeWidthConstraint?.constant = 0
+        }
+
+        loadFavicon(for: record.displayName)
+    }
+
+    private func loadFavicon(for domain: String) {
+        if let cached = FaviconLoader.shared.cachedFavicon(for: domain) {
+            logoImageView.image = cached
+        } else {
+            logoImageView.image = UIImage(systemName: "globe", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular))?.withTintColor(.systemGray3, renderingMode: .alwaysOriginal)
+            FaviconLoader.shared.loadFavicon(for: domain) { [weak self] image in
+                DispatchQueue.main.async {
+                    if let image = image, self?.domainLabel.text == domain {
+                        self?.logoImageView.image = image
+                    }
+                }
+            }
+        }
+    }
+
+    static func formatDataTypes(_ types: Set<String>) -> String {
+        var names: [String] = []
+
+        if types.contains(WKWebsiteDataTypeCookies) {
+            names.append("Cookies")
+        }
+        if types.contains(WKWebsiteDataTypeDiskCache) {
+            names.append("磁盘缓存")
+        }
+        if types.contains(WKWebsiteDataTypeMemoryCache) {
+            names.append("缓存")
+        }
+        if types.contains(WKWebsiteDataTypeOfflineWebApplicationCache) {
+            names.append("离线缓存")
+        }
+        if types.contains(WKWebsiteDataTypeIndexedDBDatabases) {
+            names.append("索引数据库")
+        }
+        if types.contains(WKWebsiteDataTypeLocalStorage) {
+            names.append("本地存储")
+        }
+        if types.contains(WKWebsiteDataTypeSessionStorage) {
+            names.append("会话存储")
+        }
+        if types.contains(WKWebsiteDataTypeWebSQLDatabases) {
+            names.append("WebSQL")
+        }
+        for t in types {
+            if t.contains("Fetch") && !names.contains("系统缓存") {
+                names.append("系统缓存")
+            }
+        }
+
+        if names.isEmpty {
+            return "网站数据"
+        }
+        return names.joined(separator: ",")
     }
 }
 
-public final class UserAgentSettingsViewController: UITableViewController {
+// MARK: - 辅助控制器保持完整性
 
-    public var onSelectionChanged: (() -> Void)?
+final class DomainSettingsViewController: UITableViewController {
+    private let domain: String
+    var onSettingsChanged: (() -> Void)?
+    var onExtractText: (() -> Void)?
 
-    private var customMobileUAs: [CustomUserAgentItem] = []
-    private var customDesktopUAs: [CustomUserAgentItem] = []
-
-    public init() {
+    init(domain: String, onSettingsChanged: (() -> Void)?) {
+        self.domain = domain
+        self.onSettingsChanged = onSettingsChanged
         super.init(style: .insetGrouped)
     }
 
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-    }
+    required init?(coder: NSCoder) { nil }
 
-    public override func viewDidLoad() {
+    override func viewDidLoad() {
         super.viewDidLoad()
-        title = "浏览器标识 (UA)"
+        title = domain
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "UACell")
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "AddCell")
-        loadData()
     }
 
     @objc private func handleDone() {
         dismiss(animated: true)
     }
 
-    private func loadData() {
-        let allCustom = UserAgentManager.shared.getCustomUAs()
-        customMobileUAs = allCustom.filter { $0.isMobile }
-        customDesktopUAs = allCustom.filter { !$0.isMobile }
-        tableView.reloadData()
-    }
-
-    public override func numberOfSections(in tableView: UITableView) -> Int {
+    override func numberOfSections(in tableView: UITableView) -> Int {
         return 2
     }
 
-    public override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return section == 0 ? "移动版标识 (手机端)" : "电脑版标识 (桌面端)"
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return section == 0 ? 3 : 1
     }
 
-    public override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 {
-            return UserAgentManager.shared.presetMobileUAs.count + customMobileUAs.count + 1
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+
+        if indexPath.section == 0 {
+            let switchView = UISwitch()
+            switchView.tag = indexPath.row
+
+            if indexPath.row == 0 {
+                cell.textLabel?.text = "视频悬窗"
+                switchView.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "videoPopout", defaultVal: false)
+                switchView.isEnabled = false
+            } else if indexPath.row == 1 {
+                cell.textLabel?.text = "广告过滤"
+                switchView.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "adBlock", defaultVal: true)
+                switchView.isEnabled = true
+                switchView.addTarget(self, action: #selector(handleSwitchChanged(_:)), for: .valueChanged)
+            } else if indexPath.row == 2 {
+                cell.textLabel?.text = "用户脚本"
+                switchView.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "userScripts", defaultVal: true)
+                switchView.isEnabled = true
+                switchView.addTarget(self, action: #selector(handleSwitchChanged(_:)), for: .valueChanged)
+            }
+            cell.accessoryView = switchView
         } else {
-            return UserAgentManager.shared.presetDesktopUAs.count + customDesktopUAs.count + 1
+            cell.textLabel?.text = "获取网页所有文字"
+            cell.textLabel?.textColor = .systemBlue
+            cell.textLabel?.textAlignment = .center
+        }
+
+        return cell
+    }
+
+    @objc private func handleSwitchChanged(_ sender: UISwitch) {
+        if sender.tag == 1 {
+            DomainSettingsStore.shared.setBool(domain: domain, setting: "adBlock", value: sender.isOn)
+            onSettingsChanged?()
+        } else if sender.tag == 2 {
+            DomainSettingsStore.shared.setBool(domain: domain, setting: "userScripts", value: sender.isOn)
+            onSettingsChanged?()
         }
     }
 
-    public override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let isMobileSection = (indexPath.section == 0)
-        let presets = isMobileSection ? UserAgentManager.shared.presetMobileUAs : UserAgentManager.shared.presetDesktopUAs
-        let customs = isMobileSection ? customMobileUAs : customDesktopUAs
-        let activeId = isMobileSection ? UserAgentManager.shared.getActiveMobileId() : UserAgentAgentManagerActiveDesktopId()
-
-        if indexPath.row < presets.count {
-            let item = presets[indexPath.row]
-            let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "UACell")
-            cell.textLabel?.text = item.name
-            cell.textLabel?.font = UIFont.systemFont(ofSize: 16)
-            cell.detailTextLabel?.text = item.value
-            cell.detailTextLabel?.textColor = .secondaryLabel
-            cell.accessoryType = (item.id == activeId) ? .checkmark : .none
-            return cell
-        }
-
-        let customIndex = indexPath.row - presets.count
-        if customIndex < customs.count {
-            let item = customs[customIndex]
-            let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "UACell")
-            cell.textLabel?.text = item.name
-            cell.textLabel?.font = UIFont.systemFont(ofSize: 16)
-            cell.detailTextLabel?.text = item.value
-            cell.detailTextLabel?.textColor = .secondaryLabel
-            cell.accessoryType = (item.id == activeId) ? .checkmark : .none
-            return cell
-        }
-
-        let addCell = tableView.dequeueReusableCell(withIdentifier: "AddCell", for: indexPath)
-        addCell.textLabel?.text = isMobileSection ? "+ 添加自定义移动版标识" : "+ 添加自定义电脑版标识"
-        addCell.textLabel?.textColor = view.tintColor
-        addCell.accessoryType = .none
-        return addCell
-    }
-
-    private func UserAgentAgentManagerActiveDesktopId() -> String {
-        return UserAgentManager.shared.getActiveDesktopId()
-    }
-
-    public override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-
-        let isMobileSection = (indexPath.section == 0)
-        let presets = isMobileSection ? UserAgentManager.shared.presetMobileUAs : UserAgentManager.shared.presetDesktopUAs
-        let customs = isMobileSection ? customMobileUAs : customDesktopUAs
-
-        if indexPath.row < presets.count {
-            let item = presets[indexPath.row]
-            if isMobileSection {
-                UserAgentManager.shared.setActiveMobileId(item.id)
-            } else {
-                UserAgentManager.shared.setActiveDesktopId(item.id)
-            }
-            tableView.reloadSections(IndexSet(integer: indexPath.section), with: .none)
-            NotificationCenter.default.post(name: NSNotification.Name("UserAgentChangedNotification"), object: nil)
-            onSelectionChanged?()
-            return
-        }
-
-        let customIndex = indexPath.row - presets.count
-        if customIndex < customs.count {
-            let item = customs[customIndex]
-            if isMobileSection {
-                UserAgentManager.shared.setActiveMobileId(item.id)
-            } else {
-                UserAgentManager.shared.setActiveDesktopId(item.id)
-            }
-            tableView.reloadSections(IndexSet(integer: indexPath.section), with: .none)
-            NotificationCenter.default.post(name: NSNotification.Name("UserAgentChangedNotification"), object: nil)
-            onSelectionChanged?()
-            return
-        }
-
-        showAddCustomDialog(isMobile: isMobileSection)
-    }
-
-    public override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        let isMobileSection = (indexPath.section == 0)
-        let presetsCount = isMobileSection ? UserAgentManager.shared.presetMobileUAs.count : UserAgentManager.shared.presetDesktopUAs.count
-        let customsCount = isMobileSection ? customMobileUAs.count : customDesktopUAs.count
-        return indexPath.row >= presetsCount && indexPath.row < (presetsCount + customsCount)
-    }
-
-    public override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-        guard editingStyle == .delete else { return }
-
-        let isMobileSection = (indexPath.section == 0)
-        let presetsCount = isMobileSection ? UserAgentManager.shared.presetMobileUAs.count : UserAgentManager.shared.presetDesktopUAs.count
-        let customIndex = indexPath.row - presetsCount
-
-        var allCustom = UserAgentManager.shared.getCustomUAs()
-        if isMobileSection {
-            let deleted = customMobileUAs.remove(at: customIndex)
-            allCustom.removeAll { $0.id == deleted.id }
-            if UserAgentManager.shared.getActiveMobileId() == deleted.id {
-                UserAgentManager.shared.setActiveMobileId(UserAgentManager.shared.presetMobileUAs[0].id)
-            }
-        } else {
-            let deleted = customDesktopUAs.remove(at: customIndex)
-            allCustom.removeAll { $0.id == deleted.id }
-            if UserAgentManager.shared.getActiveDesktopId() == deleted.id {
-                UserAgentManager.shared.setActiveDesktopId(UserAgentManager.shared.presetDesktopUAs[0].id)
+        if indexPath.section == 1 {
+            dismiss(animated: true) { [weak self] in
+                self?.onExtractText?()
             }
         }
+    }
+}
 
-        UserAgentManager.shared.saveCustomUAs(allCustom)
-        tableView.deleteRows(at: [indexPath], with: .automatic)
-        NotificationCenter.default.post(name: NSNotification.Name("UserAgentChangedNotification"), object: nil)
-        onSelectionChanged?()
+final class UserAgentManagerViewController: UITableViewController {
+    private var mobilePresets: [UserAgentItem] = []
+    private var desktopPresets: [UserAgentItem] = []
+    private var customMobileItems: [UserAgentItem] = []
+    private var customDesktopItems: [UserAgentItem] = []
+
+    var onUASelected: ((UserAgentItem) -> Void)?
+
+    init() {
+        super.init(style: .insetGrouped)
     }
 
-    private func showAddCustomDialog(isMobile: Bool) {
-        let alert = UIAlertController(
-            title: isMobile ? "添加自定义移动版标识" : "添加自定义电脑版标识",
-            message: "请输入标识名称及完整的 User-Agent 字符串",
-            preferredStyle: .alert
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "浏览器标识"
+        tableView.separatorStyle = .none
+        tableView.backgroundColor = .systemGroupedBackground
+        tableView.register(UserAgentCardCell.self, forCellReuseIdentifier: "UserAgentCardCell")
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "AddUARowCell")
+
+        navigationItem.rightBarButtonItem = nil
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "完成",
+            style: .done,
+            target: self,
+            action: #selector(handleDone)
         )
 
+        loadData()
+    }
+
+    private func loadData() {
+        mobilePresets = UserAgentStore.shared.loadMobileItems()
+        desktopPresets = UserAgentStore.shared.loadDesktopItems()
+        let allCustom = UserAgentStore.shared.loadCustomItems()
+        customMobileItems = allCustom.filter { $0.category == .mobile }
+        customDesktopItems = allCustom.filter { $0.category == .desktop }
+        tableView.reloadData()
+    }
+
+    @objc private func handleDone() {
+        dismiss(animated: true)
+    }
+
+    private func showAddCustomUA(category: UserAgentCategory) {
+        let isMobile = category == .mobile
+        let title = isMobile ? "添加自定义移动版标识" : "添加自定义电脑版标识"
+        let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
+        alert.addTextField { tf in tf.placeholder = "标识名称" }
         alert.addTextField { tf in
-            tf.placeholder = "标识名称 (例如：手机客户端)"
+            tf.placeholder = "User-Agent 字符串"
+            tf.autocapitalizationType = .none
+            tf.autocorrectionType = .no
+        }
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "添加", style: .default) { [weak self] _ in
+            guard let name = alert.textFields?[0].text?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
+                  let ua = alert.textFields?[1].text?.trimmingCharacters(in: .whitespaces), !ua.isEmpty else { return }
+
+            UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: category)
+            self?.loadData()
+            let allCustom = UserAgentStore.shared.loadCustomItems()
+            if let newItem = allCustom.last(where: { $0.name == name && $0.category == category }) {
+                if isMobile {
+                    UserAgentStore.shared.setSelectedMobileId(newItem.id)
+                    UserAgentStore.shared.currentMode = .mobile
+                } else {
+                    UserAgentStore.shared.setSelectedDesktopId(newItem.id)
+                    UserAgentStore.shared.currentMode = .desktop
+                }
+                self?.onUASelected?(newItem)
+                self?.dismiss(animated: true)
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func showEditUAAlert(item: UserAgentItem) {
+        let alert = UIAlertController(title: "编辑标识", message: nil, preferredStyle: .alert)
+        alert.addTextField { tf in
+            tf.placeholder = "标识名称"
+            tf.text = item.name
         }
         alert.addTextField { tf in
             tf.placeholder = "User-Agent 字符串"
-            tf.autocorrectionType = .no
+            tf.text = item.uaString
             tf.autocapitalizationType = .none
+            tf.autocorrectionType = .no
         }
 
-        let cancel = UIAlertAction(title: "取消", style: .cancel)
-        let save = UIAlertAction(title: "添加", style: .default) { [weak self] _ in
-            guard let self = self else { return }
-            let name = alert.textFields?[0].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let value = alert.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !name.isEmpty, !value.isEmpty else { return }
+        alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+            guard let name = alert.textFields?[0].text?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
+                  let ua = alert.textFields?[1].text?.trimmingCharacters(in: .whitespaces), !ua.isEmpty else { return }
 
-            let newItem = CustomUserAgentItem(name: name, value: value, isMobile: isMobile)
-            var allCustom = UserAgentManager.shared.getCustomUAs()
-            allCustom.append(newItem)
-            UserAgentManager.shared.saveCustomUAs(allCustom)
-
-            if isMobile {
-                self.customMobileUAs.append(newItem)
-                UserAgentManager.shared.setActiveMobileId(newItem.id)
-                self.tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
+            if item.isCustom {
+                UserAgentStore.shared.updateCustomItem(id: item.id, name: name, uaString: ua)
             } else {
-                self.customDesktopUAs.append(newItem)
-                UserAgentManager.shared.setActiveDesktopId(newItem.id)
-                self.tableView.reloadSections(IndexSet(integer: 1), with: .automatic)
+                UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: item.category)
             }
+            self?.loadData()
+            let currentItem = UserAgentStore.shared.getSelectedItem()
+            self?.onUASelected?(currentItem)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
 
-            NotificationCenter.default.post(name: NSNotification.Name("UserAgentChangedNotification"), object: nil)
-            self.onSelectionChanged?()
+    override func numberOfSections(in tableView: UITableView) -> Int {
+        return 2
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return section == 0 ? "移动版标识" : "电脑版标识"
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        if section == 0 {
+            return mobilePresets.count + customMobileItems.count + 1
+        } else {
+            return desktopPresets.count + customDesktopItems.count + 1
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        let presetsCount = (indexPath.section == 0) ? mobilePresets.count : desktopPresets.count
+        let customsCount = (indexPath.section == 0) ? customMobileItems.count : customDesktopItems.count
+        if indexPath.row == presetsCount + customsCount {
+            return 48
+        }
+        return 68
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let isMobile = (indexPath.section == 0)
+        let presets = isMobile ? mobilePresets : desktopPresets
+        let customs = isMobile ? customMobileItems : customDesktopItems
+        let totalItems = presets.count + customs.count
+
+        if indexPath.row == totalItems {
+            let cell = tableView.dequeueReusableCell(withIdentifier: "AddUARowCell", for: indexPath)
+            var config = cell.defaultContentConfiguration()
+            config.text = isMobile ? "+ 添加自定义移动版标识" : "+ 添加自定义电脑版标识"
+            config.textProperties.color = .systemBlue
+            config.textProperties.alignment = .center
+            config.textProperties.font = .systemFont(ofSize: 15, weight: .medium)
+            cell.contentConfiguration = config
+            cell.backgroundColor = .secondarySystemGroupedBackground
+            cell.layer.cornerRadius = 12
+            cell.clipsToBounds = true
+            cell.selectionStyle = .default
+            return cell
         }
 
-        alert.addAction(cancel)
-        alert.addAction(save)
-        present(alert, animated: true)
+        let cell = tableView.dequeueReusableCell(withIdentifier: "UserAgentCardCell", for: indexPath) as! UserAgentCardCell
+        let item: UserAgentItem
+        if indexPath.row < presets.count {
+            item = presets[indexPath.row]
+        } else {
+            item = customs[indexPath.row - presets.count]
+        }
+
+        let isSelected: Bool
+        if isMobile {
+            isSelected = (item.id == UserAgentStore.shared.getSelectedMobileId() && UserAgentStore.shared.currentMode == .mobile)
+        } else {
+            isSelected = (item.id == UserAgentStore.shared.getSelectedDesktopId() && UserAgentStore.shared.currentMode == .desktop)
+        }
+
+        cell.configure(item: item, isSelected: isSelected)
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+
+        let isMobile = (indexPath.section == 0)
+        let presets = isMobile ? mobilePresets : desktopPresets
+        let customs = isMobile ? customMobileItems : customDesktopItems
+        let totalItems = presets.count + customs.count
+
+        if indexPath.row == totalItems {
+            showAddCustomUA(category: isMobile ? .mobile : .desktop)
+            return
+        }
+
+        let item: UserAgentItem
+        if indexPath.row < presets.count {
+            item = presets[indexPath.row]
+        } else {
+            item = customs[indexPath.row - presets.count]
+        }
+
+        if isMobile {
+            UserAgentStore.shared.setSelectedMobileId(item.id)
+            UserAgentStore.shared.currentMode = .mobile
+        } else {
+            UserAgentStore.shared.setSelectedDesktopId(item.id)
+            UserAgentStore.shared.currentMode = .desktop
+        }
+        tableView.reloadData()
+
+        onUASelected?(item)
+        dismiss(animated: true)
+    }
+
+    override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        let isMobile = (indexPath.section == 0)
+        let presets = isMobile ? mobilePresets : desktopPresets
+        let customs = isMobile ? customMobileItems : customDesktopItems
+        let totalItems = presets.count + customs.count
+
+        if indexPath.row == totalItems {
+            return nil
+        }
+
+        if indexPath.row < presets.count {
+            let item = presets[indexPath.row]
+            let editAction = UIContextualAction(style: .normal, title: "编辑") { [weak self] _, _, completion in
+                self?.showEditUAAlert(item: item)
+                completion(true)
+            }
+            editAction.backgroundColor = .systemBlue
+            return UISwipeActionsConfiguration(actions: [editAction])
+        }
+
+        let customIndex = indexPath.row - presets.count
+        let item = customs[customIndex]
+
+        let editAction = UIContextualAction(style: .normal, title: "编辑") { [weak self] _, _, completion in
+            self?.showEditUAAlert(item: item)
+            completion(true)
+        }
+        editAction.backgroundColor = .systemBlue
+
+        let deleteAction = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
+            UserAgentStore.shared.deleteCustomItem(id: item.id)
+            self?.loadData()
+            let currentItem = UserAgentStore.shared.getSelectedItem()
+            self?.onUASelected?(currentItem)
+            completion(true)
+        }
+
+        return UISwipeActionsConfiguration(actions: [deleteAction, editAction])
+    }
+}
+
+final class UserAgentCardCell: UITableViewCell {
+    private let cardView = UIView()
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
+    private let checkmarkImageView = UIImageView()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+        selectionStyle = .none
+
+        cardView.translatesAutoresizingMaskIntoConstraints = false
+        cardView.backgroundColor = .secondarySystemGroupedBackground
+        cardView.layer.cornerRadius = 12
+        cardView.clipsToBounds = true
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.textColor = .label
+
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        subtitleLabel.textColor = .secondaryLabel
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+
+        checkmarkImageView.translatesAutoresizingMaskIntoConstraints = false
+        checkmarkImageView.image = UIImage(systemName: "checkmark.circle.fill")
+        checkmarkImageView.tintColor = .systemBlue
+        checkmarkImageView.contentMode = .scaleAspectFit
+
+        cardView.addSubview(titleLabel)
+        cardView.addSubview(subtitleLabel)
+        cardView.addSubview(checkmarkImageView)
+        contentView.addSubview(cardView)
+
+        NSLayoutConstraint.activate([
+            cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+            cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 4),
+            cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -4),
+
+            checkmarkImageView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -16),
+            checkmarkImageView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
+            checkmarkImageView.widthAnchor.constraint(equalToConstant: 20),
+            checkmarkImageView.heightAnchor.constraint(equalToConstant: 20),
+
+            titleLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 12),
+            titleLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 16),
+            titleLabel.trailingAnchor.constraint(equalTo: checkmarkImageView.leadingAnchor, constant: -12),
+
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+            subtitleLabel.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 16),
+            subtitleLabel.trailingAnchor.constraint(equalTo: checkmarkImageView.leadingAnchor, constant: -12),
+            subtitleLabel.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -12)
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(item: UserAgentItem, isSelected: Bool) {
+        titleLabel.text = item.name
+        subtitleLabel.text = item.uaString
+        checkmarkImageView.isHidden = !isSelected
+    }
+}
+
+final class UserScriptEditorViewController: UIViewController {
+    private var script: UserScript?
+    var onSave: ((UserScript) -> Void)?
+
+    private let nameField = UITextField()
+    private let matchField = UITextField()
+    private let textView = UITextView()
+
+    init(script: UserScript?) {
+        self.script = script
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = script == nil ? "新建油猴脚本" : "编辑脚本"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "保存",
+            style: .done,
+            target: self,
+            action: #selector(handleSave)
+        )
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "取消",
+            style: .plain,
+            target: self,
+            action: #selector(handleCancel)
+        )
+
+        nameField.translatesAutoresizingMaskIntoConstraints = false
+        nameField.backgroundColor = .secondarySystemGroupedBackground
+        nameField.layer.cornerRadius = 10
+        nameField.clipsToBounds = true
+        nameField.placeholder = "脚本名称"
+        nameField.text = script?.name ?? ""
+        nameField.font = .systemFont(ofSize: 15)
+
+        let namePadding = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 1))
+        nameField.leftView = namePadding
+        nameField.leftViewMode = .always
+
+        matchField.translatesAutoresizingMaskIntoConstraints = false
+        matchField.backgroundColor = .secondarySystemGroupedBackground
+        matchField.layer.cornerRadius = 10
+        matchField.clipsToBounds = true
+        matchField.placeholder = "匹配域名规则 (如 * 或 google.com)"
+        matchField.text = script?.matchPattern ?? "*"
+        matchField.font = .systemFont(ofSize: 15)
+
+        let matchPadding = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 1))
+        matchField.leftView = matchPadding
+        matchField.leftViewMode = .always
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.backgroundColor = .secondarySystemGroupedBackground
+        textView.layer.cornerRadius = 12
+        textView.clipsToBounds = true
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .no
+        textView.textContainerInset = UIEdgeInsets(top: 12, left: 10, bottom: 12, right: 10)
+        textView.text = script?.code ?? "(function() {\n    'use strict';\n})();"
+
+        view.addSubview(nameField)
+        view.addSubview(matchField)
+        view.addSubview(textView)
+
+        NSLayoutConstraint.activate([
+            nameField.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            nameField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            nameField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            nameField.heightAnchor.constraint(equalToConstant: 42),
+
+            matchField.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 10),
+            matchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            matchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            matchField.heightAnchor.constraint(equalToConstant: 42),
+
+            textView.topAnchor.constraint(equalTo: matchField.bottomAnchor, constant: 12),
+            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            textView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
+        ])
+    }
+
+    @objc private func handleSave() {
+        let codeText = textView.text ?? ""
+        var nameText = nameField.text?.trimmingCharacters(in: .whitespaces) ?? ""
+        var matchText = matchField.text?.trimmingCharacters(in: .whitespaces) ?? ""
+
+        let parsed = UserScriptStore.shared.parseMetadata(from: codeText)
+        if nameText.isEmpty { nameText = parsed.name }
+        if matchText.isEmpty { matchText = parsed.match }
+
+        let item = UserScript(
+            id: script?.id ?? UUID().uuidString,
+            name: nameText,
+            matchPattern: matchText,
+            code: codeText,
+            isEnabled: script?.isEnabled ?? true
+        )
+
+        onSave?(item)
+        dismiss(animated: true)
+    }
+
+    @objc private func handleCancel() {
+        dismiss(animated: true)
     }
 }
