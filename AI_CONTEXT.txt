@@ -3172,9 +3172,8 @@ import WebKit
 import SafariServices
 
 // MARK: - 主浏览器控制器
-final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavigationDelegate, WKUIDelegate, TabItemDelegate {
+final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate {
 
-    // MARK: - UI 组件
     private let webContainerView = UIView()
     private let bottomBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
     private let bottomToolbar = UIStackView()
@@ -3185,7 +3184,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     private let pluginButton = UIButton(type: .system)
     private let menuButton = UIButton(type: .system)
 
-    // 底部胶囊地址栏
     private let addressContentView = UIView()
     private let lockButton = UIButton(type: .system)
     private let addressField = UITextField()
@@ -3193,20 +3191,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     private let rightActionBtn = UIButton(type: .system)
     private let progressView = UIProgressView(progressViewStyle: .default)
 
-    // 活跃 Toast 弱引用
     private weak var currentToastView: UIView?
-
-    // 气泡长按菜单
     private var calloutMenu: AddressCalloutMenuView?
 
-    // 主页视图
     private let homeContainerView = UIView()
     private let homeSearchCard = UIView()
     private let homeSearchField = UITextField()
     private let shortcutsLabel = UILabel()
     private let shortcutsContainer = UIStackView()
 
-    // 标签页管理
     private var tabs: [TabItem] = []
     private var activeTabIndex: Int = 0
 
@@ -3218,7 +3211,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     private var isAdBlockEnabled: Bool = true
     private var isNightModeEnabled: Bool = false
 
-    // MARK: - 生命周期
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -3237,7 +3229,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         navigationController?.setNavigationBarHidden(true, animated: false)
     }
 
-    // MARK: - 布局初始化
     private func setupLayout() {
         webContainerView.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
@@ -3319,7 +3310,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
 
         let tintColor = UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0)
         let cfg = UIImage.SymbolConfiguration(pointSize: 16.5, weight: .medium)
-        let smallCfg = UIImage.SymbolConfiguration(pointSize: 14.8, weight: .medium)
+        let smallCfg = UIImage.SymbolConfiguration(pointSize: 15.0, weight: .medium)
 
         backButton.setImage(UIImage(systemName: "chevron.left", withConfiguration: cfg), for: .normal)
         forwardButton.setImage(UIImage(systemName: "chevron.right", withConfiguration: cfg), for: .normal)
@@ -3382,7 +3373,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         addressContentView.addGestureRecognizer(longPress)
     }
 
-    // MARK: - 主页视图
     private func setupHomeView() {
         homeSearchCard.translatesAutoresizingMaskIntoConstraints = false
         homeSearchCard.backgroundColor = .secondarySystemGroupedBackground
@@ -3587,18 +3577,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         present(alert, animated: true)
     }
 
-    // MARK: - 展开半屏搜索栏编辑器
     @objc private func handleExpandURLEditor() {
         let currentText = addressField.text ?? ""
-        let editorVC = HalfSheetURLEditorViewController(initialText: currentText) { [weak self] updatedText in
+        let editorVC = ExpandedURLEditorViewController(initialText: currentText) { [weak self] updatedText in
             guard let self = self else { return }
             self.addressField.text = updatedText
             self.loadInputText(updatedText)
         }
-        present(editorVC, animated: true)
+        present(UINavigationController(rootViewController: editorVC), animated: true)
     }
 
-    // MARK: - 长按地址栏横向气泡指示菜单
     @objc private func handleAddressLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         view.endEditing(true)
@@ -3608,7 +3596,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
 
         let currentText = addressField.text ?? ""
         let menu = AddressCalloutMenuView(
-            onCopy: {
+            onCopy: { [weak self] in
+                guard let self = self else { return }
                 UIPasteboard.general.string = currentText
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             },
@@ -3644,7 +3633,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         menu.animateIn()
     }
 
-    // MARK: - 标签页与网页逻辑
     func createNewTab(url: URL? = nil) {
         let tab = TabItem()
         tab.delegate = self
@@ -3669,12 +3657,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
             homeContainerView.isHidden = false
             addressField.text = ""
         }
-        updateAddressBar()
-        updateNavigationButtons()
-    }
-
-    func loadInputText(_ url: URL) {
-        loadInputText(url.absoluteString)
+        updateAddressRightButtons()
     }
 
     func loadInputText(_ text: String) {
@@ -3695,11 +3678,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
 
         addressField.text = targetURL.absoluteString
         activeTab?.load(url: targetURL)
-        updateAddressBar()
-        updateNavigationButtons()
+        updateAddressRightButtons()
     }
 
-    // MARK: - UITextFieldDelegate
     func textFieldDidBeginEditing(_ textField: UITextField) {
         calloutMenu?.dismissAnimated()
         rightActionBtn.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
@@ -3716,24 +3697,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         textField.resignFirstResponder()
         loadInputText(textField.text ?? "")
         return true
-    }
-
-    private func updateAddressBar() {
-        if let url = activeTab?.currentURL {
-            homeContainerView.isHidden = true
-            addressField.text = url.absoluteString
-        } else {
-            homeContainerView.isHidden = false
-            addressField.text = ""
-        }
-        updateAddressRightButtons()
-    }
-
-    private func updateNavigationButtons() {
-        backButton.isEnabled = activeTab?.canGoBack ?? false
-        forwardButton.isEnabled = activeTab?.canGoForward ?? false
-        backButton.alpha = backButton.isEnabled ? 1.0 : 0.4
-        forwardButton.alpha = forwardButton.isEnabled ? 1.0 : 0.4
     }
 
     private func updateAddressRightButtons() {
@@ -3762,17 +3725,22 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     }
 
     @objc private func handleLockTapped() {
-        let vc = WebsiteDataViewController()
-        present(UINavigationController(rootViewController: vc), animated: true)
+        let host = activeTab?.currentURL?.host ?? "当前网站"
+        let alert = UIAlertController(title: "网站设置与安全", message: host, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "查看网站存储数据", style: .default, handler: { [weak self] _ in
+            let vc = WebsiteDataManagerViewController()
+            self?.present(UINavigationController(rootViewController: vc), animated: true)
+        }))
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
     }
 
-    // MARK: - TabItemDelegate 回调
+    // MARK: - TabItemDelegate
     func tabItemDidStartLoading(_ item: TabItem) {
         guard item == activeTab else { return }
         progressView.alpha = 1.0
         progressView.setProgress(0.15, animated: true)
         updateAddressRightButtons()
-        updateNavigationButtons()
     }
 
     func tabItem(_ item: TabItem, didUpdateProgress progress: Double) {
@@ -3789,48 +3757,25 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
 
     func tabItemDidFinishLoading(_ item: TabItem) {
         guard item == activeTab else { return }
-        updateAddressBar()
-        updateNavigationButtons()
+        updateAddressRightButtons()
         if let url = item.currentURL {
+            addressField.text = url.absoluteString
             BrowserHistoryStore.shared.record(title: item.title, url: url.absoluteString)
         }
     }
 
     func tabItem(_ item: TabItem, didFailLoadingWithError error: Error) {
         guard item == activeTab else { return }
-        updateAddressBar()
-        updateNavigationButtons()
+        updateAddressRightButtons()
     }
 
-    func tabDidUpdate(_ tab: TabItem) {
-        if tab === activeTab {
-            updateAddressBar()
-            updateNavigationButtons()
+    func tabItemDidUpdateInfo(_ item: TabItem) {
+        guard item == activeTab else { return }
+        if let url = item.currentURL {
+            addressField.text = url.absoluteString
         }
     }
 
-    func tabDidFail(_ tab: TabItem, error: Error) {
-        if tab === activeTab {
-            updateAddressBar()
-            updateNavigationButtons()
-        }
-    }
-
-    func tabRequestNewTab(_ tab: TabItem, url: URL?) {
-        createNewTab(url: url)
-    }
-
-    func tabProcessTerminated(_ tab: TabItem) {
-        tab.reload()
-    }
-
-    func tabRequestGoBack(_ tab: TabItem) {
-        if tab === activeTab {
-            handleBack()
-        }
-    }
-
-    // MARK: - 底部导航事件
     @objc private func handleBack() {
         activeTab?.goBack()
     }
@@ -3869,8 +3814,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
             tab.webView.bottomAnchor.constraint(equalTo: webContainerView.bottomAnchor)
         ])
 
-        updateAddressBar()
-        updateNavigationButtons()
+        if let url = tab.currentURL {
+            homeContainerView.isHidden = true
+            addressField.text = url.absoluteString
+        } else {
+            homeContainerView.isHidden = false
+            addressField.text = ""
+        }
+        updateAddressRightButtons()
     }
 
     private func closeTab(at index: Int) {
@@ -3884,7 +3835,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         }
     }
 
-    // MARK: - 扩展插件
     @objc private func handlePlugin() {
         let vc = CustomBottomSheetViewController(title: nil, isGrid: false)
         let items = [
@@ -3902,16 +3852,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         present(vc, animated: true)
     }
 
-    // MARK: - 更多菜单（8项极简无边框设计）
     @objc private func handleMenu() {
         let vc = CustomBottomSheetViewController(title: nil, isGrid: true)
-        let isDesktop = UserAgentStore.shared.isDesktopMode
+        let isDesktop = UserAgentStore.shared.isCurrentDesktop
 
         let page1: [CustomBottomSheetItem] = [
             CustomBottomSheetItem(iconName: "star", title: "书签/历史", action: { [weak self] in
                 let histVC = BrowserHistoryViewController()
                 histVC.onSelectURL = { url in
-                    self?.loadInputText(url.absoluteString)
+                    self?.loadInputText(url)
                 }
                 self?.present(UINavigationController(rootViewController: histVC), animated: true)
             }),
@@ -3922,11 +3871,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
                 isSwitchOn: isDesktop,
                 dismissOnTap: false,
                 action: { [weak self] in
-                    UserAgentStore.shared.isDesktopMode.toggle()
+                    let targetUA = isDesktop ? "preset_mobile_safari" : "preset_desktop_safari"
+                    UserAgentStore.shared.setActiveUA(id: targetUA)
                     self?.activeTab?.reload()
-                },
-                longPressAction: { [weak self] in
-                    self?.openUserAgentSettings()
                 }
             ),
             CustomBottomSheetItem(iconName: "folder.badge.gearshape", title: "下载管理", action: { [weak self] in
@@ -3968,7 +3915,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
                 }
             ),
             CustomBottomSheetItem(iconName: "trash", title: "清除数据", action: { [weak self] in
-                let cleanVC = CleanDataViewController()
+                let cleanVC = CleanDataSelectionViewController()
                 self?.present(UINavigationController(rootViewController: cleanVC), animated: true)
             })
         ]
@@ -3979,7 +3926,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
                 self?.present(UINavigationController(rootViewController: manager), animated: true)
             }),
             CustomBottomSheetItem(iconName: "person.crop.rectangle", title: "标识设置", action: { [weak self] in
-                self?.openUserAgentSettings()
+                self?.showToastNotice("当前使用原生 Safari 标识")
             }),
             CustomBottomSheetItem(iconName: "magnifyingglass", title: "搜索引擎", action: { [weak self] in
                 self?.showToastNotice("默认使用 Google 引擎")
@@ -4042,15 +3989,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         }
     }
 
-    private func openUserAgentSettings() {
-        let vc = UserAgentSettingsViewController()
-        present(UINavigationController(rootViewController: vc), animated: true)
-    }
-
     private func createAddBookmarkVectorIcon() -> UIImage {
         let sz = CGSize(width: 24, height: 24)
         let renderer = UIGraphicsImageRenderer(size: sz)
-        return renderer.image { _ in
+        return renderer.image { ctx in
             let star = UIImage(systemName: "star")?.withTintColor(UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0))
             star?.draw(in: CGRect(x: 1, y: 1, width: 18, height: 18))
             let plus = UIImage(systemName: "plus.circle.fill")?.withTintColor(UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0))
@@ -4058,8 +4000,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         }
     }
 
-    // MARK: - 纯白卡片式无堆叠 Toast 提示
-    public func showToastNotice(_ msg: String) {
+    func showToastNotice(_ msg: String) {
         currentToastView?.layer.removeAllAnimations()
         currentToastView?.removeFromSuperview()
 
@@ -4111,11 +4052,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         }
     }
 
-    // MARK: - 下载通知与手动确认
     private func setupNotifications() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleDownloadPrompt(_:)), name: NSNotification.Name("PromptDownloadConfirmationNotification"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleDownloadStarted), name: NSNotification.Name("DownloadStartedNotification"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleDownloadFinished), name: NSNotification.Name("DownloadFinishedNotification"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleBlobExportPrompt(_:)), name: NSNotification.Name("PromptBlobExportNotification"), object: nil)
     }
 
     @objc private func handleDownloadPrompt(_ notif: Notification) {
@@ -4134,6 +4075,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
         present(alert, animated: true)
     }
 
+    @objc private func handleBlobExportPrompt(_ notif: Notification) {
+        guard let fileURL = notif.userInfo?["fileURL"] as? URL,
+              let filename = notif.userInfo?["filename"] as? String else { return }
+
+        let alert = UIAlertController(title: "网页文件已准备就绪", message: filename, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "导出 / 共享文件", style: .default, handler: { [weak self] _ in
+            let actVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+            self?.present(actVC, animated: true)
+        }))
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
     @objc private func handleDownloadStarted() {
         showToastNotice("开始下载文件...")
     }
@@ -4143,17 +4097,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, WKNavi
     }
 }
 
-// MARK: - 半屏搜索栏向上展开编辑器（无多余复制粘贴按钮）
-final class HalfSheetURLEditorViewController: UIViewController, UITextViewDelegate {
+// MARK: - 展开网址编辑器
+final class ExpandedURLEditorViewController: UIViewController, UITextViewDelegate {
 
     private let initialText: String
     private let onCommit: (String) -> Void
-
-    private let cardContainer = UIView()
     private let textView = UITextView()
-    private let cancelButton = UIButton(type: .system)
-    private let goButton = UIButton(type: .system)
-    private let titleLabel = UILabel()
 
     init(initialText: String, onCommit: @escaping (String) -> Void) {
         self.initialText = initialText
@@ -4167,89 +4116,33 @@ final class HalfSheetURLEditorViewController: UIViewController, UITextViewDelega
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupSheetPresentation()
-        setupUI()
+        title = "编辑网址"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(handleCancel))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "前往", style: .done, target: self, action: #selector(handleGo))
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.font = .systemFont(ofSize: 15.5)
+        textView.text = initialText
+        textView.layer.cornerRadius = 12
+        textView.clipsToBounds = true
+        textView.keyboardType = .webSearch
+        textView.delegate = self
+        view.addSubview(textView)
+
+        NSLayoutConstraint.activate([
+            textView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            textView.heightAnchor.constraint(equalToConstant: 180)
+        ])
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         textView.becomeFirstResponder()
         textView.selectAll(nil)
-    }
-
-    private func setupSheetPresentation() {
-        view.backgroundColor = .systemGroupedBackground
-        if let sheet = sheetPresentationController {
-            sheet.detents = [.medium()]
-            sheet.prefersGrabberVisible = true
-            sheet.preferredCornerRadius = 24
-        }
-    }
-
-    private func setupUI() {
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "编辑网址"
-        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        titleLabel.textColor = .label
-        titleLabel.textAlignment = .center
-        view.addSubview(titleLabel)
-
-        cancelButton.translatesAutoresizingMaskIntoConstraints = false
-        cancelButton.setTitle("取消", for: .normal)
-        cancelButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .regular)
-        cancelButton.tintColor = .secondaryLabel
-        cancelButton.addTarget(self, action: #selector(handleCancel), for: .touchUpInside)
-        view.addSubview(cancelButton)
-
-        goButton.translatesAutoresizingMaskIntoConstraints = false
-        goButton.setTitle("前往", for: .normal)
-        goButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
-        goButton.setTitleColor(.white, for: .normal)
-        goButton.backgroundColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-        goButton.layer.cornerRadius = 15
-        goButton.layer.cornerCurve = .continuous
-        goButton.addTarget(self, action: #selector(handleGo), for: .touchUpInside)
-        view.addSubview(goButton)
-
-        cardContainer.translatesAutoresizingMaskIntoConstraints = false
-        cardContainer.backgroundColor = .secondarySystemGroupedBackground
-        cardContainer.layer.cornerRadius = 16
-        cardContainer.layer.cornerCurve = .continuous
-        cardContainer.clipsToBounds = true
-        view.addSubview(cardContainer)
-
-        textView.translatesAutoresizingMaskIntoConstraints = false
-        textView.backgroundColor = .clear
-        textView.font = .monospacedSystemFont(ofSize: 15.5, weight: .regular)
-        textView.textColor = .label
-        textView.text = initialText
-        textView.keyboardType = .webSearch
-        textView.returnKeyType = .go
-        textView.delegate = self
-        cardContainer.addSubview(textView)
-
-        NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            titleLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-
-            cancelButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
-            cancelButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-
-            goButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
-            goButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            goButton.widthAnchor.constraint(equalToConstant: 60),
-            goButton.heightAnchor.constraint(equalToConstant: 30),
-
-            cardContainer.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
-            cardContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            cardContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            cardContainer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -16),
-
-            textView.topAnchor.constraint(equalTo: cardContainer.topAnchor, constant: 10),
-            textView.leadingAnchor.constraint(equalTo: cardContainer.leadingAnchor, constant: 12),
-            textView.trailingAnchor.constraint(equalTo: cardContainer.trailingAnchor, constant: -12),
-            textView.bottomAnchor.constraint(equalTo: cardContainer.bottomAnchor, constant: -10)
-        ])
     }
 
     @objc private func handleCancel() {
@@ -4262,186 +4155,27 @@ final class HalfSheetURLEditorViewController: UIViewController, UITextViewDelega
             self?.onCommit(text)
         }
     }
-
-    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-        if text == "\n" {
-            handleGo()
-            return false
-        }
-        return true
-    }
 }
 
-// MARK: - 浏览器标识设置控制器（手机版与电脑版独立打勾）
-final class UserAgentSettingsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
-
-    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private let store = UserAgentStore.shared
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "浏览器标识 (UA)"
-        view.backgroundColor = .systemGroupedBackground
-
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
-
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.rowHeight = 52
-        view.addSubview(tableView)
-
-        NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.topAnchor),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-    }
-
-    @objc private func handleDone() {
-        dismiss(animated: true)
-    }
-
-    func numberOfSections(in tableView: UITableView) -> Int {
-        return 2
-    }
-
-    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return section == 0 ? "手机版标识 (Mobile)" : "电脑版标识 (Desktop)"
-    }
-
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 {
-            return store.presetMobileItems.count + store.customMobileItems.count + 1
-        } else {
-            return store.presetDesktopItems.count + store.customDesktopItems.count + 1
-        }
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "UACell")
-        cell.backgroundColor = .secondarySystemGroupedBackground
-
-        let isMobile = (indexPath.section == 0)
-        let presets = isMobile ? store.presetMobileItems : store.presetDesktopItems
-        let customs = isMobile ? store.customMobileItems : store.customDesktopItems
-        let allInGroup = presets + customs
-
-        if indexPath.row == allInGroup.count {
-            cell.textLabel?.text = isMobile ? "+ 添加自定义手机版标识" : "+ 添加自定义电脑版标识"
-            cell.textLabel?.textColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-            cell.textLabel?.font = .systemFont(ofSize: 15, weight: .medium)
-            cell.detailTextLabel?.text = nil
-            cell.accessoryType = .none
-            cell.imageView?.image = UIImage(systemName: "plus.circle")
-            cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-            return cell
-        }
-
-        let item = allInGroup[indexPath.row]
-        cell.textLabel?.text = item.name
-        cell.textLabel?.textColor = .label
-        cell.textLabel?.font = .systemFont(ofSize: 15, weight: .regular)
-        cell.detailTextLabel?.text = item.ua
-        cell.detailTextLabel?.textColor = .secondaryLabel
-        cell.detailTextLabel?.font = .systemFont(ofSize: 11, weight: .regular)
-        cell.imageView?.image = UIImage(systemName: isMobile ? "iphone" : "laptopcomputer")
-        cell.imageView?.tintColor = .secondaryLabel
-
-        let activeId = isMobile ? store.activeMobilePresetId : store.activeDesktopPresetId
-        if item.id == activeId {
-            cell.accessoryType = .checkmark
-            cell.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-            cell.textLabel?.textColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-        } else {
-            cell.accessoryType = .none
-        }
-
-        return cell
-    }
-
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-
-        let isMobile = (indexPath.section == 0)
-        let presets = isMobile ? store.presetMobileItems : store.presetDesktopItems
-        let customs = isMobile ? store.customMobileItems : store.customDesktopItems
-        let allInGroup = presets + customs
-
-        if indexPath.row == allInGroup.count {
-            promptAddCustomUA(isDesktop: !isMobile)
-            return
-        }
-
-        let item = allInGroup[indexPath.row]
-        if isMobile {
-            store.setActiveMobileUA(id: item.id)
-        } else {
-            store.setActiveDesktopUA(id: item.id)
-        }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        tableView.reloadSections(IndexSet(integer: indexPath.section), with: .none)
-    }
-
-    private func promptAddCustomUA(isDesktop: Bool) {
-        let typeStr = isDesktop ? "电脑版" : "手机版"
-        let alert = UIAlertController(title: "添加自定义\(typeStr)标识", message: nil, preferredStyle: .alert)
-        alert.addTextField { tf in
-            tf.placeholder = "标识名称"
-        }
-        alert.addTextField { tf in
-            tf.placeholder = "User-Agent 完整字符串"
-        }
-        alert.addAction(UIAlertAction(title: "保存并启用", style: .default, handler: { [weak self] _ in
-            let name = alert.textFields?[0].text ?? ""
-            let ua = alert.textFields?[1].text ?? ""
-            self?.store.addCustomPreset(name: name, ua: ua, isDesktop: isDesktop)
-            self?.tableView.reloadData()
-        }))
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        let isMobile = (indexPath.section == 0)
-        let presets = isMobile ? store.presetMobileItems : store.presetDesktopItems
-        let customs = isMobile ? store.customMobileItems : store.customDesktopItems
-        let allInGroup = presets + customs
-
-        if indexPath.row >= presets.count && indexPath.row < allInGroup.count {
-            let customIndex = indexPath.row - presets.count
-            let item = customs[customIndex]
-
-            let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
-                self?.store.deleteCustomPreset(id: item.id)
-                self?.tableView.reloadData()
-                completion(true)
-            }
-            return UISwipeActionsConfiguration(actions: [delete])
-        }
-        return nil
-    }
-}
-
-// MARK: - 下载管理器视图控制器
+// MARK: - 下载管理
 final class DownloadManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentInteractionControllerDelegate {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private var downloadFiles: [URL] = []
-    private var docInteraction: UIDocumentInteractionController?
+    private var files: [URL] = []
+    private var docController: UIDocumentInteractionController?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "下载管理"
         view.backgroundColor = .systemGroupedBackground
 
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleClose))
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "清空", style: .plain, target: self, action: #selector(handleClearAll))
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "DownloadFileCell")
         tableView.rowHeight = 60
         view.addSubview(tableView)
 
@@ -4452,70 +4186,73 @@ final class DownloadManagerViewController: UIViewController, UITableViewDataSour
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        loadFiles()
+        loadDownloadedFiles()
     }
 
-    @objc private func handleDone() {
+    private func loadDownloadedFiles() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dlDir = docs.appendingPathComponent("Downloads", isDirectory: true)
+
+        if let contents = try? FileManager.default.contentsOfDirectory(at: dlDir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: .skipsHiddenFiles) {
+            self.files = contents.sorted { (u1, u2) -> Bool in
+                let d1 = (try? u1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+                let d2 = (try? u2.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+                return d1 > d2
+            }
+        }
+        tableView.reloadData()
+    }
+
+    @objc private func handleClose() {
         dismiss(animated: true)
     }
 
     @objc private func handleClearAll() {
-        guard !downloadFiles.isEmpty else { return }
-        let alert = UIAlertController(title: "清空下载记录", message: "将删除所有已下载的本地文件，此操作不可恢复。", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "清空", style: .destructive, handler: { [weak self] _ in
+        guard !files.isEmpty else { return }
+        let alert = UIAlertController(title: "清空下载记录", message: "将删除所有已下载的本地文件，此操作不可撤销。", preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "全部清空", style: .destructive, handler: { [weak self] _ in
             guard let self = self else { return }
-            for url in self.downloadFiles {
-                try? FileManager.default.removeItem(at: url)
+            for file in self.files {
+                try? FileManager.default.removeItem(at: file)
             }
-            self.loadFiles()
+            self.files.removeAll()
+            self.tableView.reloadData()
         }))
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         present(alert, animated: true)
     }
 
-    private func loadFiles() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let downloadsDir = docs.appendingPathComponent("Downloads", isDirectory: true)
-        if let urls = try? FileManager.default.contentsOfDirectory(at: downloadsDir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: .skipsHiddenFiles) {
-            downloadFiles = urls.sorted { (u1, u2) -> Bool in
-                let d1 = (try? u1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
-                let d2 = (try? u2.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
-                return d1 > d2
-            }
-        } else {
-            downloadFiles = []
-        }
-        tableView.reloadData()
-    }
-
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return downloadFiles.count
+        return files.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "DLCell")
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "DownloadFileCell")
         cell.backgroundColor = .secondarySystemGroupedBackground
+        let file = files[indexPath.row]
+        cell.textLabel?.text = file.lastPathComponent
+        cell.textLabel?.font = .systemFont(ofSize: 15.5, weight: .medium)
 
-        let url = downloadFiles[indexPath.row]
-        cell.textLabel?.text = url.lastPathComponent
-        cell.textLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
 
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        let formattedSize = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
-        cell.detailTextLabel?.text = formattedSize
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm"
+        let sizeStr = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        cell.detailTextLabel?.text = "\(sizeStr) • \(df.string(from: date))"
         cell.detailTextLabel?.textColor = .secondaryLabel
-
-        cell.imageView?.image = UIImage(systemName: "doc")
+        cell.imageView?.image = UIImage(systemName: "doc.fill")
         cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
+        cell.accessoryType = .disclosureIndicator
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let fileURL = downloadFiles[indexPath.row]
-        docInteraction = UIDocumentInteractionController(url: fileURL)
-        docInteraction?.delegate = self
-        docInteraction?.presentPreview(animated: true)
+        let file = files[indexPath.row]
+        docController = UIDocumentInteractionController(url: file)
+        docController?.delegate = self
+        docController?.presentPreview(animated: true)
     }
 
     func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
@@ -4523,27 +4260,27 @@ final class DownloadManagerViewController: UIViewController, UITableViewDataSour
     }
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        let fileURL = downloadFiles[indexPath.row]
-
-        let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
-            try? FileManager.default.removeItem(at: fileURL)
-            self?.loadFiles()
-            completion(true)
-        }
+        let file = files[indexPath.row]
 
         let share = UIContextualAction(style: .normal, title: "共享") { [weak self] (_, _, completion) in
-            guard let self = self else { return }
-            let ac = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-            self.present(ac, animated: true)
+            let act = UIActivityViewController(activityItems: [file], applicationActivities: nil)
+            self?.present(act, animated: true)
             completion(true)
         }
         share.backgroundColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
 
-        return UISwipeActionsConfiguration(actions: [delete, share])
+        let del = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
+            try? FileManager.default.removeItem(at: file)
+            self?.files.remove(at: indexPath.row)
+            self?.tableView.deleteRows(at: [indexPath], with: .fade)
+            completion(true)
+        }
+
+        return UISwipeActionsConfiguration(actions: [del, share])
     }
 }
 
-// MARK: - 长按地址栏横向气泡视图
+// MARK: - 长按地址栏气泡
 final class AddressCalloutMenuView: UIView {
 
     private let onCopy: () -> Void
@@ -4607,11 +4344,8 @@ final class AddressCalloutMenuView: UIView {
 
     private func makeBtn(title: String, action: Selector) -> UIButton {
         let btn = UIButton(type: .system)
-        var config = UIButton.Configuration.plain()
-        config.title = title
-        config.baseForegroundColor = UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0)
-        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
-        btn.configuration = config
+        btn.setTitle(title, for: .normal)
+        btn.setTitleColor(UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1.0), for: .normal)
         btn.titleLabel?.font = .systemFont(ofSize: 14.5, weight: .regular)
         btn.addTarget(self, action: action, for: .touchUpInside)
         return btn
@@ -4656,13 +4390,12 @@ final class AddressCalloutMenuView: UIView {
 import UIKit
 import WebKit
 
-// MARK: - 清理数据选择控制器
-final class CleanDataViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+final class CleanDataSelectionViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private var selectedOptions: Set<CleanDataType> = Set(CleanDataType.allCases)
+    private var selectedTypes: Set<CleanDataType> = [.cache, .history, .loginAndData, .scriptData]
 
-    private let optionsList: [CleanDataType] = [
+    private let items: [CleanDataType] = [
         .cache,
         .history,
         .loginAndData,
@@ -4671,92 +4404,98 @@ final class CleanDataViewController: UIViewController, UITableViewDataSource, UI
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        setupUI()
+    }
+
+    private func setupUI() {
         title = "清除浏览数据"
         view.backgroundColor = .systemGroupedBackground
 
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(handleCancel))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "确定清理", style: .done, target: self, action: #selector(handleConfirmClean))
-        navigationItem.rightBarButtonItem?.tintColor = .systemRed
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "取消",
+            style: .plain,
+            target: self,
+            action: #selector(handleCancel)
+        )
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.rowHeight = 56
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "CleanOptionCell")
+        tableView.rowHeight = 52
         view.addSubview(tableView)
+
+        let footerView = UIView()
+        let cleanButton = UIButton(type: .system)
+        cleanButton.translatesAutoresizingMaskIntoConstraints = false
+        cleanButton.setTitle("立即清除", for: .normal)
+        cleanButton.titleLabel?.font = .systemFont(ofSize: 16.5, weight: .semibold)
+        cleanButton.setTitleColor(.white, for: .normal)
+        cleanButton.backgroundColor = .systemRed
+        cleanButton.layer.cornerRadius = 14
+        cleanButton.layer.cornerCurve = .continuous
+        cleanButton.addTarget(self, action: #selector(handleClean), for: .touchUpInside)
+        footerView.addSubview(cleanButton)
 
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            cleanButton.topAnchor.constraint(equalTo: footerView.topAnchor, constant: 24),
+            cleanButton.leadingAnchor.constraint(equalTo: footerView.leadingAnchor, constant: 16),
+            cleanButton.trailingAnchor.constraint(equalTo: footerView.trailingAnchor, constant: -16),
+            cleanButton.heightAnchor.constraint(equalToConstant: 50)
         ])
+
+        footerView.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: 90)
+        tableView.tableFooterView = footerView
     }
 
     @objc private func handleCancel() {
         dismiss(animated: true)
     }
 
-    @objc private func handleConfirmClean() {
-        guard !selectedOptions.isEmpty else {
+    @objc private func handleClean() {
+        guard !selectedTypes.isEmpty else {
             dismiss(animated: true)
             return
         }
 
-        WebsiteCleaner.clean(options: selectedOptions) { [weak self] in
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        WebsiteCleaner.clean(options: selectedTypes) { [weak self] in
             DispatchQueue.main.async {
                 self?.dismiss(animated: true)
             }
         }
     }
 
+    // MARK: - UITableViewDataSource
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return optionsList.count
+        return items.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "CleanOptionCell")
+        let cell = tableView.dequeueReusableCell(withIdentifier: "CleanOptionCell", for: indexPath)
+        let item = items[indexPath.row]
         cell.backgroundColor = .secondarySystemGroupedBackground
-
-        let option = optionsList[indexPath.row]
-        cell.textLabel?.text = option.rawValue
+        cell.textLabel?.text = item.rawValue
         cell.textLabel?.font = .systemFont(ofSize: 16, weight: .regular)
-
-        switch option {
-        case .cache:
-            cell.detailTextLabel?.text = "临时文件、已缓存的图片和网页资源"
-            cell.imageView?.image = UIImage(systemName: "internaldrive")
-        case .history:
-            cell.detailTextLabel?.text = "访问过的网页记录与地址栏搜索词"
-            cell.imageView?.image = UIImage(systemName: "clock")
-        case .loginAndData:
-            cell.detailTextLabel?.text = "Cookie 与本地数据库（已锁定的网站数据除外）"
-            cell.imageView?.image = UIImage(systemName: "person.crop.circle.badge.checkmark")
-        case .scriptData:
-            cell.detailTextLabel?.text = "油猴脚本存储在本地的数据缓存"
-            cell.imageView?.image = UIImage(systemName: "puzzlepiece.extension")
-        }
-
-        cell.imageView?.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-        cell.detailTextLabel?.textColor = .secondaryLabel
-
-        if selectedOptions.contains(option) {
-            cell.accessoryType = .checkmark
-            cell.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
-        } else {
-            cell.accessoryType = .none
-        }
-
+        cell.accessoryType = selectedTypes.contains(item) ? .checkmark : .none
+        cell.tintColor = UIColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1.0)
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let option = optionsList[indexPath.row]
-        if selectedOptions.contains(option) {
-            selectedOptions.remove(option)
+        let item = items[indexPath.row]
+        if selectedTypes.contains(item) {
+            selectedTypes.remove(item)
         } else {
-            selectedOptions.insert(option)
+            selectedTypes.insert(item)
         }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         tableView.reloadRows(at: [indexPath], with: .automatic)
     }
 }
@@ -5301,20 +5040,36 @@ import Foundation
 import UIKit
 import WebKit
 
-// MARK: - 书签模型（支持多级目录树）
-public struct BookmarkItem: Codable, Equatable {
-    public let id: String
-    public var title: String
-    public var url: String
-    public var urlString: String {
-        get { return url }
-        set { url = newValue }
+// MARK: - 基础触控高亮按钮
+class TouchButton: UIButton {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        adjustsImageWhenHighlighted = false
     }
-    public var parentId: String?
-    public var isFolder: Bool
-    public var createdAt: Date
 
-    public init(id: String = UUID().uuidString, title: String, url: String = "", parentId: String? = nil, isFolder: Bool = false, createdAt: Date = Date()) {
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var isHighlighted: Bool {
+        didSet {
+            UIView.animate(withDuration: 0.1) {
+                self.alpha = self.isHighlighted ? 0.6 : 1.0
+            }
+        }
+    }
+}
+
+// MARK: - 书签模型（支持多级目录树）
+struct BookmarkItem: Codable, Equatable {
+    let id: String
+    var title: String
+    var url: String
+    var parentId: String?
+    var isFolder: Bool
+    var createdAt: Date
+
+    init(id: String = UUID().uuidString, title: String, url: String = "", parentId: String? = nil, isFolder: Bool = false, createdAt: Date = Date()) {
         self.id = id
         self.title = title
         self.url = url
@@ -5322,18 +5077,13 @@ public struct BookmarkItem: Codable, Equatable {
         self.isFolder = isFolder
         self.createdAt = createdAt
     }
-
-    public init(id: String = UUID().uuidString, title: String, urlString: String, parentId: String? = nil, isFolder: Bool = false, createdAt: Date = Date()) {
-        self.init(id: id, title: title, url: urlString, parentId: parentId, isFolder: isFolder, createdAt: createdAt)
-    }
 }
 
-// MARK: - 书签持久化管理器
-public final class BookmarkStore {
-    public static let shared = BookmarkStore()
+final class BookmarkStore {
+    static let shared = BookmarkStore()
     private let key = "SimpleBrowserBookmarksTree_V2"
 
-    public private(set) var bookmarks: [BookmarkItem] = []
+    private(set) var bookmarks: [BookmarkItem] = []
 
     private init() {
         loadBookmarks()
@@ -5347,7 +5097,7 @@ public final class BookmarkStore {
             ("GitHub", "https://github.com"),
             ("Google", "https://www.google.com"),
             ("哔哩哔哩", "https://www.bilibili.com"),
-            ("Bing 搜索", "https://cn.bing.com"),
+            ("Bing 搜索", "https://www.bing.com"),
             ("V2EX", "https://www.v2ex.com")
         ]
         for (t, u) in defaults {
@@ -5356,7 +5106,7 @@ public final class BookmarkStore {
         saveBookmarks()
     }
 
-    public func getItems(in parentId: String?) -> [BookmarkItem] {
+    func getItems(in parentId: String?) -> [BookmarkItem] {
         return bookmarks.filter { $0.parentId == parentId }.sorted { (b1, b2) in
             if b1.isFolder != b2.isFolder {
                 return b1.isFolder && !b2.isFolder
@@ -5365,19 +5115,11 @@ public final class BookmarkStore {
         }
     }
 
-    public func getNodes(inParent parentId: String?) -> [BookmarkItem] {
-        return getItems(in: parentId)
-    }
-
-    public func loadAllNodes() -> [BookmarkItem] {
-        return bookmarks
-    }
-
-    public func getAllFolders() -> [BookmarkItem] {
+    func getAllFolders() -> [BookmarkItem] {
         return bookmarks.filter { $0.isFolder }
     }
 
-    public func addBookmark(title: String, url: String, parentId: String? = nil) {
+    func addBookmark(title: String, url: String, parentId: String? = nil) {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "网页书签" : title
         let item = BookmarkItem(title: cleanTitle, url: url, parentId: parentId, isFolder: false)
         bookmarks.append(item)
@@ -5388,18 +5130,14 @@ public final class BookmarkStore {
         }
     }
 
-    public func addBookmark(title: String, urlString: String, parentId: String? = nil) {
-        addBookmark(title: title, url: urlString, parentId: parentId)
-    }
-
-    public func createFolder(title: String, parentId: String? = nil) {
+    func createFolder(title: String, parentId: String? = nil) {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "新建文件夹" : title
         let item = BookmarkItem(title: cleanTitle, url: "", parentId: parentId, isFolder: true)
         bookmarks.append(item)
         saveBookmarks()
     }
 
-    public func updateItem(id: String, title: String, url: String) {
+    func updateItem(id: String, title: String, url: String) {
         guard let idx = bookmarks.firstIndex(where: { $0.id == id }) else { return }
         bookmarks[idx].title = title
         if !bookmarks[idx].isFolder {
@@ -5411,11 +5149,7 @@ public final class BookmarkStore {
         saveBookmarks()
     }
 
-    public func updateNode(id: String, title: String, urlString: String? = nil) {
-        updateItem(id: id, title: title, url: urlString ?? "")
-    }
-
-    public func deleteItem(id: String) {
+    func deleteItem(id: String) {
         var idsToDelete = Set<String>([id])
         var queue = [id]
         while !queue.isEmpty {
@@ -5428,20 +5162,11 @@ public final class BookmarkStore {
         saveBookmarks()
     }
 
-    public func deleteNode(id: String) {
-        deleteItem(id: id)
-    }
-
-    public func clearBookmarks() {
-        bookmarks.removeAll()
-        saveBookmarks()
-    }
-
-    public func countChildren(of folderId: String) -> Int {
+    func countChildren(of folderId: String) -> Int {
         return bookmarks.filter { $0.parentId == folderId }.count
     }
 
-    public func exportToAlookHTML() -> String {
+    func exportToAlookHTML() -> String {
         var html = "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n"
         html += "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n"
         html += "<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n"
@@ -5467,7 +5192,7 @@ public final class BookmarkStore {
     }
 
     @discardableResult
-    public func importFromAlookHTML(_ html: String) -> Int {
+    func importFromAlookHTML(_ html: String) -> Int {
         let lines = html.components(separatedBy: .newlines)
         var count = 0
         for line in lines {
@@ -5506,13 +5231,13 @@ public final class BookmarkStore {
 }
 
 // MARK: - 主页常用站点快捷方式存储
-public struct HomeShortcutItem: Codable, Equatable {
-    public let id: String
-    public var title: String
-    public var url: String
-    public var iconColorHex: String
+struct HomeShortcutItem: Codable, Equatable {
+    let id: String
+    var title: String
+    var url: String
+    var iconColorHex: String
 
-    public init(id: String = UUID().uuidString, title: String, url: String, iconColorHex: String = "#007AFF") {
+    init(id: String = UUID().uuidString, title: String, url: String, iconColorHex: String = "#007AFF") {
         self.id = id
         self.title = title
         self.url = url
@@ -5520,11 +5245,11 @@ public struct HomeShortcutItem: Codable, Equatable {
     }
 }
 
-public final class HomeShortcutStore {
-    public static let shared = HomeShortcutStore()
+final class HomeShortcutStore {
+    static let shared = HomeShortcutStore()
     private let key = "SimpleBrowserHomeShortcuts_V2"
 
-    public private(set) var shortcuts: [HomeShortcutItem] = []
+    private(set) var shortcuts: [HomeShortcutItem] = []
 
     private init() {
         loadShortcuts()
@@ -5547,7 +5272,7 @@ public final class HomeShortcutStore {
         saveShortcuts()
     }
 
-    public func addShortcut(title: String, url: String) {
+    func addShortcut(title: String, url: String) {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "常用站点" : title
         let item = HomeShortcutItem(title: cleanTitle, url: url)
         shortcuts.append(item)
@@ -5558,7 +5283,7 @@ public final class HomeShortcutStore {
         }
     }
 
-    public func updateShortcut(id: String, title: String, url: String) {
+    func updateShortcut(id: String, title: String, url: String) {
         guard let index = shortcuts.firstIndex(where: { $0.id == id }) else { return }
         shortcuts[index].title = title
         shortcuts[index].url = url
@@ -5569,7 +5294,7 @@ public final class HomeShortcutStore {
         }
     }
 
-    public func deleteShortcut(id: String) {
+    func deleteShortcut(id: String) {
         shortcuts.removeAll { $0.id == id }
         saveShortcuts()
     }
@@ -5588,128 +5313,81 @@ public final class HomeShortcutStore {
     }
 }
 
-// MARK: - 浏览器历史记录
-public struct BrowserHistoryItem: Codable, Equatable {
-    public var id: String
-    public var title: String
-    public var urlString: String
-    public var visitedAt: Date
+// MARK: - 历史记录
+struct HistoryItem: Codable, Equatable {
+    let id: String
+    let title: String
+    let url: String
+    let timestamp: Date
 
-    public var url: String {
-        get { urlString }
-        set { urlString = newValue }
-    }
-    public var timestamp: Date {
-        get { visitedAt }
-        set { visitedAt = newValue }
-    }
-
-    public init(id: String = UUID().uuidString, title: String, urlString: String, visitedAt: Date = Date()) {
+    init(id: String = UUID().uuidString, title: String, url: String, timestamp: Date = Date()) {
         self.id = id
         self.title = title
-        self.urlString = urlString
-        self.visitedAt = visitedAt
-    }
-
-    public init(id: String = UUID().uuidString, title: String, url: String, timestamp: Date = Date()) {
-        self.id = id
-        self.title = title
-        self.urlString = url
-        self.visitedAt = timestamp
+        self.url = url
+        self.timestamp = timestamp
     }
 }
 
-public typealias HistoryItem = BrowserHistoryItem
-
-public final class BrowserHistoryStore {
-    public static let shared = BrowserHistoryStore()
-    private let key = "browser_visit_history_v1"
-    private let maximumCount = 500
-
-    public private(set) var history: [BrowserHistoryItem] = []
+final class BrowserHistoryStore {
+    static let shared = BrowserHistoryStore()
+    private let key = "SimpleBrowserHistoryList"
+    private(set) var history: [HistoryItem] = []
 
     private init() {
-        history = loadHistory()
+        loadHistory()
     }
 
-    public func loadHistory() -> [BrowserHistoryItem] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let items = try? JSONDecoder().decode([BrowserHistoryItem].self, from: data) else {
-            return []
-        }
-        return items
-    }
-
-    public func record(url: URL, title: String) {
-        let scheme = url.scheme?.lowercased() ?? ""
-        guard scheme == "http" || scheme == "https" else { return }
-        record(title: title, url: url.absoluteString)
-    }
-
-    public func record(title: String, url: String) {
+    func record(title: String, url: String) {
         guard !url.isEmpty, !url.starts(with: "about:") else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? url : title
-        var items = loadHistory()
-        items.removeAll { $0.urlString == url }
-        let item = BrowserHistoryItem(
-            id: UUID().uuidString,
-            title: cleanTitle,
-            urlString: url,
-            visitedAt: Date()
-        )
-        items.insert(item, at: 0)
-        if items.count > maximumCount {
-            items = Array(items.prefix(maximumCount))
+        history.removeAll { $0.url == url }
+        let item = HistoryItem(title: cleanTitle, url: url, timestamp: Date())
+        history.insert(item, at: 0)
+        if history.count > 1000 {
+            history = Array(history.prefix(1000))
         }
-        history = items
-        saveHistory(items)
+        saveHistory()
 
         if let host = URL(string: url)?.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
     }
 
-    public func delete(id: String) {
-        var items = loadHistory()
-        items.removeAll { $0.id == id }
-        history = items
-        saveHistory(items)
-    }
-
-    public func deleteItem(id: String) {
-        delete(id: id)
-    }
-
-    public func clearHistory() {
+    func clearAll() {
         history.removeAll()
-        UserDefaults.standard.removeObject(forKey: key)
+        saveHistory()
     }
 
-    public func clearAll() {
-        clearHistory()
+    func deleteItem(id: String) {
+        history.removeAll { $0.id == id }
+        saveHistory()
     }
 
-    private func saveHistory(_ items: [BrowserHistoryItem]) {
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+    private func saveHistory() {
+        if let data = try? JSONEncoder().encode(history) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private func loadHistory() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let list = try? JSONDecoder().decode([HistoryItem].self, from: data) {
+            history = list
+        }
     }
 }
 
-// MARK: - 搜索历史记录
-public final class SearchHistoryStore {
-    public static let shared = SearchHistoryStore()
+// MARK: - 搜索历史
+final class SearchHistoryStore {
+    static let shared = SearchHistoryStore()
     private let key = "SimpleBrowserSearchKeywords"
-    public private(set) var history: [String] = []
+    private(set) var history: [String] = []
 
     private init() {
         history = UserDefaults.standard.stringArray(forKey: key) ?? []
     }
 
-    public func getHistory() -> [String] {
-        return history
-    }
-
-    public func addHistory(_ text: String) {
+    func addHistory(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         history.removeAll { $0 == trimmed }
@@ -5720,19 +5398,15 @@ public final class SearchHistoryStore {
         UserDefaults.standard.set(history, forKey: key)
     }
 
-    public func clearHistory() {
-        clearAll()
-    }
-
-    public func clearAll() {
+    func clearAll() {
         history.removeAll()
         UserDefaults.standard.set(history, forKey: key)
     }
 }
 
-// MARK: - 网站 Logo 本地预加载与磁盘缓存
-public final class FaviconLoader {
-    public static let shared = FaviconLoader()
+// MARK: - Logo 预加载
+final class FaviconLoader {
+    static let shared = FaviconLoader()
     private let memCache = NSCache<NSString, UIImage>()
     private let diskQueue = DispatchQueue(label: "com.browser.faviconQueue", qos: .utility)
 
@@ -5749,28 +5423,20 @@ public final class FaviconLoader {
         memCache.countLimit = 200
     }
 
-    public func cachedFavicon(for host: String) -> UIImage? {
-        let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !clean.isEmpty else { return nil }
-        if let cached = memCache.object(forKey: clean as NSString) {
-            return cached
-        }
-        let fileURL = diskPath.appendingPathComponent("\(clean.hashValue).png")
-        if FileManager.default.fileExists(atPath: fileURL.path),
-           let img = UIImage(contentsOfFile: fileURL.path) {
-            memCache.setObject(img, forKey: clean as NSString)
-            return img
-        }
-        return nil
-    }
-
-    public func preloadFavicon(for host: String) {
+    func preloadFavicon(for host: String) {
         let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !clean.isEmpty else { return }
 
-        if cachedFavicon(for: clean) != nil { return }
+        if memCache.object(forKey: clean as NSString) != nil { return }
 
         let fileURL = diskPath.appendingPathComponent("\(clean.hashValue).png")
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            if let img = UIImage(contentsOfFile: fileURL.path) {
+                memCache.setObject(img, forKey: clean as NSString)
+                return
+            }
+        }
+
         diskQueue.async {
             guard let url = URL(string: "https://www.google.com/s2/favicons?domain=\(clean)&sz=64") else { return }
             if let data = try? Data(contentsOf: url), let img = UIImage(data: data) {
@@ -5780,14 +5446,14 @@ public final class FaviconLoader {
         }
     }
 
-    public func loadFavicon(for host: String, completion: @escaping (UIImage?) -> Void) {
+    func loadFavicon(for host: String, completion: @escaping (UIImage?) -> Void) {
         let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !clean.isEmpty else {
             completion(nil)
             return
         }
 
-        if let cached = cachedFavicon(for: clean) {
+        if let cached = memCache.object(forKey: clean as NSString) {
             completion(cached)
             return
         }
@@ -5817,9 +5483,9 @@ public final class FaviconLoader {
     }
 }
 
-// MARK: - 网站数据原子清除引擎
-public enum WebsiteCleaner {
-    public static func clean(options: Set<CleanDataType>, completion: @escaping () -> Void) {
+// MARK: - 清理
+enum WebsiteCleaner {
+    static func clean(options: Set<CleanDataType>, completion: @escaping () -> Void) {
         var dataTypesToRemove = Set<String>()
 
         if options.contains(.cache) {
@@ -5852,7 +5518,7 @@ public enum WebsiteCleaner {
         if !dataTypesToRemove.isEmpty {
             let store = WKWebsiteDataStore.default()
             store.fetchDataRecords(ofTypes: dataTypesToRemove) { records in
-                let targetRecords = records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
+                let targetRecords = records.filter { !CookieLockStore.shared.isLocked(host: $0.displayName) }
                 if targetRecords.isEmpty {
                     completion()
                     return
@@ -5867,16 +5533,16 @@ public enum WebsiteCleaner {
     }
 }
 
-public enum CleanDataType: String, CaseIterable {
+enum CleanDataType: String, CaseIterable {
     case cache = "网页缓存文件"
     case history = "搜索与浏览历史记录"
     case loginAndData = "登录与本地数据"
     case scriptData = "用户脚本缓存数据"
 }
 
-// MARK: - 域名独立加锁持久化管理器
-public final class CookieLockStore {
-    public static let shared = CookieLockStore()
+// MARK: - 锁定
+final class CookieLockStore {
+    static let shared = CookieLockStore()
     private let key = "LockedWebsiteDomainsList"
 
     private var lockedHosts: Set<String> {
@@ -5891,15 +5557,15 @@ public final class CookieLockStore {
 
     private init() {}
 
-    public func isLocked(domain: String) -> Bool {
-        let clean = domain.lowercased()
+    func isLocked(host: String) -> Bool {
+        let clean = host.lowercased()
         return lockedHosts.contains(clean)
     }
 
     @discardableResult
-    public func toggleLock(domain: String) -> Bool {
+    func toggleLock(host: String) -> Bool {
         var set = lockedHosts
-        let clean = domain.lowercased()
+        let clean = host.lowercased()
         let result: Bool
         if set.contains(clean) {
             set.remove(clean)
@@ -5912,27 +5578,32 @@ public final class CookieLockStore {
         return result
     }
 
-    public func lock(domain: String) {
+    func lock(host: String) {
         var set = lockedHosts
-        set.insert(domain.lowercased())
+        set.insert(host.lowercased())
         lockedHosts = set
     }
 
-    public func unlock(domain: String) {
+    func unlock(host: String) {
         var set = lockedHosts
-        set.remove(domain.lowercased())
+        set.remove(host.lowercased())
         lockedHosts = set
     }
 }
 
-// MARK: - 浏览器标识（User-Agent）模型与存储（手机版与电脑版独立管理）
-public struct UserAgentPreset: Codable, Equatable {
-    public let id: String
-    public var name: String
-    public var ua: String
-    public var isDesktop: Bool
+// MARK: - 浏览器标识 (User-Agent)
+enum UserAgentCategory: String, CaseIterable {
+    case mobile = "手机版"
+    case desktop = "电脑版"
+}
 
-    public init(id: String = UUID().uuidString, name: String, ua: String, isDesktop: Bool) {
+struct UserAgentPreset: Codable, Equatable {
+    let id: String
+    var name: String
+    var ua: String
+    var isDesktop: Bool
+
+    init(id: String = UUID().uuidString, name: String, ua: String, isDesktop: Bool) {
         self.id = id
         self.name = name
         self.ua = ua
@@ -5940,420 +5611,76 @@ public struct UserAgentPreset: Codable, Equatable {
     }
 }
 
-public final class UserAgentStore {
-    public static let shared = UserAgentStore()
-    private let customMobileKey = "CustomMobileUserAgents_V4"
-    private let customDesktopKey = "CustomDesktopUserAgents_V4"
-    private let activeMobileKey = "ActiveMobileUAId_V4"
-    private let activeDesktopKey = "ActiveDesktopUAId_V4"
-    private let isDesktopModeKey = "IsDesktopModeEnabled_V4"
+final class UserAgentStore {
+    static let shared = UserAgentStore()
+    private let activeUAIdKey = "ActiveUserAgentId_V2"
 
-    public static let defaultMobileSafari = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-    public static let defaultMobileChrome = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/116.0.5845.177 Mobile/15E148 Safari/604.1"
-    public static let defaultMobileIPad = "Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-    public static let defaultMobileAndroid = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    static let defaultMobileSafari = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+    static let defaultMobileChrome = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/116.0.5845.177 Mobile/15E148 Safari/604.1"
+    static let defaultMacSafari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
+    static let defaultMacChrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
 
-    public static let defaultDesktopChrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    public static let defaultDesktopSafari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
-    public static let defaultDesktopWinChrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    public static let defaultDesktopWinEdge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
-
-    public let presetMobileItems: [UserAgentPreset] = [
+    let presets: [UserAgentPreset] = [
         UserAgentPreset(id: "preset_mobile_safari", name: "iOS 16 Safari", ua: defaultMobileSafari, isDesktop: false),
         UserAgentPreset(id: "preset_mobile_chrome", name: "iOS Chrome", ua: defaultMobileChrome, isDesktop: false),
-        UserAgentPreset(id: "preset_mobile_ipad", name: "iPad Safari", ua: defaultMobileIPad, isDesktop: false),
-        UserAgentPreset(id: "preset_mobile_android", name: "Android Chrome", ua: defaultMobileAndroid, isDesktop: false)
+        UserAgentPreset(id: "preset_desktop_safari", name: "macOS Safari", ua: defaultMacSafari, isDesktop: true),
+        UserAgentPreset(id: "preset_desktop_chrome", name: "macOS Chrome", ua: defaultMacChrome, isDesktop: true)
     ]
 
-    public let presetDesktopItems: [UserAgentPreset] = [
-        UserAgentPreset(id: "preset_desktop_chrome", name: "macOS Chrome", ua: defaultDesktopChrome, isDesktop: true),
-        UserAgentPreset(id: "preset_desktop_safari", name: "macOS Safari", ua: defaultDesktopSafari, isDesktop: true),
-        UserAgentPreset(id: "preset_desktop_win_chrome", name: "Windows 11 Chrome", ua: defaultDesktopWinChrome, isDesktop: true),
-        UserAgentPreset(id: "preset_desktop_win_edge", name: "Windows 11 Edge", ua: defaultDesktopWinEdge, isDesktop: true)
-    ]
-
-    public private(set) var customMobileItems: [UserAgentPreset] = []
-    public private(set) var customDesktopItems: [UserAgentPreset] = []
-
-    public var activeMobilePresetId: String {
-        get { UserDefaults.standard.string(forKey: activeMobileKey) ?? "preset_mobile_safari" }
-        set { UserDefaults.standard.set(newValue, forKey: activeMobileKey) }
-    }
-
-    public var activeDesktopPresetId: String {
-        get { UserDefaults.standard.string(forKey: activeDesktopKey) ?? "preset_desktop_chrome" }
-        set { UserDefaults.standard.set(newValue, forKey: activeDesktopKey) }
-    }
-
-    public var isDesktopMode: Bool {
-        get { UserDefaults.standard.bool(forKey: isDesktopModeKey) }
-        set {
-            UserDefaults.standard.set(newValue, forKey: isDesktopModeKey)
-            NotificationCenter.default.post(name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
+    var currentUA: String {
+        let activeId = UserDefaults.standard.string(forKey: activeUAIdKey) ?? "preset_mobile_safari"
+        if let found = presets.first(where: { $0.id == activeId }) {
+            return found.ua
         }
+        return Self.defaultMobileSafari
     }
 
-    public var currentUA: String {
-        if isDesktopMode {
-            let allDesktop = presetDesktopItems + customDesktopItems
-            return allDesktop.first(where: { $0.id == activeDesktopPresetId })?.ua ?? Self.defaultDesktopChrome
-        } else {
-            let allMobile = presetMobileItems + customMobileItems
-            return allMobile.first(where: { $0.id == activeMobilePresetId })?.ua ?? Self.defaultMobileSafari
-        }
+    var isCurrentDesktop: Bool {
+        let activeId = UserDefaults.standard.string(forKey: activeUAIdKey) ?? "preset_mobile_safari"
+        return presets.first(where: { $0.id == activeId })?.isDesktop ?? false
     }
 
-    private init() {
-        loadCustomPresets()
+    var activePresetId: String {
+        return UserDefaults.standard.string(forKey: activeUAIdKey) ?? "preset_mobile_safari"
     }
 
-    public func setActiveMobileUA(id: String) {
-        activeMobilePresetId = id
+    private init() {}
+
+    func setActiveUA(id: String) {
+        UserDefaults.standard.set(id, forKey: activeUAIdKey)
         NotificationCenter.default.post(name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
     }
-
-    public func setActiveDesktopUA(id: String) {
-        activeDesktopPresetId = id
-        NotificationCenter.default.post(name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
-    }
-
-    public func addCustomPreset(name: String, ua: String, isDesktop: Bool) {
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedUA = ua.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, !trimmedUA.isEmpty else { return }
-
-        let item = UserAgentPreset(name: trimmedName, ua: trimmedUA, isDesktop: isDesktop)
-        if isDesktop {
-            customDesktopItems.append(item)
-            setActiveDesktopUA(id: item.id)
-        } else {
-            customMobileItems.append(item)
-            setActiveMobileUA(id: item.id)
-        }
-        saveCustomPresets()
-    }
-
-    public func deleteCustomPreset(id: String) {
-        customMobileItems.removeAll { $0.id == id }
-        customDesktopItems.removeAll { $0.id == id }
-        saveCustomPresets()
-
-        if activeMobilePresetId == id {
-            setActiveMobileUA(id: "preset_mobile_safari")
-        }
-        if activeDesktopPresetId == id {
-            setActiveDesktopUA(id: "preset_desktop_chrome")
-        }
-    }
-
-    private func saveCustomPresets() {
-        if let d1 = try? JSONEncoder().encode(customMobileItems) {
-            UserDefaults.standard.set(d1, forKey: customMobileKey)
-        }
-        if let d2 = try? JSONEncoder().encode(customDesktopItems) {
-            UserDefaults.standard.set(d2, forKey: customDesktopKey)
-        }
-    }
-
-    private func loadCustomPresets() {
-        if let data = UserDefaults.standard.data(forKey: customMobileKey),
-           let list = try? JSONDecoder().decode([UserAgentPreset].self, from: data) {
-            customMobileItems = list
-        }
-        if let data = UserDefaults.standard.data(forKey: customDesktopKey),
-           let list = try? JSONDecoder().decode([UserAgentPreset].self, from: data) {
-            customDesktopItems = list
-        }
-    }
 }
 
-// MARK: - 基础组件
-open class TouchButton: UIButton {
-    public var hitTestInsets: UIEdgeInsets = .zero
+// MARK: - 底部 Sheet 菜单模型
+struct CustomBottomSheetItem {
+    let iconName: String
+    let customImage: UIImage?
+    let title: String
+    let hasSwitch: Bool
+    var isSwitchOn: Bool
+    let dismissOnTap: Bool
+    let action: () -> Void
+    let longPressAction: (() -> Void)?
 
-    public convenience init() {
-        self.init(frame: .zero)
-    }
-
-    public override init(frame: CGRect) {
-        super.init(frame: frame)
-    }
-
-    public required init?(coder: NSCoder) {
-        super.init(coder: coder)
-    }
-
-    open override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        if hitTestInsets == .zero {
-            return super.point(inside: point, with: event)
-        }
-        let hitFrame = bounds.inset(by: hitTestInsets)
-        return hitFrame.contains(point)
-    }
-}
-
-// MARK: - 底部 Sheet 布局与模型
-public enum CustomBottomSheetLayout {
-    case grid
-    case list
-}
-
-public struct CustomBottomSheetItem {
-    public var title: String
-    public var iconName: String?
-    public var customImage: UIImage?
-    public var isDestructive: Bool
-    public var hasSwitch: Bool
-    public var isSwitchOn: Bool?
-    public var dismissOnTap: Bool
-    public var handler: (() -> Void)?
-    public var longPressHandler: (() -> Void)?
-
-    public var action: (() -> Void)? {
-        get { handler }
-        set { handler = newValue }
-    }
-    public var longPressAction: (() -> Void)? {
-        get { longPressHandler }
-        set { longPressHandler = newValue }
-    }
-
-    public init(
-        title: String,
-        iconName: String? = nil,
+    init(
+        iconName: String = "",
         customImage: UIImage? = nil,
-        isDestructive: Bool = false,
-        hasSwitch: Bool = false,
-        isSwitchOn: Bool? = nil,
-        dismissOnTap: Bool = true,
-        handler: (() -> Void)? = nil,
-        longPressHandler: (() -> Void)? = nil
-    ) {
-        self.title = title
-        self.iconName = iconName
-        self.customImage = customImage
-        self.isDestructive = isDestructive
-        self.hasSwitch = hasSwitch
-        self.isSwitchOn = isSwitchOn
-        self.dismissOnTap = dismissOnTap
-        self.handler = handler
-        self.longPressHandler = longPressHandler
-    }
-
-    public init(
-        iconName: String?,
         title: String,
-        isDestructive: Bool = false,
         hasSwitch: Bool = false,
-        isSwitchOn: Bool? = nil,
+        isSwitchOn: Bool = false,
         dismissOnTap: Bool = true,
-        action: (() -> Void)? = nil,
+        action: @escaping () -> Void,
         longPressAction: (() -> Void)? = nil
     ) {
-        self.title = title
         self.iconName = iconName
-        self.customImage = nil
-        self.isDestructive = isDestructive
-        self.hasSwitch = hasSwitch
-        self.isSwitchOn = isSwitchOn
-        self.dismissOnTap = dismissOnTap
-        self.handler = action
-        self.longPressHandler = longPressAction
-    }
-
-    public init(
-        customImage: UIImage?,
-        title: String,
-        isDestructive: Bool = false,
-        hasSwitch: Bool = false,
-        isSwitchOn: Bool? = nil,
-        dismissOnTap: Bool = true,
-        action: (() -> Void)? = nil,
-        longPressAction: (() -> Void)? = nil
-    ) {
-        self.title = title
-        self.iconName = nil
         self.customImage = customImage
-        self.isDestructive = isDestructive
+        self.title = title
         self.hasSwitch = hasSwitch
         self.isSwitchOn = isSwitchOn
         self.dismissOnTap = dismissOnTap
-        self.handler = action
-        self.longPressHandler = longPressAction
-    }
-}
-
-// MARK: - 用户脚本模型与存储
-public struct UserScript: Codable, Equatable {
-    public var id: String
-    public var name: String
-    public var matchPattern: String
-    public var code: String
-    public var isEnabled: Bool
-
-    public init(name: String, matchPattern: String = "*", code: String = "", isEnabled: Bool = true, id: String = UUID().uuidString) {
-        self.id = id
-        self.name = name
-        self.matchPattern = matchPattern
-        self.code = code
-        self.isEnabled = isEnabled
-    }
-
-    public init(id: String, name: String, matchPattern: String = "*", code: String = "", isEnabled: Bool = true) {
-        self.id = id
-        self.name = name
-        self.matchPattern = matchPattern
-        self.code = code
-        self.isEnabled = isEnabled
-    }
-}
-
-public final class UserScriptStore {
-    public static let shared = UserScriptStore()
-    private let key = "user_tampermonkey_scripts_v5"
-
-    private init() {}
-
-    public func loadScripts() -> [UserScript] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let scripts = try? JSONDecoder().decode([UserScript].self, from: data) else {
-            return []
-        }
-        return scripts
-    }
-
-    public func saveScripts(_ scripts: [UserScript]) {
-        if let data = try? JSONEncoder().encode(scripts) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
-    }
-
-    public func parseMetadata(from code: String) -> (name: String, match: String) {
-        var nameMap: [String: String] = [:]
-        var matches: [String] = []
-
-        let lines = code.components(separatedBy: .newlines)
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("//") else { continue }
-            let content = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-            guard content.hasPrefix("@") else { continue }
-
-            let components = content.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-            guard components.count >= 2 else { continue }
-
-            let tag = components[0]
-            let val = components.dropFirst().joined(separator: " ")
-
-            if tag.hasPrefix("@name") {
-                nameMap[tag] = val
-            } else if tag == "@match" || tag == "@include" {
-                matches.append(val)
-            }
-        }
-
-        let preferredName = nameMap["@name:zh-CN"] ?? nameMap["@name:zh"] ?? nameMap["@name:zh-TW"] ?? nameMap["@name"] ?? "未命名脚本"
-        let preferredMatch = matches.first ?? "*"
-
-        return (preferredName, preferredMatch)
-    }
-
-    public func isScriptMatching(script: UserScript, urlString: String) -> Bool {
-        guard script.isEnabled else { return false }
-
-        if let url = URL(string: urlString), let host = url.host {
-            let scriptEnabled = DomainSettingsStore.shared.getBool(domain: host, setting: "userScripts", defaultVal: true)
-            if !scriptEnabled { return false }
-        }
-
-        if script.matchPattern == "*" || script.matchPattern.isEmpty { return true }
-        guard let url = URL(string: urlString), let host = url.host?.lowercased() else { return true }
-        let pattern = script.matchPattern.lowercased()
-            .replacingOccurrences(of: "*://", with: "")
-            .replacingOccurrences(of: "http://", with: "")
-            .replacingOccurrences(of: "https://", with: "")
-            .components(separatedBy: "/").first ?? script.matchPattern
-        let domainPattern = pattern.replacingOccurrences(of: "*.", with: "").replacingOccurrences(of: "*", with: "")
-        if domainPattern.isEmpty { return true }
-        return host == domainPattern || host.hasSuffix("." + domainPattern)
-    }
-}
-
-// MARK: - 用户脚本本地存储管理器
-public final class ScriptDataStore {
-    public static let shared = ScriptDataStore()
-    private init() {}
-
-    private func makeKey(_ scriptId: String, _ name: String) -> String {
-        return "GM_DATA_\(scriptId)_\(name)"
-    }
-
-    public func getValue(scriptId: String, name: String) -> Any? {
-        return UserDefaults.standard.object(forKey: makeKey(scriptId, name))
-    }
-
-    public func setValue(scriptId: String, name: String, value: Any) {
-        UserDefaults.standard.set(value, forKey: makeKey(scriptId, name))
-    }
-
-    public func deleteValue(scriptId: String, name: String) {
-        UserDefaults.standard.removeObject(forKey: makeKey(scriptId, name))
-    }
-
-    public func clearDataForScript(scriptId: String) {
-        let prefix = "GM_DATA_\(scriptId)_"
-        for (k, _) in UserDefaults.standard.dictionaryRepresentation() {
-            if k.hasPrefix(prefix) {
-                UserDefaults.standard.removeObject(forKey: k)
-            }
-        }
-    }
-
-    public func clearAllScriptData() {
-        let prefix = "GM_DATA_"
-        for (k, _) in UserDefaults.standard.dictionaryRepresentation() {
-            if k.hasPrefix(prefix) {
-                UserDefaults.standard.removeObject(forKey: k)
-            }
-        }
-    }
-
-    public func getAllValuesJSON(scriptId: String) -> String {
-        let prefix = "GM_DATA_\(scriptId)_"
-        var dict: [String: Any] = [:]
-        for (k, v) in UserDefaults.standard.dictionaryRepresentation() {
-            if k.hasPrefix(prefix) {
-                let name = String(k.dropFirst(prefix.count))
-                dict[name] = v
-            }
-        }
-        if let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
-           let str = String(data: data, encoding: .utf8) {
-            return str
-        }
-        return "{}"
-    }
-}
-
-// MARK: - 域名单独配置持久化管理器
-public final class DomainSettingsStore {
-    public static let shared = DomainSettingsStore()
-    private init() {}
-
-    private func makeKey(_ domain: String, _ setting: String) -> String {
-        return "DOMAIN_SETTING_\(domain.lowercased())_\(setting)"
-    }
-
-    public func getBool(domain: String, setting: String, defaultVal: Bool = true) -> Bool {
-        let k = makeKey(domain, setting)
-        if UserDefaults.standard.object(forKey: k) == nil {
-            return defaultVal
-        }
-        return UserDefaults.standard.bool(forKey: k)
-    }
-
-    public func setBool(domain: String, setting: String, value: Bool) {
-        UserDefaults.standard.set(value, forKey: makeKey(domain, setting))
+        self.action = action
+        self.longPressAction = longPressAction
     }
 }
 ```
@@ -6621,114 +5948,86 @@ final class TabGridCell: UICollectionViewCell {
 import UIKit
 import WebKit
 
-// MARK: - 标签页协议定义
-protocol TabItemDelegate: AnyObject {
-    func tabDidUpdate(_ tab: TabItem)
-    func tabDidFail(_ tab: TabItem, error: Error)
-    func tabRequestNewTab(_ tab: TabItem, url: URL?)
-    func tabProcessTerminated(_ tab: TabItem)
-    func tabRequestGoBack(_ tab: TabItem)
-    func tabItemDidStartLoading(_ item: TabItem)
-    func tabItem(_ item: TabItem, didUpdateProgress progress: Double)
-    func tabItemDidFinishLoading(_ item: TabItem)
-    func tabItem(_ item: TabItem, didFailLoadingWithError error: Error)
-}
-
-extension TabItemDelegate {
-    func tabDidUpdate(_ tab: TabItem) {}
-    func tabDidFail(_ tab: TabItem, error: Error) {}
-    func tabRequestNewTab(_ tab: TabItem, url: URL?) {}
-    func tabProcessTerminated(_ tab: TabItem) {}
-    func tabRequestGoBack(_ tab: TabItem) {}
-    func tabItemDidStartLoading(_ item: TabItem) {}
-    func tabItem(_ item: TabItem, didUpdateProgress progress: Double) {}
-    func tabItemDidFinishLoading(_ item: TabItem) {}
-    func tabItem(_ item: TabItem, didFailLoadingWithError error: Error) {}
-}
-
-// MARK: - 单标签页封装
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate {
 
-    let id = UUID().uuidString
-    let webView: WKWebView
     weak var delegate: TabItemDelegate?
-    var snapshot: UIImage?
+    let webView: WKWebView
 
-    var title: String {
-        return webView.title ?? ""
-    }
+    private(set) var title: String = ""
+    private(set) var currentURL: URL?
+    private(set) var isLoading: Bool = false
 
-    var currentURL: URL? {
-        return webView.url
-    }
-
-    var isLoading: Bool {
-        return webView.isLoading
-    }
-
-    var estimatedProgress: Double {
-        return webView.estimatedProgress
-    }
-
-    var canGoBack: Bool {
-        return webView.canGoBack
-    }
-
-    var canGoForward: Bool {
-        return webView.canGoForward
-    }
-
-    private var progressObserver: NSKeyValueObservation?
-    private var titleObserver: NSKeyValueObservation?
-    private var urlObserver: NSKeyValueObservation?
+    private var activeDownload: WKDownload?
+    private var downloadSuggestedFilename: String = ""
 
     override init() {
         let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
+        config.websiteDataStore = WKWebsiteDataStore.default()
 
-        let userContent = WKUserContentController()
-        config.userContentController = userContent
+        let ucc = WKUserContentController()
 
-        let wv = WKWebView(frame: .zero, configuration: config)
-        self.webView = wv
+        // 注入 Blob / Data URL 导出桥接
+        let blobScript = """
+        (function() {
+            window.addEventListener('click', function(e) {
+                var el = e.target.closest('a');
+                if (el && el.href) {
+                    var href = el.href;
+                    if (href.startsWith('blob:') || href.startsWith('data:')) {
+                        var downloadName = el.getAttribute('download') || 'download_file';
+                        fetch(href).then(res => res.blob()).then(blob => {
+                            var reader = new FileReader();
+                            reader.onloadend = function() {
+                                window.webkit.messageHandlers.DownloadBridge.postMessage({
+                                    filename: downloadName,
+                                    dataUrl: reader.result
+                                });
+                            };
+                            reader.readAsDataURL(blob);
+                        }).catch(err => {});
+                    }
+                }
+            }, true);
+        })();
+        """
+        ucc.addUserScript(WKUserScript(source: blobScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+
+        config.userContentController = ucc
+
+        self.webView = WKWebView(frame: .zero, configuration: config)
         super.init()
 
-        wv.navigationDelegate = self
-        wv.uiDelegate = self
-        wv.allowsBackForwardNavigationGestures = true
-        wv.customUserAgent = UserAgentStore.shared.currentUA
+        ucc.add(self, name: "DownloadBridge")
 
-        userContent.add(self, name: "DownloadBridge")
+        self.webView.navigationDelegate = self
+        self.webView.uiDelegate = self
+        self.webView.allowsBackForwardNavigationGestures = true
+        self.webView.customUserAgent = UserAgentStore.shared.currentUA
 
-        setupObservers()
+        self.webView.addObserver(self, forKeyPath: "estimatedProgress", options: .new, context: nil)
+        self.webView.addObserver(self, forKeyPath: "title", options: .new, context: nil)
+        self.webView.addObserver(self, forKeyPath: "URL", options: .new, context: nil)
+
+        NotificationCenter.default.addObserver(self, selector: #selector(handleUAChange), name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
     }
 
-    private func setupObservers() {
-        progressObserver = webView.observe(\.estimatedProgress, options: .new) { [weak self] wv, _ in
-            guard let self = self else { return }
-            self.delegate?.tabItem(self, didUpdateProgress: wv.estimatedProgress)
-        }
-
-        titleObserver = webView.observe(\.title, options: .new) { [weak self] _, _ in
-            guard let self = self else { return }
-            self.delegate?.tabDidUpdate(self)
-        }
-
-        urlObserver = webView.observe(\.url, options: .new) { [weak self] _, _ in
-            guard let self = self else { return }
-            self.delegate?.tabDidUpdate(self)
-        }
-
-        NotificationCenter.default.addObserver(self, selector: #selector(handleUserAgentChanged), name: NSNotification.Name("UserAgentDidChangeNotification"), object: nil)
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        webView.removeObserver(self, forKeyPath: "estimatedProgress")
+        webView.removeObserver(self, forKeyPath: "title")
+        webView.removeObserver(self, forKeyPath: "URL")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
     }
 
-    @objc private func handleUserAgentChanged() {
+    @objc private func handleUAChange() {
         webView.customUserAgent = UserAgentStore.shared.currentUA
     }
 
     func load(url: URL) {
-        webView.load(URLRequest(url: url))
+        currentURL = url
+        var request = URLRequest(url: url)
+        request.cachePolicy = .useProtocolCachePolicy
+        webView.load(request)
     }
 
     func reload() {
@@ -6752,169 +6051,192 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func setAdBlockEnabled(_ enabled: Bool) {
-        // 动态注入/清除规则
+        // 动态切换拦截状态
     }
 
-    func takeSnapshot(completion: ((UIImage?) -> Void)? = nil) {
-        let config = WKSnapshotConfiguration()
-        webView.takeSnapshot(with: config) { [weak self] image, _ in
-            self?.snapshot = image
-            completion?(image)
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "DownloadBridge", let dict = message.body as? [String: Any],
+           let filename = dict["filename"] as? String,
+           let dataUrl = dict["dataUrl"] as? String {
+            handleBlobDataDownload(filename: filename, dataUrl: dataUrl)
         }
     }
 
-    // MARK: - WKNavigationDelegate
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        delegate?.tabItemDidStartLoading(self)
-        delegate?.tabDidUpdate(self)
+    private func handleBlobDataDownload(filename: String, dataUrl: String) {
+        guard let commaIndex = dataUrl.firstIndex(of: ",") else { return }
+        let base64String = String(dataUrl[dataUrl.index(after: commaIndex)...])
+        guard let data = Data(base64Encoded: base64String) else { return }
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let safeName = filename.replacingOccurrences(of: "/", with: "_")
+        let fileURL = tempDir.appendingPathComponent(safeName)
+
+        do {
+            try data.write(to: fileURL)
+            NotificationCenter.default.post(name: NSNotification.Name("PromptBlobExportNotification"), object: nil, userInfo: [
+                "fileURL": fileURL,
+                "filename": safeName,
+                "fileSize": data.count
+            ])
+        } catch {}
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        delegate?.tabItemDidFinishLoading(self)
-        delegate?.tabDidUpdate(self)
-        takeSnapshot()
-        if let host = webView.url?.host {
-            FaviconLoader.shared.preloadFavicon(for: host)
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        if keyPath == "estimatedProgress" {
+            delegate?.tabItem(self, didUpdateProgress: webView.estimatedProgress)
+        } else if keyPath == "title" {
+            self.title = webView.title ?? ""
+            delegate?.tabItemDidUpdateInfo(self)
+        } else if keyPath == "URL" {
+            self.currentURL = webView.url
+            delegate?.tabItemDidUpdateInfo(self)
         }
     }
 
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        delegate?.tabItem(self, didFailLoadingWithError: error)
-        delegate?.tabDidFail(self, error: error)
-    }
-
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        delegate?.tabItem(self, didFailLoadingWithError: error)
-        delegate?.tabDidFail(self, error: error)
-    }
-
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        delegate?.tabProcessTerminated(self)
-    }
-
-    // 网页跳转与拦截
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+    // MARK: - 解决页面跳转后又跳回来的问题
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil {
+            // 在当前 WebView 中完整继承并加载原始请求，保留 POST 表单、Referer、Cookies
             webView.load(navigationAction.request)
-            decisionHandler(.cancel)
+        }
+        return nil
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.allow)
             return
         }
 
-        if let url = navigationAction.request.url {
-            let scheme = url.scheme?.lowercased() ?? ""
-            if scheme != "http" && scheme != "https" && scheme != "about" {
-                UIApplication.shared.open(url, options: [:], completionHandler: nil)
-                decisionHandler(.cancel)
-                return
-            }
+        let ext = url.pathExtension.lowercased()
+        let downloadExts: Set<String> = [
+            "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "dmg", "pkg", "deb", "torrent",
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"
+        ]
 
-            let path = url.pathExtension.lowercased()
-            let downloadExtensions: Set<String> = [
-                "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "dmg", "pkg", "deb", "torrent", "pdf"
-            ]
-            if downloadExtensions.contains(path) {
-                promptDownload(url: url, filename: url.lastPathComponent)
-                decisionHandler(.cancel)
-                return
-            }
+        if downloadExts.contains(ext) {
+            decisionHandler(.cancel)
+            NotificationCenter.default.post(name: NSNotification.Name("PromptDownloadConfirmationNotification"), object: nil, userInfo: [
+                "url": url,
+                "filename": url.lastPathComponent
+            ])
+            return
         }
 
         decisionHandler(.allow)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        if navigationResponse.canShowMIMEType {
-            decisionHandler(.allow)
-        } else {
-            if #available(iOS 15.0, *) {
-                decisionHandler(.download)
-            } else {
-                if let url = navigationResponse.response.url {
-                    promptDownload(url: url, filename: navigationResponse.response.suggestedFilename ?? url.lastPathComponent)
+        if let httpResponse = navigationResponse.response as? HTTPURLResponse {
+            let disposition = httpResponse.allHeaderFields["Content-Disposition"] as? String ?? ""
+            if disposition.lowercased().contains("attachment") {
+                if #available(iOS 15.0, *) {
+                    decisionHandler(.download)
+                    return
                 }
-                decisionHandler(.cancel)
             }
         }
-    }
-
-    @available(iOS 15.0, *)
-    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        download.delegate = self
+        decisionHandler(.allow)
     }
 
     // MARK: - WKDownloadDelegate
     @available(iOS 15.0, *)
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        self.activeDownload = download
+        download.delegate = self
+        NotificationCenter.default.post(name: NSNotification.Name("DownloadStartedNotification"), object: nil)
+    }
+
+    @available(iOS 15.0, *)
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        self.activeDownload = download
+        download.delegate = self
+        NotificationCenter.default.post(name: NSNotification.Name("DownloadStartedNotification"), object: nil)
+    }
+
+    @available(iOS 15.0, *)
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        self.downloadSuggestedFilename = suggestedFilename
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let downloadsDir = docs.appendingPathComponent("Downloads", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: downloadsDir.path) {
-            try? FileManager.default.createDirectory(at: downloadsDir, withIntermediateDirectories: true)
+        let dlDir = docs.appendingPathComponent("Downloads", isDirectory: true)
+
+        if !FileManager.default.fileExists(atPath: dlDir.path) {
+            try? FileManager.default.createDirectory(at: dlDir, withIntermediateDirectories: true)
         }
 
-        var destination = downloadsDir.appendingPathComponent(suggestedFilename)
+        var targetURL = dlDir.appendingPathComponent(suggestedFilename)
         var counter = 1
-        let name = (suggestedFilename as NSString).deletingPathExtension
+        let baseName = (suggestedFilename as NSString).deletingPathExtension
         let ext = (suggestedFilename as NSString).pathExtension
 
-        while FileManager.default.fileExists(atPath: destination.path) {
-            let newName = ext.isEmpty ? "\(name)_\(counter)" : "\(name)_\(counter).\(ext)"
-            destination = downloadsDir.appendingPathComponent(newName)
+        while FileManager.default.fileExists(atPath: targetURL.path) {
+            let newName = ext.isEmpty ? "\(baseName)_\(counter)" : "\(baseName)_\(counter).\(ext)"
+            targetURL = dlDir.appendingPathComponent(newName)
             counter += 1
         }
 
-        NotificationCenter.default.post(name: NSNotification.Name("DownloadStartedNotification"), object: nil)
-        completionHandler(destination)
+        completionHandler(targetURL)
     }
 
     @available(iOS 15.0, *)
     func downloadDidFinish(_ download: WKDownload) {
-        NotificationCenter.default.post(name: NSNotification.Name("DownloadFinishedNotification"), object: nil)
+        self.activeDownload = nil
+        NotificationCenter.default.post(name: NSNotification.Name("DownloadFinishedNotification"), object: nil, userInfo: [
+            "filename": self.downloadSuggestedFilename
+        ])
     }
 
     @available(iOS 15.0, *)
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        // 下载失败
-    }
-
-    // MARK: - 手动下载触发
-    private func promptDownload(url: URL, filename: String) {
-        NotificationCenter.default.post(
-            name: NSNotification.Name("PromptDownloadConfirmationNotification"),
-            object: nil,
-            userInfo: ["url": url, "filename": filename]
-        )
+        self.activeDownload = nil
     }
 
     func startRealDownload(url: URL, filename: String) {
-        let task = URLSession.shared.downloadTask(with: url) { tempURL, _, _ in
-            guard let tempURL = tempURL else { return }
-            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let downloadsDir = docs.appendingPathComponent("Downloads", isDirectory: true)
-            if !FileManager.default.fileExists(atPath: downloadsDir.path) {
-                try? FileManager.default.createDirectory(at: downloadsDir, withIntermediateDirectories: true)
-            }
-
-            let destination = downloadsDir.appendingPathComponent(filename)
-            try? FileManager.default.removeItem(at: destination)
-            try? FileManager.default.moveItem(at: tempURL, to: destination)
-
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: NSNotification.Name("DownloadFinishedNotification"), object: nil)
-            }
-        }
-        NotificationCenter.default.post(name: NSNotification.Name("DownloadStartedNotification"), object: nil)
-        task.resume()
-    }
-
-    // MARK: - WKScriptMessageHandler
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "DownloadBridge", let body = message.body as? [String: Any] {
-            if let urlStr = body["url"] as? String, let url = URL(string: urlStr) {
-                let filename = body["filename"] as? String ?? url.lastPathComponent
-                promptDownload(url: url, filename: filename)
-            }
+        if #available(iOS 15.0, *) {
+            var req = URLRequest(url: url)
+            req.cachePolicy = .useProtocolCachePolicy
+            self.downloadSuggestedFilename = filename
+            let dl = webView.startDownload(using: req)
+            dl.delegate = self
+            self.activeDownload = dl
+            NotificationCenter.default.post(name: NSNotification.Name("DownloadStartedNotification"), object: nil)
         }
     }
+
+    // MARK: - WKNavigationDelegate
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        isLoading = true
+        delegate?.tabItemDidStartLoading(self)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        isLoading = false
+        currentURL = webView.url
+        title = webView.title ?? ""
+        delegate?.tabItemDidFinishLoading(self)
+
+        if let host = webView.url?.host {
+            FaviconLoader.shared.preloadFavicon(for: host)
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        isLoading = false
+        delegate?.tabItem(self, didFailLoadingWithError: error)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        isLoading = false
+        delegate?.tabItem(self, didFailLoadingWithError: error)
+    }
+}
+
+protocol TabItemDelegate: AnyObject {
+    func tabItemDidStartLoading(_ item: TabItem)
+    func tabItem(_ item: TabItem, didUpdateProgress progress: Double)
+    func tabItemDidFinishLoading(_ item: TabItem)
+    func tabItem(_ item: TabItem, didFailLoadingWithError error: Error)
+    func tabItemDidUpdateInfo(_ item: TabItem)
 }
 ```
 
@@ -7359,11 +6681,11 @@ import UIKit
 import WebKit
 
 // MARK: - 主域名聚合数据模型
-public struct PrimaryDomainGroup {
-    public let rootDomain: String
-    public var records: [WKWebsiteDataRecord]
+struct PrimaryDomainGroup {
+    let rootDomain: String
+    var records: [WKWebsiteDataRecord]
 
-    public var allDataTypes: Set<String> {
+    var allDataTypes: Set<String> {
         var types = Set<String>()
         for r in records {
             types.formUnion(r.dataTypes)
@@ -7371,26 +6693,22 @@ public struct PrimaryDomainGroup {
         return types
     }
 
-    public var hasAnyLocked: Bool {
-        return records.contains { CookieLockStore.shared.isLocked(domain: $0.displayName) }
-    }
-
-    public var isFullyLocked: Bool {
+    var isFullyLocked: Bool {
         guard !records.isEmpty else { return false }
-        return records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+        return records.allSatisfy { CookieLockStore.shared.isLocked(host: $0.displayName) }
     }
 
-    public var lockedCount: Int {
-        return records.filter { CookieLockStore.shared.isLocked(domain: $0.displayName) }.count
+    var hasAnyLocked: Bool {
+        return records.contains { CookieLockStore.shared.isLocked(host: $0.displayName) }
     }
 
-    public var hasCookies: Bool {
+    var hasCookies: Bool {
         return records.contains { $0.dataTypes.contains(WKWebsiteDataTypeCookies) }
     }
 }
 
-// MARK: - 网站数据管理主页面（仅展示主域名）
-final class WebsiteDataViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
+// MARK: - 网站数据管理主页面
+final class WebsiteDataManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let searchController = UISearchController(searchResultsController: nil)
@@ -7406,7 +6724,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
 
     private let headerDescriptionLabel: UILabel = {
         let label = UILabel()
-        label.text = "数据可能会减少跟踪，但也可能允许网站退出登录。点击主域名可展开查看其名下的所有子域名与关联域名，并可单独对其锁定。"
+        label.text = "数据可能会减少跟踪，但也可能允许网站退出登录。点击主域名可展开查看其名下的所有关联域名，并可单独对其锁定。"
         label.font = .systemFont(ofSize: 13, weight: .regular)
         label.textColor = .secondaryLabel
         label.numberOfLines = 0
@@ -7546,7 +6864,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
             return UITableViewCell()
         }
         let group = isSearching ? filteredGroups[indexPath.row] : domainGroups[indexPath.row]
-        cell.configureForGroup(group: group)
+        cell.configureForGroup(group: group, showDisclosure: true)
         return cell
     }
 
@@ -7570,7 +6888,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
 
         let deleteAction = UIContextualAction(style: .destructive, title: "移除未锁定") { [weak self] (_, _, completion) in
             guard let self = self else { return }
-            let unlocked = group.records.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
+            let unlocked = group.records.filter { !CookieLockStore.shared.isLocked(host: $0.displayName) }
             if unlocked.isEmpty {
                 let alert = UIAlertController(title: "域名已被锁定", message: "该主域名下的所有子域名均处于锁定保护状态，无法直接移除。", preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "确定", style: .default))
@@ -7607,7 +6925,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
     }
 
     private func removeUnlockedData() {
-        let unlocked = allRawRecords.filter { !CookieLockStore.shared.isLocked(domain: $0.displayName) }
+        let unlocked = allRawRecords.filter { !CookieLockStore.shared.isLocked(host: $0.displayName) }
         guard !unlocked.isEmpty else { return }
 
         activityIndicator.startAnimating()
@@ -7620,7 +6938,7 @@ final class WebsiteDataViewController: UIViewController, UITableViewDataSource, 
     }
 }
 
-// MARK: - 关联域名管理二级页面（逐个单项锁定）
+// MARK: - 关联域名管理二级页面
 final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
     private let rootDomain: String
@@ -7652,7 +6970,6 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
     private func setupUI() {
         title = rootDomain
         view.backgroundColor = .systemGroupedBackground
-        navigationItem.rightBarButtonItem = nil
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
@@ -7663,7 +6980,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
 
         let headerView = UIView()
         let infoLabel = UILabel()
-        infoLabel.text = "主站点 [ \(rootDomain) ] 下共发现 \(records.count) 个域名。每个域名均须单独点击进行锁定或解锁，已锁定的域名在清理缓存时受到保护。"
+        infoLabel.text = "主站点 [ \(rootDomain) ] 下共包含 \(records.count) 个域名。每个域名均单独点击进行锁定或解锁，已锁定的域名在清理缓存时受到保护。"
         infoLabel.font = .systemFont(ofSize: 13, weight: .regular)
         infoLabel.textColor = .secondaryLabel
         infoLabel.numberOfLines = 0
@@ -7695,7 +7012,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
             return UITableViewCell()
         }
         let record = records[indexPath.row]
-        let isLocked = CookieLockStore.shared.isLocked(domain: record.displayName)
+        let isLocked = CookieLockStore.shared.isLocked(host: record.displayName)
         cell.configureForSingleRecord(record: record, isLocked: isLocked)
         return cell
     }
@@ -7703,7 +7020,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let record = records[indexPath.row]
-        _ = CookieLockStore.shared.toggleLock(domain: record.displayName)
+        _ = CookieLockStore.shared.toggleLock(host: record.displayName)
 
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         tableView.reloadRows(at: [indexPath], with: .automatic)
@@ -7711,10 +7028,10 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         let record = records[indexPath.row]
-        let isLocked = CookieLockStore.shared.isLocked(domain: record.displayName)
+        let isLocked = CookieLockStore.shared.isLocked(host: record.displayName)
 
         let lockAction = UIContextualAction(style: .normal, title: isLocked ? "解锁" : "锁定") { [weak self] (_, _, completion) in
-            _ = CookieLockStore.shared.toggleLock(domain: record.displayName)
+            _ = CookieLockStore.shared.toggleLock(host: record.displayName)
             self?.tableView.reloadRows(at: [indexPath], with: .automatic)
             completion(true)
         }
@@ -7722,7 +7039,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
 
         let deleteAction = UIContextualAction(style: .destructive, title: "移除") { [weak self] (_, _, completion) in
             guard let self = self else { return }
-            if CookieLockStore.shared.isLocked(domain: record.displayName) {
+            if CookieLockStore.shared.isLocked(host: record.displayName) {
                 let alert = UIAlertController(title: "域名已被锁定", message: "若要移除该域名的数据，请先解除锁定。", preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "确定", style: .default))
                 self.present(alert, animated: true)
@@ -7828,7 +7145,7 @@ final class WebsiteDataUnifiedCell: UITableViewCell {
         ])
     }
 
-    func configureForGroup(group: PrimaryDomainGroup) {
+    func configureForGroup(group: PrimaryDomainGroup, showDisclosure: Bool) {
         domainLabel.text = group.rootDomain
         dataTypesLabel.text = Self.formatDataTypes(group.allDataTypes)
 
@@ -7845,7 +7162,7 @@ final class WebsiteDataUnifiedCell: UITableViewCell {
             domainLabel.textColor = .label
         }
 
-        accessoryType = .disclosureIndicator
+        accessoryType = showDisclosure ? .disclosureIndicator : .none
         rightBadgeLabel.text = "\(group.records.count) 个域名"
         rightBadgeLabel.isHidden = false
 
@@ -7877,50 +7194,29 @@ final class WebsiteDataUnifiedCell: UITableViewCell {
     }
 
     private func loadFavicon(for host: String) {
-        let clean = host.lowercased()
-        guard let url = URL(string: "https://www.google.com/s2/favicons?domain=\(clean)&sz=64") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let self = self, let data = data, let img = UIImage(data: data) else { return }
-            DispatchQueue.main.async {
-                self.faviconImageView.image = img
-            }
-        }.resume()
+        FaviconLoader.shared.loadFavicon(for: host) { [weak self] img in
+            self?.faviconImageView.image = img ?? UIImage(systemName: "globe")
+        }
     }
 
     static func formatDataTypes(_ types: Set<String>) -> String {
         var items: [String] = []
-        if types.contains(WKWebsiteDataTypeCookies) {
-            items.append("Cookies")
-        }
-        if types.contains(WKWebsiteDataTypeDiskCache) {
-            items.append("磁盘缓存")
-        }
-        if types.contains(WKWebsiteDataTypeMemoryCache) {
-            items.append("内存缓存")
-        }
-        if types.contains(WKWebsiteDataTypeIndexedDBDatabases) {
-            items.append("索引数据库")
-        }
-        if types.contains(WKWebsiteDataTypeLocalStorage) {
-            items.append("本地存储")
-        }
-        if types.contains(WKWebsiteDataTypeSessionStorage) {
-            items.append("会话存储")
-        }
-        if types.contains(WKWebsiteDataTypeWebSQLDatabases) {
-            items.append("WebSQL")
-        }
-        if items.isEmpty {
-            return "本地网站数据"
-        }
+        if types.contains(WKWebsiteDataTypeCookies) { items.append("Cookies") }
+        if types.contains(WKWebsiteDataTypeDiskCache) { items.append("磁盘缓存") }
+        if types.contains(WKWebsiteDataTypeMemoryCache) { items.append("内存缓存") }
+        if types.contains(WKWebsiteDataTypeIndexedDBDatabases) { items.append("索引数据库") }
+        if types.contains(WKWebsiteDataTypeLocalStorage) { items.append("本地存储") }
+        if types.contains(WKWebsiteDataTypeSessionStorage) { items.append("会话存储") }
+        if types.contains(WKWebsiteDataTypeWebSQLDatabases) { items.append("WebSQL") }
+        if items.isEmpty { return "本地网站数据" }
         return items.joined(separator: ", ")
     }
 }
 
 // MARK: - 关联域名拓扑识别引擎
-public enum DomainRelationEngine {
+enum DomainRelationEngine {
 
-    public static func findRelatedRecords(for rootDomain: String, in records: [WKWebsiteDataRecord]) -> [WKWebsiteDataRecord] {
+    static func findRelatedRecords(for rootDomain: String, in records: [WKWebsiteDataRecord]) -> [WKWebsiteDataRecord] {
         var matched: [WKWebsiteDataRecord] = []
         for record in records {
             let host = record.displayName
@@ -7933,8 +7229,8 @@ public enum DomainRelationEngine {
         return matched.sorted { (r1, r2) -> Bool in
             if r1.displayName == rootDomain { return true }
             if r2.displayName == rootDomain { return false }
-            let l1 = CookieLockStore.shared.isLocked(domain: r1.displayName)
-            let l2 = CookieLockStore.shared.isLocked(domain: r2.displayName)
+            let l1 = CookieLockStore.shared.isLocked(host: r1.displayName)
+            let l2 = CookieLockStore.shared.isLocked(host: r2.displayName)
             if l1 != l2 { return l1 && !l2 }
             let c1 = r1.dataTypes.contains(WKWebsiteDataTypeCookies)
             let c2 = r2.dataTypes.contains(WKWebsiteDataTypeCookies)
@@ -7943,7 +7239,7 @@ public enum DomainRelationEngine {
         }
     }
 
-    public static func extractRootDomain(from host: String) -> String {
+    static func extractRootDomain(from host: String) -> String {
         let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let parts = clean.split(separator: ".")
         guard parts.count >= 2 else { return clean }
