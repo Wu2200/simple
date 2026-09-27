@@ -1,24 +1,55 @@
 import UIKit
 import WebKit
 
-// MARK: - 广告拦截规则模型
-struct AdBlockRuleItem: Codable {
-    let id: String
-    var domain: String
-    var isEnabled: Bool
+// MARK: - 广告拦截规则引擎
+final class AdBlocker {
+    static let shared = AdBlocker()
 
-    init(id: String = UUID().uuidString, domain: String, isEnabled: Bool = true) {
-        self.id = id
-        self.domain = domain
-        self.isEnabled = isEnabled
+    private let rulesKey = "AdBlockCustomRulesList_V1"
+    private var rules: [String] = []
+
+    init() {
+        loadRules()
+    }
+
+    func loadRules() {
+        rules = UserDefaults.standard.stringArray(forKey: rulesKey) ?? [
+            "*googleads*",
+            "*doubleclick.net*",
+            "*pagead*",
+            "*adservice*",
+            "*adsystem*"
+        ]
+    }
+
+    func saveRules(_ newRules: [String]) {
+        rules = newRules
+        UserDefaults.standard.set(rules, forKey: rulesKey)
+    }
+
+    func getRules() -> [String] {
+        return rules
+    }
+
+    func addRule(_ rule: String) {
+        let clean = rule.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, !rules.contains(clean) else { return }
+        rules.append(clean)
+        saveRules(rules)
+    }
+
+    func deleteRule(at index: Int) {
+        guard index >= 0, index < rules.count else { return }
+        rules.remove(at: index)
+        saveRules(rules)
     }
 }
 
-// MARK: - 广告拦截管理器控制器
-final class AdBlockManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+// MARK: - 广告规则管理控制器
+final class AdBlockerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private var rules: [AdBlockRuleItem] = []
+    private var rules: [String] = []
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -26,11 +57,12 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
         view.backgroundColor = .systemGroupedBackground
 
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(handleAddRule))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.rowHeight = 52
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "RuleCell")
         view.addSubview(tableView)
 
         NSLayoutConstraint.activate([
@@ -40,29 +72,27 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        loadDefaultRules()
+        loadRules()
     }
 
-    private func loadDefaultRules() {
-        rules = [
-            AdBlockRuleItem(domain: "googleads.g.doubleclick.net"),
-            AdBlockRuleItem(domain: "pagead2.googlesyndication.com"),
-            AdBlockRuleItem(domain: "adservice.google.com")
-        ]
+    private func loadRules() {
+        rules = AdBlocker.shared.getRules()
         tableView.reloadData()
     }
 
+    @objc private func handleDone() {
+        dismiss(animated: true)
+    }
+
     @objc private func handleAddRule() {
-        let alert = UIAlertController(title: "添加过滤域名", message: nil, preferredStyle: .alert)
+        let alert = UIAlertController(title: "添加拦截规则", message: "支持域名或通配符（如 *adservice*）", preferredStyle: .alert)
         alert.addTextField { tf in
-            tf.placeholder = "例如：ad.example.com"
-            tf.autocorrectionType = .no
-            tf.autocapitalizationType = .none
+            tf.placeholder = "规则表达式"
         }
         alert.addAction(UIAlertAction(title: "添加", style: .default, handler: { [weak self] _ in
-            guard let text = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
-            self?.rules.append(AdBlockRuleItem(domain: text))
-            self?.tableView.reloadData()
+            guard let text = alert.textFields?.first?.text, !text.isEmpty else { return }
+            AdBlocker.shared.addRule(text)
+            self?.loadRules()
         }))
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         present(alert, animated: true)
@@ -73,37 +103,21 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .default, reuseIdentifier: "AdRuleCell")
-        cell.backgroundColor = .secondarySystemGroupedBackground
-
-        let rule = rules[indexPath.row]
-        cell.textLabel?.text = rule.domain
+        let cell = tableView.dequeueReusableCell(withIdentifier: "RuleCell", for: indexPath)
+        cell.textLabel?.text = rules[indexPath.row]
         cell.textLabel?.font = .systemFont(ofSize: 15, weight: .regular)
-
-        let sw = UISwitch()
-        sw.isOn = rule.isEnabled
-        sw.tag = indexPath.row
-        sw.addTarget(self, action: #selector(handleSwitch(_:)), for: .valueChanged)
-        cell.accessoryView = sw
-
+        cell.imageView?.image = UIImage(systemName: "shield.slash")
+        cell.imageView?.tintColor = UIColor(red: 0.28, green: 0.28, blue: 0.32, alpha: 1.0)
         return cell
-    }
-
-    @objc private func handleSwitch(_ sender: UISwitch) {
-        let index = sender.tag
-        guard index < rules.count else { return }
-        rules[index].isEnabled = sender.isOn
     }
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] (_, _, completion) in
+            AdBlocker.shared.deleteRule(at: indexPath.row)
             self?.rules.remove(at: indexPath.row)
-            self?.tableView.deleteRows(at: [indexPath], with: .fade)
+            tableView.deleteRows(at: [indexPath], with: .fade)
             completion(true)
         }
         return UISwipeActionsConfiguration(actions: [delete])
     }
 }
-
-// 兼容外部别名
-typealias AdBlockerViewController = AdBlockManagerViewController
