@@ -5609,7 +5609,7 @@ final class GridItemButton: TouchButton {
 
             label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 5),
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            label.trailingAnchor.constraint(equalTo: distribution == .none ? leadingAnchor : trailingAnchor, constant: -2),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
             label.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -2)
         ])
     }
