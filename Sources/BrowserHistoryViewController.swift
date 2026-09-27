@@ -252,7 +252,7 @@ final class BrowserHistoryViewController: UITableViewController, UISearchResults
     }
 
     private func importAlookBookmarks() {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.html, .plainText])
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.html, .plainText], asCopy: true)
         picker.delegate = self
         picker.allowsMultipleSelection = false
         present(picker, animated: true)
