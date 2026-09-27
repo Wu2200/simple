@@ -63,38 +63,21 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         self.pageControl = pc
         view.addSubview(pc)
 
-        let collapseButton = TouchButton()
-        collapseButton.translatesAutoresizingMaskIntoConstraints = false
-        collapseButton.tintColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.65, alpha: 1.0) : UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
-        }
-        collapseButton.setImage(
-            UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)),
-            for: .normal
-        )
-        collapseButton.hitTestInsets = UIEdgeInsets(top: -10, left: -40, bottom: -10, right: -40)
-        collapseButton.addTarget(self, action: #selector(handleDismiss), for: .touchUpInside)
-        view.addSubview(collapseButton)
-
         NSLayoutConstraint.activate([
-            grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+            grabber.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
             grabber.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             grabber.widthAnchor.constraint(equalToConstant: 36),
             grabber.heightAnchor.constraint(equalToConstant: 5),
 
-            scrollView.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 18),
+            scrollView.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 28),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.heightAnchor.constraint(equalToConstant: 168),
 
-            pc.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: 4),
+            pc.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: 8),
             pc.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             pc.heightAnchor.constraint(equalToConstant: (totalPages > 1 ? 16 : 0)),
-
-            collapseButton.topAnchor.constraint(equalTo: pc.bottomAnchor, constant: 2),
-            collapseButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            collapseButton.heightAnchor.constraint(equalToConstant: 32),
-            collapseButton.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -2)
+            pc.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -6)
         ])
 
         var previousPageAnchor: NSLayoutXAxisAnchor = scrollView.contentLayoutGuide.leadingAnchor
