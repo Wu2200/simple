@@ -112,6 +112,9 @@ final class BookmarkStore {
         items.removeAll { $0.urlString == urlString }
         items.insert(BookmarkItem(id: UUID().uuidString, title: resolvedTitle, urlString: urlString, createdAt: Date()), at: 0)
         saveBookmarks(items)
+        if let url = URL(string: urlString), let host = url.host {
+            FaviconLoader.shared.preloadFavicon(for: host)
+        }
     }
 
     func deleteBookmark(id: String) {
@@ -530,6 +533,10 @@ final class BrowserHistoryStore {
             return
         }
 
+        if let host = url.host {
+            FaviconLoader.shared.preloadFavicon(for: host)
+        }
+
         var items = loadHistory()
         let urlString = url.absoluteString
         let resolvedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -807,12 +814,68 @@ final class WebsiteCleaner {
 
 final class FaviconLoader {
     static let shared = FaviconLoader()
-    private var cache = NSCache<NSString, UIImage>()
+    private let cache = NSCache<NSString, UIImage>()
+    private let diskCacheURL: URL = {
+        let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
+        let dir = paths[0].appendingPathComponent("FaviconDiskCache", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }()
+
     private init() {}
+
+    private func diskPath(for cleanDomain: String) -> URL {
+        let safeName = cleanDomain.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        return diskCacheURL.appendingPathComponent("\(safeName).png")
+    }
+
+    func cachedFavicon(for domain: String) -> UIImage? {
+        let cleanDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanDomain.isEmpty else { return nil }
+
+        if let cached = cache.object(forKey: cleanDomain as NSString) {
+            return cached
+        }
+
+        let fileURL = diskPath(for: cleanDomain)
+        if let data = try? Data(contentsOf: fileURL), let image = UIImage(data: data) {
+            cache.setObject(image, forKey: cleanDomain as NSString)
+            return image
+        }
+
+        return nil
+    }
+
+    func preloadFavicon(for domain: String) {
+        let cleanDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanDomain.isEmpty else { return }
+
+        if cachedFavicon(for: cleanDomain) != nil {
+            return
+        }
+
+        guard let url = URL(string: "https://www.google.com/s2/favicons?sz=64&domain=\(cleanDomain)") else {
+            return
+        }
+
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let self = self, let data = data, let image = UIImage(data: data) else { return }
+            self.cache.setObject(image, forKey: cleanDomain as NSString)
+            let fileURL = self.diskPath(for: cleanDomain)
+            try? data.write(to: fileURL)
+        }.resume()
+    }
 
     func loadFavicon(for domain: String, completion: @escaping (UIImage?) -> Void) {
         let cleanDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let cached = cache.object(forKey: cleanDomain as NSString) {
+        guard !cleanDomain.isEmpty else {
+            completion(nil)
+            return
+        }
+
+        if let cached = cachedFavicon(for: cleanDomain) {
             completion(cached)
             return
         }
@@ -823,11 +886,13 @@ final class FaviconLoader {
         }
 
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let data = data, let image = UIImage(data: data) else {
+            guard let self = self, let data = data, let image = UIImage(data: data) else {
                 DispatchQueue.main.async { completion(nil) }
                 return
             }
-            self?.cache.setObject(image, forKey: cleanDomain as NSString)
+            self.cache.setObject(image, forKey: cleanDomain as NSString)
+            let fileURL = self.diskPath(for: cleanDomain)
+            try? data.write(to: fileURL)
             DispatchQueue.main.async {
                 completion(image)
             }
