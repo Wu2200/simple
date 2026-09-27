@@ -842,8 +842,7 @@ public struct CustomBottomSheetItem {
     }
 
     public init(
-        iconName: String? = nil,
-        customImage: UIImage? = nil,
+        iconName: String?,
         title: String,
         isDestructive: Bool = false,
         hasSwitch: Bool = false,
@@ -854,6 +853,27 @@ public struct CustomBottomSheetItem {
     ) {
         self.title = title
         self.iconName = iconName
+        self.customImage = nil
+        self.isDestructive = isDestructive
+        self.hasSwitch = hasSwitch
+        self.isSwitchOn = isSwitchOn
+        self.dismissOnTap = dismissOnTap
+        self.handler = action
+        self.longPressHandler = longPressAction
+    }
+
+    public init(
+        customImage: UIImage?,
+        title: String,
+        isDestructive: Bool = false,
+        hasSwitch: Bool = false,
+        isSwitchOn: Bool? = nil,
+        dismissOnTap: Bool = true,
+        action: (() -> Void)? = nil,
+        longPressAction: (() -> Void)? = nil
+    ) {
+        self.title = title
+        self.iconName = nil
         self.customImage = customImage
         self.isDestructive = isDestructive
         self.hasSwitch = hasSwitch
@@ -880,7 +900,7 @@ public struct UserScript: Codable, Equatable {
         self.isEnabled = isEnabled
     }
 
-    public init(id: String = UUID().uuidString, name: String, matchPattern: String = "*", code: String = "", isEnabled: Bool = true) {
+    public init(id: String, name: String, matchPattern: String = "*", code: String = "", isEnabled: Bool = true) {
         self.id = id
         self.name = name
         self.matchPattern = matchPattern
