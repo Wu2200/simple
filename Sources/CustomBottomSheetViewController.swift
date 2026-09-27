@@ -295,11 +295,15 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         let iconImageView = UIImageView()
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.contentMode = .scaleAspectFit
-        let iconName = item.iconName ?? "doc.plaintext"
         let iconColor: UIColor = item.isDestructive ? .systemRed : UIColor { trait in
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
         }
-        iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+        if let img = item.customImage {
+            iconImageView.image = img
+        } else {
+            let iconName = item.iconName ?? "doc.plaintext"
+            iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+        }
         iconImageView.tintColor = iconColor
 
         let label = UILabel()
@@ -411,8 +415,13 @@ final class GridItemButton: TouchButton {
         let iconImageView = UIImageView()
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.contentMode = .scaleAspectFit
-        let iconName = item.iconName ?? "circle.grid.2x2"
-        iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular))
+        if let img = item.customImage {
+            iconImageView.image = img
+        } else if let iconName = item.iconName {
+            iconImageView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular))
+        } else {
+            iconImageView.image = UIImage(systemName: "circle.grid.2x2", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular))
+        }
         iconImageView.tintColor = iconColor
         iconImageView.isUserInteractionEnabled = false
         iconContainer.addSubview(iconImageView)
@@ -495,7 +504,7 @@ final class GridItemButton: TouchButton {
 
             label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 5),
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            label.trailingAnchor.constraint(equalTo: distribution == .none ? leadingAnchor : trailingAnchor, constant: -2),
             label.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -2)
         ])
     }
