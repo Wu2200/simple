@@ -3534,11 +3534,14 @@ final class AddressCalloutMenuView: UIView {
     }
 }
 
-final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate, UIGestureRecognizerDelegate {
+final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate, UIGestureRecognizerDelegate, UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
     private var tabs: [TabItem] = []
     private var activeTabIndex = 0
     private var isFullscreen = false
     private var progressObservation: NSKeyValueObservation?
+
+    private var editingShortcutIdForCustomIcon: String?
+    private var cachedAddBookmarkIcon: UIImage?
 
     private var activeTab: TabItem {
         if tabs.indices.contains(activeTabIndex) {
@@ -3957,6 +3960,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         return img.withRenderingMode(.alwaysTemplate)
     }
 
+    private func getAddBookmarkIcon() -> UIImage {
+        if let icon = cachedAddBookmarkIcon {
+            return icon
+        }
+        let icon = makeAddBookmarkIcon()
+        cachedAddBookmarkIcon = icon
+        return icon
+    }
+
     private func configureHomeView() {
         homeScrollView.translatesAutoresizingMaskIntoConstraints = false
         homeScrollView.alwaysBounceVertical = true
@@ -4126,7 +4138,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         iconImageView.clipsToBounds = true
         iconImageView.isUserInteractionEnabled = false
 
-        if let url = URL(string: shortcut.urlString), let host = url.host {
+        if let customData = shortcut.customIconData, let customImg = UIImage(data: customData) {
+            iconImageView.image = customImg
+        } else if let url = URL(string: shortcut.urlString), let host = url.host {
             if let cached = FaviconLoader.shared.cachedFavicon(for: host) {
                 iconImageView.image = cached
             } else {
@@ -4199,9 +4213,21 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         let alert = UIAlertController(title: "管理站点", message: item.title, preferredStyle: .actionSheet)
 
-        alert.addAction(UIAlertAction(title: "编辑站点", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "编辑站点名称与网址", style: .default) { [weak self] _ in
             self?.showEditShortcutAlert(item: item)
         })
+
+        alert.addAction(UIAlertAction(title: "自定义上传图片Logo", style: .default) { [weak self] _ in
+            self?.promptChooseCustomIcon(for: item.id)
+        })
+
+        if item.customIconData != nil {
+            alert.addAction(UIAlertAction(title: "恢复默认网页Logo", style: .default) { [weak self] _ in
+                HomeShortcutStore.shared.updateShortcutIcon(id: item.id, customIconData: nil)
+                self?.reloadHomeShortcuts()
+                self?.showToastNotice("已恢复默认图标")
+            })
+        }
 
         alert.addAction(UIAlertAction(title: "删除该快捷方式", style: .destructive) { [weak self] _ in
             HomeShortcutStore.shared.deleteShortcut(id: item.id)
@@ -4211,6 +4237,43 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         present(alert, animated: true)
+    }
+
+    private func promptChooseCustomIcon(for shortcutId: String) {
+        self.editingShortcutIdForCustomIcon = shortcutId
+        let picker = UIImagePickerController()
+        picker.delegate = self
+        picker.sourceType = .photoLibrary
+        picker.allowsEditing = true
+        present(picker, animated: true)
+    }
+
+    func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+        picker.dismiss(animated: true)
+        guard let shortcutId = editingShortcutIdForCustomIcon else { return }
+        editingShortcutIdForCustomIcon = nil
+
+        let selectedImage = (info[.editedImage] as? UIImage) ?? (info[.originalImage] as? UIImage)
+        guard let image = selectedImage else { return }
+
+        let targetSize = CGSize(width: 160, height: 160)
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        let resizedImage = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+
+        guard let iconData = resizedImage.pngData() ?? resizedImage.jpegData(compressionQuality: 0.85) else {
+            return
+        }
+
+        HomeShortcutStore.shared.updateShortcutIcon(id: shortcutId, customIconData: iconData)
+        reloadHomeShortcuts()
+        showToastNotice("Logo 图标已更新")
+    }
+
+    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+        editingShortcutIdForCustomIcon = nil
+        picker.dismiss(animated: true)
     }
 
     private func showEditShortcutAlert(item: HomeShortcutItem) {
@@ -5424,7 +5487,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        if touch.view?.isDescendant(of: addressContainer) == true ||
+        if touch.view?.isDescendant(of: bottomPanel) == true ||
            touch.view?.isDescendant(of: homeSearchContainer) == true {
             return false
         }
@@ -5562,7 +5625,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc private func showSiteDomainSettings() {
-        dismissKeyboard()
+        if addressField.isFirstResponder {
+            addressField.resignFirstResponder()
+        }
         guard let host = activeTab.url?.host else { return }
 
         let settingsVC = DomainSettingsViewController(domain: host) { [weak self] in
@@ -5626,7 +5691,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc private func showPluginPanel() {
-        dismissKeyboard()
+        if addressField.isFirstResponder {
+            addressField.resignFirstResponder()
+        }
         let currentUrlStr = activeTab.url?.absoluteString ?? ""
         let currentHost = activeTab.url?.host ?? ""
         let matchingScripts = UserScriptStore.shared.loadScripts().filter {
@@ -5767,7 +5834,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc private func showPluginManager() {
-        dismissKeyboard()
+        if addressField.isFirstResponder {
+            addressField.resignFirstResponder()
+        }
         let manager = UserScriptManagerViewController()
         manager.onScriptsUpdated = { [weak self] in
             self?.activeTab.reloadUserScripts()
@@ -5778,37 +5847,39 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc private func showTabsManager() {
-        dismissKeyboard()
+        if addressField.isFirstResponder {
+            addressField.resignFirstResponder()
+        }
 
-        activeTab.updateSnapshot { [weak self] in
-            guard let self = self else {
-                return
+        let manager = TabGridViewController(
+            tabs: self.tabs,
+            activeIndex: self.activeTabIndex
+        )
+
+        manager.onSelectTab = { [weak self] index in
+            self?.switchTab(to: index)
+        }
+
+        manager.onCloseTab = { [weak self] index in
+            self?.closeTab(at: index)
+        }
+
+        manager.onClearAllTabs = { [weak self] in
+            self?.closeAllTabs()
+        }
+
+        manager.onNewTab = { [weak self] in
+            self?.createNewTab(loadURL: nil)
+        }
+
+        let navigationController = UINavigationController(rootViewController: manager)
+        navigationController.modalPresentationStyle = .pageSheet
+        self.present(navigationController, animated: true)
+
+        activeTab.updateSnapshot { [weak manager] in
+            DispatchQueue.main.async {
+                manager?.reloadGrid()
             }
-
-            let manager = TabGridViewController(
-                tabs: self.tabs,
-                activeIndex: self.activeTabIndex
-            )
-
-            manager.onSelectTab = { [weak self] index in
-                self?.switchTab(to: index)
-            }
-
-            manager.onCloseTab = { [weak self] index in
-                self?.closeTab(at: index)
-            }
-
-            manager.onClearAllTabs = { [weak self] in
-                self?.closeAllTabs()
-            }
-
-            manager.onNewTab = { [weak self] in
-                self?.createNewTab(loadURL: nil)
-            }
-
-            let navigationController = UINavigationController(rootViewController: manager)
-            navigationController.modalPresentationStyle = .pageSheet
-            self.present(navigationController, animated: true)
         }
     }
 
@@ -5848,7 +5919,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func showDownloadManager() {
-        dismissKeyboard()
+        if addressField.isFirstResponder {
+            addressField.resignFirstResponder()
+        }
         let vc = DownloadManagerViewController()
         let nav = UINavigationController(rootViewController: vc)
         nav.modalPresentationStyle = .pageSheet
@@ -5896,7 +5969,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 FaviconLoader.shared.preloadFavicon(for: host)
             }
             self.reloadHomeShortcuts()
-            self.showToastNotice("已添加到主页")
+            self.showToastNotice("已添加到主页，长按可自定义Logo")
         })
 
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -5904,7 +5977,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc private func showMoreMenu() {
-        dismissKeyboard()
+        if addressField.isFirstResponder {
+            addressField.resignFirstResponder()
+        } else if homeSearchField.isFirstResponder {
+            homeSearchField.resignFirstResponder()
+        }
 
         var items: [CustomBottomSheetItem] = []
 
@@ -5973,7 +6050,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         // 5. 添加 (添加到书签 / 添加到主页)
         items.append(CustomBottomSheetItem(
             title: "添加",
-            customImage: makeAddBookmarkIcon(),
+            customImage: getAddBookmarkIcon(),
             dismissOnTap: true,
             handler: { [weak self] in
                 self?.handleAddAction()
@@ -6061,6 +6138,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
+        // 13. 数据备份 (新增备份功能)
+        items.append(CustomBottomSheetItem(
+            title: "数据备份",
+            iconName: "externaldrive",
+            dismissOnTap: true,
+            handler: { [weak self] in
+                self?.showBackupActionSheet()
+            }
+        ))
+
         let panel = CustomBottomSheetViewController(title: "选项", items: items, layout: .grid)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
@@ -6078,8 +6165,94 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(panel, animated: true)
     }
 
+    private func showBackupActionSheet() {
+        let sheet = UIAlertController(
+            title: "浏览器数据备份与恢复",
+            message: "可将书签、主页站点(含自定义Logo)、油猴脚本及数据、广告拦截规则等打包导出，或使用备份文件覆盖恢复。",
+            preferredStyle: .actionSheet
+        )
+
+        sheet.addAction(UIAlertAction(title: "备份并导出文件", style: .default) { [weak self] _ in
+            self?.performExportBackup()
+        })
+
+        sheet.addAction(UIAlertAction(title: "从备份文件恢复 (覆盖)", style: .default) { [weak self] _ in
+            self?.presentDocumentPickerForRestore()
+        })
+
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(sheet, animated: true)
+    }
+
+    private func performExportBackup() {
+        do {
+            let fileURL = try BackupManager.shared.exportBackupFile()
+            let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+            if let popover = activityVC.popoverPresentationController {
+                popover.sourceView = view
+                popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+            present(activityVC, animated: true)
+        } catch {
+            showToastNotice("导出备份失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func presentDocumentPickerForRestore() {
+        let picker: UIDocumentPickerViewController
+        if #available(iOS 14.0, *) {
+            picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json, .data, .item], asCopy: true)
+        } else {
+            picker = UIDocumentPickerViewController(documentTypes: ["public.json", "public.item"], in: .import)
+        }
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let selectedURL = urls.first else { return }
+        let shouldAccess = selectedURL.startAccessingSecurityScopedResource()
+        defer {
+            if shouldAccess {
+                selectedURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let alert = UIAlertController(
+            title: "恢复备份确认",
+            message: "确定要从选择的备份文件恢复吗？\n当前的书签、主页站点(含Logo)、油猴脚本及规则将被该文件覆盖。",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(UIAlertAction(title: "确认覆盖恢复", style: .destructive) { [weak self] _ in
+            guard let self = self else { return }
+            do {
+                try BackupManager.shared.restore(from: selectedURL)
+                self.reloadHomeShortcuts()
+                self.activeTab.reloadUserScripts()
+                AdBlockManager.shared.applyRules(to: self.activeTab.webView)
+                self.showToastNotice("数据覆盖恢复成功！")
+            } catch {
+                let errAlert = UIAlertController(
+                    title: "恢复失败",
+                    message: "备份文件解析错误或格式无效：\(error.localizedDescription)",
+                    preferredStyle: .alert
+                )
+                errAlert.addAction(UIAlertAction(title: "确定", style: .default))
+                self.present(errAlert, animated: true)
+            }
+        })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
     private func showBrowserBookmarksAndHistory() {
-        dismissKeyboard()
+        if addressField.isFirstResponder {
+            addressField.resignFirstResponder()
+        }
 
         let historyVC = BrowserHistoryViewController()
 
