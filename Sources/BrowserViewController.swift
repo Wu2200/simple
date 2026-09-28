@@ -1197,7 +1197,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureTitleLabel.text = "无法打开网页"
 
         failureReasonLabel.translatesAutoresizingMaskIntoConstraints = false
-        failureReasonLabel.font = .systemFont(size: 13, weight: .regular)
+        failureReasonLabel.font = .systemFont(ofSize: 13, weight: .regular)
         failureReasonLabel.textColor = .secondaryLabel
         failureReasonLabel.textAlignment = .center
         failureReasonLabel.numberOfLines = 0
