@@ -174,7 +174,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var hasInjectedScriptsForCurrentPage = false
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
-    private var lastContextMenuTarget: (link: URL?, image: URL?, date: Date)?
+    private var lastContextMenuTarget: (link: URL?, imageString: String?, date: Date)?
 
     weak var delegate: TabItemDelegate?
 
@@ -283,12 +283,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             var lastContextMenuResult = null;
 
             function cleanURL(u) {
-                if (!u) return '';
-                if (u.startsWith('data:') || u.startsWith('blob:')) return u;
+                if (!u || typeof u !== 'string') return '';
+                var trimmed = u.trim();
+                if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
                 try {
-                    return new URL(u, window.location.href).href;
+                    return new URL(trimmed, window.location.href).href;
                 } catch(e) {
-                    return u;
+                    return trimmed;
                 }
             }
 
@@ -333,7 +334,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             function getElementImageSrc(el) {
                 if (!el) return '';
-                var tag = el.tagName || '';
+                var tag = (el.tagName || '').toUpperCase();
                 if (tag === 'IMG' || tag === 'AMP-IMG') {
                     var candidates = [
                         el.getAttribute('data-original'),
@@ -390,18 +391,45 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 return '';
             }
 
-            function findImageInTree(node) {
-                if (!node) return '';
-                var s = getElementImageSrc(node);
-                if (s) return s;
-                if (node.querySelector) {
-                    var childImg = node.querySelector('img, amp-img, picture, canvas');
-                    if (childImg) {
-                        var cs = getElementImageSrc(childImg);
-                        if (cs) return cs;
+            function getBestImageFromContainer(container) {
+                if (!container) return '';
+                var direct = getElementImageSrc(container);
+                if (direct) return direct;
+                if (!container.querySelectorAll) return '';
+
+                var imgs = Array.from(container.querySelectorAll('img, amp-img, picture, canvas, [style*="background-image"]'));
+                if (imgs.length === 0) return '';
+
+                var bestSrc = '';
+                var maxArea = -1;
+
+                for (var i = 0; i < imgs.length; i++) {
+                    var item = imgs[i];
+                    var src = getElementImageSrc(item);
+                    if (!src) continue;
+
+                    var w = item.offsetWidth || item.naturalWidth || item.clientWidth || 0;
+                    var h = item.offsetHeight || item.naturalHeight || item.clientHeight || 0;
+
+                    if (w > 0 && h > 0 && w <= 24 && h <= 24) {
+                        continue;
+                    }
+
+                    var area = w * h;
+                    if (area > maxArea) {
+                        maxArea = area;
+                        bestSrc = src;
                     }
                 }
-                return '';
+
+                if (!bestSrc && imgs.length > 0) {
+                    for (var j = 0; j < imgs.length; j++) {
+                        var fallbackSrc = getElementImageSrc(imgs[j]);
+                        if (fallbackSrc) return fallbackSrc;
+                    }
+                }
+
+                return bestSrc;
             }
 
             function inspect(target, x, y) {
@@ -415,7 +443,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         if (!item || item === document.body || item === document.documentElement) continue;
 
                         if (!resolvedImg) {
-                            resolvedImg = findImageInTree(item);
+                            resolvedImg = getElementImageSrc(item);
+                            if (!resolvedImg) {
+                                resolvedImg = getBestImageFromContainer(item);
+                            }
                         }
 
                         if (!resolvedLink) {
@@ -423,7 +454,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                             if (a && (a.href || a.getAttribute('href'))) {
                                 resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
                                 if (!resolvedImg) {
-                                    resolvedImg = findImageInTree(a);
+                                    resolvedImg = getBestImageFromContainer(a);
                                 }
                             }
                         }
@@ -433,7 +464,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
 
                 if (!resolvedImg && target) {
-                    resolvedImg = findImageInTree(target);
+                    resolvedImg = getElementImageSrc(target);
+                    if (!resolvedImg) {
+                        resolvedImg = getBestImageFromContainer(target);
+                    }
                 }
 
                 if (!resolvedLink && target) {
@@ -441,7 +475,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     if (curA && (curA.href || curA.getAttribute('href'))) {
                         resolvedLink = cleanURL(curA.href || curA.getAttribute('href') || '');
                         if (!resolvedImg) {
-                            resolvedImg = findImageInTree(curA);
+                            resolvedImg = getBestImageFromContainer(curA);
                         }
                     }
                 }
@@ -449,8 +483,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 if (!resolvedImg && target) {
                     var p = target.parentElement;
                     var depth = 0;
-                    while (p && depth < 5 && p !== document.body && p !== document.documentElement) {
-                        var pImg = findImageInTree(p);
+                    while (p && depth < 6 && p !== document.body && p !== document.documentElement) {
+                        var pImg = getBestImageFromContainer(p);
                         if (pImg) {
                             resolvedImg = pImg;
                             break;
@@ -461,9 +495,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
 
                 if (resolvedLink && !resolvedImg && target) {
-                    var card = target.closest ? target.closest('.g, .MjjYud, [data-ved], [data-hveid], article, li, .result, .c-container') : null;
+                    var card = target.closest ? target.closest('.g, .MjjYud, [data-ved], [data-hveid], article, li, .result, .c-container, .tF2Cxc') : null;
                     if (card) {
-                        resolvedImg = findImageInTree(card);
+                        resolvedImg = getBestImageFromContainer(card);
                     }
                 }
 
@@ -608,11 +642,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "ContextMenuTarget", let dict = message.body as? [String: Any] {
-            let linkStr = dict["link"] as? String ?? ""
-            let imgStr = dict["image"] as? String ?? ""
+            let linkStr = (dict["link"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let imgStr = (dict["image"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let linkURL = (linkStr.hasPrefix("http://") || linkStr.hasPrefix("https://")) ? URL(string: linkStr) : nil
-            let imgURL = (imgStr.hasPrefix("http://") || imgStr.hasPrefix("https://") || imgStr.hasPrefix("data:") || imgStr.hasPrefix("blob:")) ? URL(string: imgStr) : nil
-            lastContextMenuTarget = (link: linkURL, image: imgURL, date: Date())
+            let finalImgStr = !imgStr.isEmpty ? imgStr : nil
+            lastContextMenuTarget = (link: linkURL, imageString: finalImgStr, date: Date())
             return
         }
 
@@ -1097,34 +1131,36 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
 
             var detectedLink = elementLink
-            var detectedImage: URL? = nil
+            var detectedImageString: String? = nil
 
             if let dict = result as? [String: Any] {
-                let linkStr = dict["link"] as? String ?? ""
-                let imgStr = dict["image"] as? String ?? ""
+                let linkStr = (dict["link"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let imgStr = (dict["image"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
                 if detectedLink == nil, !linkStr.isEmpty {
                     detectedLink = URL(string: linkStr)
                 }
                 if !imgStr.isEmpty {
-                    detectedImage = URL(string: imgStr)
+                    detectedImageString = imgStr
                 }
             }
 
-            if detectedImage == nil, let cached = self.lastContextMenuTarget, Date().timeIntervalSince(cached.date) < 3.0 {
+            if detectedImageString == nil, let cached = self.lastContextMenuTarget, Date().timeIntervalSince(cached.date) < 3.0 {
                 if detectedLink == nil {
                     detectedLink = cached.link
                 }
-                detectedImage = cached.image
+                if let cachedImg = cached.imageString, !cachedImg.isEmpty {
+                    detectedImageString = cachedImg
+                }
             }
 
-            guard detectedLink != nil || detectedImage != nil else {
+            guard detectedLink != nil || detectedImageString != nil else {
                 completionHandler(nil)
                 return
             }
 
             let finalLink = detectedLink
-            let finalImage = detectedImage
+            let finalImageString = detectedImageString
 
             let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
                 guard let self = self else { return UIMenu(title: "", children: []) }
@@ -1144,12 +1180,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     actions.append(contentsOf: [openAction, backgroundAction, copyLinkAction])
                 }
 
-                if let image = finalImage {
+                if let imageString = finalImageString, !imageString.isEmpty {
                     let saveImageAction = UIAction(title: "保存图片", image: UIImage(systemName: "arrow.down.to.line")) { [weak self] _ in
-                        self?.saveImageToPhotos(from: image)
+                        self?.saveImageToPhotos(from: imageString)
                     }
                     let copyImageLinkAction = UIAction(title: "拷贝图片链接", image: UIImage(systemName: "link")) { [weak self] _ in
-                        UIPasteboard.general.string = image.absoluteString
+                        UIPasteboard.general.string = imageString
                         self?.delegate?.tabRequestShowToast("已拷贝图片链接")
                     }
                     actions.append(contentsOf: [saveImageAction, copyImageLinkAction])
@@ -1169,15 +1205,15 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     ) {
     }
 
-    private func saveImageToPhotos(from url: URL) {
-        let rawURLStr = url.absoluteString
+    private func saveImageToPhotos(from imageString: String) {
+        let rawURLStr = imageString.trimmingCharacters(in: .whitespacesAndNewlines)
         if rawURLStr.hasPrefix("data:") {
             if rawURLStr.contains("image/svg+xml") {
                 convertSvgDataToPngAndSave(urlString: rawURLStr)
                 return
             }
             guard let commaIndex = rawURLStr.firstIndex(of: ",") else {
-                fallbackSaveImageViaJS(url: url)
+                fallbackSaveImageViaJS(rawString: rawURLStr)
                 return
             }
             var base64 = String(rawURLStr[rawURLStr.index(after: commaIndex)...])
@@ -1185,7 +1221,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             base64 = base64.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespaces)
             guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
                   let image = UIImage(data: data) else {
-                fallbackSaveImageViaJS(url: url)
+                fallbackSaveImageViaJS(rawString: rawURLStr)
                 return
             }
             UIImageWriteToSavedPhotosAlbum(image, self, #selector(image(_:didFinishSavingWithError:contextInfo:)), nil)
@@ -1193,7 +1229,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         if rawURLStr.hasPrefix("blob:") {
-            fallbackSaveImageViaJS(url: url)
+            fallbackSaveImageViaJS(rawString: rawURLStr)
+            return
+        }
+
+        guard let url = URL(string: rawURLStr) else {
+            fallbackSaveImageViaJS(rawString: rawURLStr)
             return
         }
 
@@ -1211,7 +1252,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             } else {
                 DispatchQueue.main.async {
-                    self.fallbackSaveImageViaJS(url: url)
+                    self.fallbackSaveImageViaJS(rawString: rawURLStr)
                 }
             }
         }.resume()
@@ -1246,12 +1287,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     return
                 }
             }
-            self.fallbackSaveImageViaJS(url: URL(string: urlString) ?? self.webView.url!)
+            self.fallbackSaveImageViaJS(rawString: urlString)
         }
     }
 
-    private func fallbackSaveImageViaJS(url: URL) {
-        let escapedURL = url.absoluteString.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    private func fallbackSaveImageViaJS(rawString: String) {
+        let escapedURL = rawString.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let js = """
         (function() {
             var url = "\(escapedURL)";
