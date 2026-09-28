@@ -174,6 +174,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var hasInjectedScriptsForCurrentPage = false
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
+    private var lastContextMenuTarget: (link: URL?, image: URL?, date: Date)?
     weak var delegate: TabItemDelegate?
 
     override init() {
@@ -287,6 +288,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             }
 
+            function isRealImageSrc(s) {
+                if (!s || typeof s !== 'string') return false;
+                var trimmed = s.trim();
+                if (!trimmed) return false;
+                if (trimmed.startsWith('data:image/svg+xml')) return false;
+                if (trimmed.startsWith('data:image/') && trimmed.length < 256) return false;
+                if (trimmed.indexOf('blank.gif') !== -1 || trimmed.indexOf('blank.png') !== -1 || trimmed.indexOf('pixel.gif') !== -1 || trimmed.indexOf('spacer.gif') !== -1) return false;
+                return true;
+            }
+
             function parseSrcset(val) {
                 if (!val) return '';
                 var parts = val.split(',');
@@ -312,65 +323,56 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             function getSrc(el) {
                 if (!el) return '';
                 if (el.tagName === 'IMG') {
-                    var s = el.currentSrc || el.src;
-                    if (s && !s.startsWith('data:image/svg+xml')) return cleanURL(s);
-                    var ds = el.getAttribute('data-src') || el.getAttribute('data-original') || el.getAttribute('data-actualsrc') || el.getAttribute('data-lazy-src') || el.getAttribute('data-url') || el.getAttribute('data-srcset');
-                    if (ds) {
-                        var fromDs = parseSrcset(ds) || ds;
-                        return cleanURL(fromDs);
-                    }
-                    var ss = el.getAttribute('srcset');
-                    if (ss) {
-                        var fromSs = parseSrcset(ss);
-                        if (fromSs) return cleanURL(fromSs);
-                    }
-                    if (s) return cleanURL(s);
-                }
-                if (el.tagName === 'PICTURE') {
-                    var innerImg = el.querySelector('img');
-                    if (innerImg) {
-                        var fromImg = getSrc(innerImg);
-                        if (fromImg) return fromImg;
-                    }
-                    var source = el.querySelector('source');
-                    if (source) {
-                        var sSrc = source.getAttribute('srcset') || source.getAttribute('src');
-                        if (sSrc) {
-                            var parsed = parseSrcset(sSrc) || sSrc;
-                            return cleanURL(parsed);
+                    var candidates = [
+                        el.getAttribute('data-original'),
+                        el.getAttribute('data-src'),
+                        el.getAttribute('data-actualsrc'),
+                        el.getAttribute('data-lazy-src'),
+                        el.getAttribute('data-url'),
+                        el.getAttribute('data-orig'),
+                        el.getAttribute('data-srcset'),
+                        el.getAttribute('srcset'),
+                        el.currentSrc,
+                        el.src
+                    ];
+                    for (var i = 0; i < candidates.length; i++) {
+                        var c = candidates[i];
+                        if (c) {
+                            var parsed = parseSrcset(c) || c;
+                            if (isRealImageSrc(parsed)) return cleanURL(parsed);
                         }
                     }
                 }
-                if (el.tagName === 'VIDEO' && el.poster) {
-                    return cleanURL(el.poster);
+                if (el.tagName === 'PICTURE') {
+                    var sources = el.querySelectorAll('source');
+                    for (var s = 0; s < sources.length; s++) {
+                        var ss = sources[s].getAttribute('srcset') || sources[s].getAttribute('src');
+                        if (ss) {
+                            var p = parseSrcset(ss) || ss;
+                            if (isRealImageSrc(p)) return cleanURL(p);
+                        }
+                    }
+                    var inner = el.querySelector('img');
+                    if (inner) {
+                        var fromInner = getSrc(inner);
+                        if (isRealImageSrc(fromInner)) return fromInner;
+                    }
                 }
                 if (el.tagName === 'CANVAS') {
                     try {
                         return el.toDataURL('image/png');
                     } catch(e) { return ''; }
                 }
+                if (el.tagName === 'VIDEO' && el.poster && isRealImageSrc(el.poster)) {
+                    return cleanURL(el.poster);
+                }
                 try {
                     var bg = window.getComputedStyle(el).backgroundImage;
                     if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
                         var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
-                        if (m && m[1]) return cleanURL(m[1]);
+                        if (m && m[1] && isRealImageSrc(m[1])) return cleanURL(m[1]);
                     }
                 } catch(e) {}
-                return '';
-            }
-
-            function findImage(el) {
-                if (!el) return '';
-                var d = getSrc(el);
-                if (d) return cleanURL(d);
-                if (el.querySelector) {
-                    var i = el.querySelector('img');
-                    var is = getSrc(i);
-                    if (is) return cleanURL(is);
-                    var c = el.querySelector('canvas');
-                    var cs = getSrc(c);
-                    if (cs) return cs;
-                }
                 return '';
             }
 
@@ -378,35 +380,38 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 var resolvedImg = '';
                 var resolvedLink = '';
 
-                if (target) {
-                    resolvedImg = findImage(target);
-                    var cur = target;
-                    var depth = 0;
-                    while (cur && depth < 8 && cur !== document.body && cur !== document.documentElement) {
-                        if (!resolvedLink && cur.tagName === 'A') {
-                            resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
-                        }
-                        if (!resolvedImg) {
-                            resolvedImg = findImage(cur);
-                        }
-                        cur = cur.parentElement;
-                        depth++;
-                    }
-                }
-
-                if ((!resolvedImg || !resolvedLink) && x >= 0 && y >= 0 && document.elementsFromPoint) {
+                if (x >= 0 && y >= 0 && document.elementsFromPoint) {
                     var els = document.elementsFromPoint(x, y) || [];
                     for (var j = 0; j < els.length; j++) {
                         var item = els[j];
                         if (!item || item === document.body || item === document.documentElement) continue;
-                        if (!resolvedLink) {
-                            var a = item.closest ? item.closest('a') : null;
-                            if (a) resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
-                        }
                         if (!resolvedImg) {
-                            resolvedImg = findImage(item);
+                            resolvedImg = getSrc(item);
+                        }
+                        if (!resolvedLink) {
+                            var a = item.tagName === 'A' ? item : (item.closest ? item.closest('a') : null);
+                            if (a && (a.href || a.getAttribute('href'))) {
+                                resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
+                            }
                         }
                         if (resolvedImg && resolvedLink) break;
+                    }
+                }
+
+                if (!resolvedImg && target) {
+                    resolvedImg = getSrc(target);
+                }
+
+                if (!resolvedLink && target) {
+                    var cur = target;
+                    var depth = 0;
+                    while (cur && depth < 6 && cur !== document.body && cur !== document.documentElement) {
+                        if (cur.tagName === 'A' && (cur.href || cur.getAttribute('href'))) {
+                            resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
+                            break;
+                        }
+                        cur = cur.parentElement;
+                        depth++;
                     }
                 }
 
@@ -416,82 +421,24 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 };
             }
 
-            var activeTouch = null;
-            var holdTimer = null;
-            var holdDelay = 420;
-            var moveTolerance = 12;
-
-            function cancelHold() {
-                if (holdTimer !== null) {
-                    clearTimeout(holdTimer);
-                    holdTimer = null;
-                }
-                activeTouch = null;
-            }
-
-            function disableTargetCallout(target) {
-                if (!target || !target.style) return;
-                target.style.setProperty('-webkit-touch-callout', 'none', 'important');
-            }
-
             function onTouchStart(e) {
-                if (!e.touches || e.touches.length !== 1) {
-                    cancelHold();
-                    return;
-                }
-
-                var touch = e.touches[0];
-                var result = inspect(e.target, touch.clientX, touch.clientY);
-                if (!result.link && !result.image) {
-                    cancelHold();
-                    return;
-                }
-
-                cancelHold();
-                disableTargetCallout(e.target);
-                activeTouch = {
-                    x: touch.clientX,
-                    y: touch.clientY,
-                    link: result.link,
-                    image: result.image
-                };
-
-                holdTimer = setTimeout(function() {
-                    if (!activeTouch) return;
-                    var target = activeTouch;
-                    activeTouch = null;
-                    holdTimer = null;
-                    try {
-                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ContextMenuTarget) {
-                            window.webkit.messageHandlers.ContextMenuTarget.postMessage({
-                                link: target.link,
-                                image: target.image,
-                                x: target.x,
-                                y: target.y
-                            });
-                        }
-                    } catch(err) {}
-                }, holdDelay);
-            }
-
-            function onTouchMove(e) {
-                if (!activeTouch || !e.touches || e.touches.length !== 1) {
-                    cancelHold();
-                    return;
-                }
-                var touch = e.touches[0];
-                var dx = touch.clientX - activeTouch.x;
-                var dy = touch.clientY - activeTouch.y;
-                if (Math.sqrt(dx * dx + dy * dy) > moveTolerance) cancelHold();
+                if (!e.touches || e.touches.length !== 1) return;
+                var t = e.touches[0];
+                var res = inspect(e.target, t.clientX, t.clientY);
+                try {
+                    window.webkit.messageHandlers.ContextMenuTarget.postMessage({
+                        link: res.link || '',
+                        image: res.image || '',
+                        x: t.clientX,
+                        y: t.clientY
+                    });
+                } catch(err) {}
             }
 
             window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
-            window.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
-            window.addEventListener('touchend', cancelHold, { capture: true, passive: true });
-            window.addEventListener('touchcancel', cancelHold, { capture: true, passive: true });
 
             var calloutStyle = document.createElement('style');
-            calloutStyle.textContent = 'img, picture, canvas, video, a[href], [role="img"] { -webkit-touch-callout: none !important; }';
+            calloutStyle.textContent = 'img, a, picture, canvas { -webkit-touch-callout: default !important; }';
             (document.documentElement || document.head).appendChild(calloutStyle);
         })();
         """
@@ -514,7 +461,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.allowsLinkPreview = false
+        webView.allowsLinkPreview = true
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.keyboardDismissMode = .onDrag
         webView.scrollView.contentInsetAdjustmentBehavior = .automatic
@@ -587,14 +534,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if message.name == "ContextMenuTarget", let dict = message.body as? [String: Any] {
             let linkString = dict["link"] as? String ?? ""
             let imageString = dict["image"] as? String ?? ""
-            let linkURL = linkString.hasPrefix("http://") || linkString.hasPrefix("https://") ? URL(string: linkString) : nil
-            let imageURL = imageString.isEmpty ? nil : URL(string: imageString)
-            guard linkURL != nil || imageURL != nil else { return }
-            let x = (dict["x"] as? NSNumber)?.doubleValue ?? Double(webView.bounds.midX)
-            let y = (dict["y"] as? NSNumber)?.doubleValue ?? Double(webView.bounds.midY)
-            DispatchQueue.main.async { [weak self] in
-                self?.presentContextMenu(link: linkURL, image: imageURL, point: CGPoint(x: x, y: y))
-            }
+            let linkURL = (linkString.hasPrefix("http://") || linkString.hasPrefix("https://")) ? URL(string: linkString) : nil
+            let imageURL = (imageString.hasPrefix("http://") || imageString.hasPrefix("https://") || imageString.hasPrefix("data:")) ? URL(string: imageString) : nil
+            lastContextMenuTarget = (link: linkURL, image: imageURL, date: Date())
             return
         }
 
@@ -656,48 +598,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
             task.resume()
         }
-    }
-
-    private func presentContextMenu(link: URL?, image: URL?, point: CGPoint) {
-        guard link != nil || image != nil, let presenter = topViewController() else { return }
-        guard presenter.presentedViewController == nil else { return }
-
-        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-
-        if let link = link {
-            sheet.addAction(UIAlertAction(title: "新标签打开", style: .default) { [weak self] _ in
-                self?.delegate?.tabRequestNewTab(url: link, inBackground: false)
-            })
-            sheet.addAction(UIAlertAction(title: "后台打开", style: .default) { [weak self] _ in
-                self?.delegate?.tabRequestNewTab(url: link, inBackground: true)
-            })
-            sheet.addAction(UIAlertAction(title: "拷贝链接", style: .default) { [weak self] _ in
-                UIPasteboard.general.string = link.absoluteString
-                self?.delegate?.tabRequestShowToast("已拷贝链接")
-            })
-        }
-
-        if let image = image {
-            sheet.addAction(UIAlertAction(title: "保存图片", style: .default) { [weak self] _ in
-                self?.saveImageToPhotos(from: image)
-            })
-            sheet.addAction(UIAlertAction(title: "拷贝图片链接", style: .default) { [weak self] _ in
-                UIPasteboard.general.string = image.absoluteString
-                self?.delegate?.tabRequestShowToast("已拷贝图片链接")
-            })
-        }
-
-        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-
-        if let popover = sheet.popoverPresentationController {
-            popover.sourceView = webView
-            let x = min(max(point.x, 0), webView.bounds.width)
-            let y = min(max(point.y, 0), webView.bounds.height)
-            popover.sourceRect = CGRect(x: x, y: y, width: 1, height: 1)
-            popover.permittedArrowDirections = []
-        }
-
-        presenter.present(sheet, animated: true)
     }
 
     private func handleBlobDataURL(_ dataUrlString: String, filename: String) {
@@ -1103,7 +1003,57 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
         completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
     ) {
-        completionHandler(nil)
+        var detectedLink: URL? = elementInfo.linkURL
+        var detectedImage: URL? = nil
+
+        if let cached = lastContextMenuTarget, Date().timeIntervalSince(cached.date) < 3.0 {
+            if detectedLink == nil {
+                detectedLink = cached.link
+            }
+            detectedImage = cached.image
+        }
+
+        guard detectedLink != nil || detectedImage != nil else {
+            completionHandler(nil)
+            return
+        }
+
+        let finalLink = detectedLink
+        let finalImage = detectedImage
+
+        let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            guard let self = self else { return UIMenu(title: "", children: []) }
+            var actions: [UIMenuElement] = []
+
+            if let link = finalLink {
+                let openAction = UIAction(title: "新标签打开", image: UIImage(systemName: "safari")) { [weak self] _ in
+                    self?.delegate?.tabRequestNewTab(url: link, inBackground: false)
+                }
+                let backgroundAction = UIAction(title: "后台打开", image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
+                    self?.delegate?.tabRequestNewTab(url: link, inBackground: true)
+                }
+                let copyLinkAction = UIAction(title: "拷贝链接", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                    UIPasteboard.general.string = link.absoluteString
+                    self?.delegate?.tabRequestShowToast("已拷贝链接")
+                }
+                actions.append(contentsOf: [openAction, backgroundAction, copyLinkAction])
+            }
+
+            if let image = finalImage {
+                let saveImageAction = UIAction(title: "保存图片", image: UIImage(systemName: "arrow.down.to.line")) { [weak self] _ in
+                    self?.saveImageToPhotos(from: image)
+                }
+                let copyImageLinkAction = UIAction(title: "拷贝图片链接", image: UIImage(systemName: "link")) { [weak self] _ in
+                    UIPasteboard.general.string = image.absoluteString
+                    self?.delegate?.tabRequestShowToast("已拷贝图片链接")
+                }
+                actions.append(contentsOf: [saveImageAction, copyImageLinkAction])
+            }
+
+            return UIMenu(title: "", children: actions)
+        }
+
+        completionHandler(config)
     }
 
     func webView(
