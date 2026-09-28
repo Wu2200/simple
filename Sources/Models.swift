@@ -418,6 +418,10 @@ final class BookmarkStore {
         UserDefaults.standard.removeObject(forKey: keyLegacy)
     }
 
+    func saveAllNodes(_ items: [BookmarkItem]) {
+        saveNodes(items)
+    }
+
     private func saveNodes(_ items: [BookmarkItem]) {
         guard let data = try? JSONEncoder().encode(items) else { return }
         UserDefaults.standard.set(data, forKey: keyTree)
@@ -510,10 +514,20 @@ final class BookmarkStore {
     }
 }
 
+// MARK: - 主页快捷方式模型与存储 (支持自定义上传图片 Logo)
+
 struct HomeShortcutItem: Codable, Equatable {
     var id: String
     var title: String
     var urlString: String
+    var customIconData: Data?
+
+    init(id: String, title: String, urlString: String, customIconData: Data? = nil) {
+        self.id = id
+        self.title = title
+        self.urlString = urlString
+        self.customIconData = customIconData
+    }
 }
 
 final class HomeShortcutStore {
@@ -542,35 +556,50 @@ final class HomeShortcutStore {
         return items
     }
 
-    func addShortcut(title: String, urlString: String) {
+    func addShortcut(title: String, urlString: String, customIconData: Data? = nil) {
         var items = loadShortcuts()
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = cleanTitle.isEmpty ? (URL(string: urlString)?.host ?? urlString) : cleanTitle
         items.removeAll { $0.urlString == urlString }
-        items.append(HomeShortcutItem(id: UUID().uuidString, title: resolvedTitle, urlString: urlString))
+        items.append(HomeShortcutItem(id: UUID().uuidString, title: resolvedTitle, urlString: urlString, customIconData: customIconData))
         saveShortcuts(items)
-        if let url = URL(string: urlString), let host = url.host {
+        if customIconData == nil, let url = URL(string: urlString), let host = url.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
     }
 
-    func updateShortcut(id: String, title: String, urlString: String) {
+    func updateShortcut(id: String, title: String, urlString: String, customIconData: Data? = nil) {
         var items = loadShortcuts()
         if let idx = items.firstIndex(where: { $0.id == id }) {
             let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             let resolvedTitle = cleanTitle.isEmpty ? (URL(string: urlString)?.host ?? urlString) : cleanTitle
             items[idx].title = resolvedTitle
             items[idx].urlString = urlString
+            if let customIconData = customIconData {
+                items[idx].customIconData = customIconData
+            }
             saveShortcuts(items)
-            if let url = URL(string: urlString), let host = url.host {
+            if items[idx].customIconData == nil, let url = URL(string: urlString), let host = url.host {
                 FaviconLoader.shared.preloadFavicon(for: host)
             }
+        }
+    }
+
+    func updateShortcutIcon(id: String, customIconData: Data?) {
+        var items = loadShortcuts()
+        if let idx = items.firstIndex(where: { $0.id == id }) {
+            items[idx].customIconData = customIconData
+            saveShortcuts(items)
         }
     }
 
     func deleteShortcut(id: String) {
         var items = loadShortcuts()
         items.removeAll { $0.id == id }
+        saveShortcuts(items)
+    }
+
+    func saveAllShortcuts(_ items: [HomeShortcutItem]) {
         saveShortcuts(items)
     }
 
@@ -1651,6 +1680,123 @@ final class FaviconLoader {
             if !done {
                 finish(with: finalImage, data: finalData)
             }
+        }
+    }
+}
+
+// MARK: - 完整浏览器数据备份与恢复引擎
+
+struct BrowserBackupPackage: Codable {
+    var version: Int
+    var exportedAt: Date
+    var appName: String
+    var bookmarks: [BookmarkItem]
+    var homeShortcuts: [HomeShortcutItem]
+    var userScripts: [UserScript]
+    var scriptData: [String: String]
+    var customUserAgents: [UserAgentItem]
+    var adBlockSubscriptions: [AdBlockSubscription]
+    var customAdBlockRules: String
+    var lockedCookieDomains: [String]
+    var searchEngine: String
+}
+
+final class BackupManager {
+    static let shared = BackupManager()
+    private init() {}
+
+    func createBackupPackage() -> BrowserBackupPackage {
+        let bookmarks = BookmarkStore.shared.loadAllNodes()
+        let shortcuts = HomeShortcutStore.shared.loadShortcuts()
+        let scripts = UserScriptStore.shared.loadScripts()
+
+        var scriptDataMap: [String: String] = [:]
+        for script in scripts {
+            let json = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
+            if json != "{}" {
+                scriptDataMap[script.id] = json
+            }
+        }
+
+        let customUAs = UserAgentStore.shared.loadCustomItems()
+        let subscriptions = AdBlockManager.shared.loadSubscriptions()
+        let customRules = AdBlockManager.shared.getCustomRules()
+        let lockedDomains = CookieLockStore.shared.getLockedDomains()
+        let searchEngine = SearchEngineStore.shared.currentEngine.rawValue
+
+        return BrowserBackupPackage(
+            version: 1,
+            exportedAt: Date(),
+            appName: "SimpleBrowser",
+            bookmarks: bookmarks,
+            homeShortcuts: shortcuts,
+            userScripts: scripts,
+            scriptData: scriptDataMap,
+            customUserAgents: customUAs,
+            adBlockSubscriptions: subscriptions,
+            customAdBlockRules: customRules,
+            lockedCookieDomains: lockedDomains,
+            searchEngine: searchEngine
+        )
+    }
+
+    func exportBackupFile() throws -> URL {
+        let package = createBackupPackage()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(package)
+
+        let df = DateFormatter()
+        df.dateFormat = "yyyyMMdd_HHmmss"
+        let timestamp = df.string(from: Date())
+        let filename = "SimpleBrowser_Backup_\(timestamp).json"
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        try data.write(to: tempURL, options: .atomic)
+        return tempURL
+    }
+
+    func restore(from fileURL: URL) throws {
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let package = try decoder.decode(BrowserBackupPackage.self, from: data)
+
+        // 1. 恢复书签
+        BookmarkStore.shared.saveAllNodes(package.bookmarks)
+
+        // 2. 恢复主页快捷方式（含自定义图标）
+        HomeShortcutStore.shared.saveAllShortcuts(package.homeShortcuts)
+
+        // 3. 恢复用户脚本
+        UserScriptStore.shared.saveScripts(package.userScripts)
+
+        // 4. 恢复脚本数据
+        for (scriptId, jsonStr) in package.scriptData {
+            if let data = jsonStr.data(using: .utf8),
+               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                for (k, v) in dict {
+                    ScriptDataStore.shared.setValue(scriptId: scriptId, name: k, value: v)
+                }
+            }
+        }
+
+        // 5. 恢复自定义 UA
+        if let dataUA = try? JSONEncoder().encode(package.customUserAgents) {
+            UserDefaults.standard.set(dataUA, forKey: "browser_ua_custom_items_v5")
+        }
+
+        // 6. 恢复广告拦截规则订阅与自定义规则
+        AdBlockManager.shared.saveSubscriptions(package.adBlockSubscriptions)
+        UserDefaults.standard.set(package.customAdBlockRules, forKey: "adblock_custom_rules_v2")
+
+        // 7. 恢复锁定域名
+        UserDefaults.standard.set(package.lockedCookieDomains, forKey: "locked_cookie_domains_v2")
+
+        // 8. 恢复搜索引擎
+        if let engine = SearchEngine(rawValue: package.searchEngine) {
+            SearchEngineStore.shared.currentEngine = engine
         }
     }
 }
