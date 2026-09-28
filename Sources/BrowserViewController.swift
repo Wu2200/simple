@@ -2094,7 +2094,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         progressView.alpha = 1
         progressView.setProgress(0.08, animated: false)
 
-        activeTab.webView.scrollView.setContentOffset(.zero, animated: false)
         activeTab.webView.load(URLRequest(url: url))
 
         if let host = url.host {
@@ -2272,12 +2271,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             resetProgress()
             updateAddressRightButtons()
         } else {
-            activeTab.webView.scrollView.setContentOffset(.zero, animated: false)
-            if let currentURL = activeTab.url ?? activeTab.webView.url {
-                activeTab.webView.load(URLRequest(url: currentURL))
-            } else {
-                activeTab.webView.reload()
-            }
+            activeTab.reloadFromTop()
         }
     }
 
