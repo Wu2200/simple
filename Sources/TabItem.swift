@@ -94,7 +94,6 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         }
     }
 
-    // MARK: - WKDownloadDelegate (原生支持带Cookie/鉴权的全特性下载)
     func download(
         _ download: WKDownload,
         decideDestinationUsing response: URLResponse,
@@ -192,7 +191,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let userContentController = WKUserContentController()
         configuration.userContentController = userContentController
 
-        // 注入网页前端生成文件(Blob/Data URL)下载拦截器
         let downloadBridgeSource = """
         (function() {
             if (window.__simple_download_hooked__) return;
@@ -785,8 +783,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let configuration = WKSnapshotConfiguration()
         configuration.rect = webView.bounds
 
-        webView.takeSnapshot(with: configuration) { [weak self] image, _ in
-            if let image = image {
+        webView.takeSnapshot(with: configuration) { [weak self] image, error in
+            if error == nil, let image = image {
                 self?.snapshot = image
             }
             completion?()
@@ -881,7 +879,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         delegate?.tabDidFail(self, error: error)
     }
 
-    // MARK: - WKDownload 生命周期托管
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         download.delegate = DownloadCoordinator.shared
     }
@@ -936,7 +933,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         if ["http", "https", "about", "data", "blob"].contains(scheme) {
             if navigationAction.targetFrame == nil {
-                // 保留完整的原始请求(包含POST Body、Headers、Referer等)，直接在当前页面平滑载入，解决跨页跳转返回原页问题
                 decisionHandler(.cancel, preferences)
                 webView.load(navigationAction.request)
                 return
