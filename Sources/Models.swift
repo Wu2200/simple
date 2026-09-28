@@ -424,9 +424,6 @@ final class BookmarkStore {
     func exportToAlookHTML() -> String {
         var html = """
         <!DOCTYPE NETSCAPE-Bookmark-file-1>
-        <!-- This is an automatically generated file.
-             It will be read and overwritten.
-             DO NOT EDIT! -->
         <META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
         <TITLE>Bookmarks</TITLE>
         <H1>Bookmarks</H1>
@@ -909,6 +906,78 @@ final class DomainSettingsStore {
 
     func setBool(domain: String, setting: String, value: Bool) {
         UserDefaults.standard.set(value, forKey: makeKey(domain, setting))
+    }
+}
+
+final class CertificateTrustStore {
+    static let shared = CertificateTrustStore()
+    private let key = "browser_trusted_insecure_hosts_v1"
+    private var trustedHosts: Set<String>
+
+    private init() {
+        let saved = UserDefaults.standard.stringArray(forKey: key) ?? []
+        trustedHosts = Set(saved.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+    }
+
+    func isHostTrusted(_ host: String) -> Bool {
+        let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty else { return false }
+        if trustedHosts.contains(clean) { return true }
+        if clean.hasPrefix("www.") {
+            let withoutWww = String(clean.dropFirst(4))
+            if trustedHosts.contains(withoutWww) { return true }
+        } else {
+            let withWww = "www." + clean
+            if trustedHosts.contains(withWww) { return true }
+        }
+        let root = DomainRelationEngine.rootDomain(of: clean)
+        if !root.isEmpty && trustedHosts.contains(root) { return true }
+        return false
+    }
+
+    func trustHost(_ host: String) {
+        let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty else { return }
+        trustedHosts.insert(clean)
+        if clean.hasPrefix("www.") {
+            trustedHosts.insert(String(clean.dropFirst(4)))
+        } else {
+            trustedHosts.insert("www." + clean)
+        }
+        let root = DomainRelationEngine.rootDomain(of: clean)
+        if !root.isEmpty {
+            trustedHosts.insert(root)
+        }
+        UserDefaults.standard.set(Array(trustedHosts), forKey: key)
+    }
+
+    func untrustHost(_ host: String) {
+        let clean = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        trustedHosts.remove(clean)
+        if clean.hasPrefix("www.") {
+            trustedHosts.remove(String(clean.dropFirst(4)))
+        } else {
+            trustedHosts.remove("www." + clean)
+        }
+        let root = DomainRelationEngine.rootDomain(of: clean)
+        if !root.isEmpty {
+            trustedHosts.remove(root)
+        }
+        UserDefaults.standard.set(Array(trustedHosts), forKey: key)
+    }
+
+    func clearAll() {
+        trustedHosts.removeAll()
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    func getAllTrustedHosts() -> [String] {
+        return Array(trustedHosts)
+    }
+
+    func restoreTrustedHosts(_ hosts: [String]) {
+        trustedHosts = Set(hosts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        UserDefaults.standard.set(Array(trustedHosts), forKey: key)
     }
 }
 
@@ -1712,6 +1781,7 @@ struct BrowserBackupPackage: Codable {
     var customAdBlockRules: String
     var lockedCookieDomains: [String]
     var searchEngine: String
+    var trustedInsecureHosts: [String]?
 }
 
 final class BackupManager {
@@ -1737,6 +1807,7 @@ final class BackupManager {
         let customRules = AdBlockManager.shared.getCustomRules()
         let lockedDomains = CookieLockStore.shared.getLockedDomains()
         let searchEngine = SearchEngineStore.shared.currentEngine.rawValue
+        let trustedInsecureHosts = CertificateTrustStore.shared.getAllTrustedHosts()
 
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
             var cookieMap: [String: BackupCookieItem] = [:]
@@ -1768,7 +1839,8 @@ final class BackupManager {
                 adBlockSubscriptions: subscriptions,
                 customAdBlockRules: customRules,
                 lockedCookieDomains: lockedDomains,
-                searchEngine: searchEngine
+                searchEngine: searchEngine,
+                trustedInsecureHosts: trustedInsecureHosts
             )
             completion(package)
         }
@@ -1836,6 +1908,10 @@ final class BackupManager {
 
                 if let engine = SearchEngine(rawValue: package.searchEngine) {
                     SearchEngineStore.shared.currentEngine = engine
+                }
+
+                if let trustedHosts = package.trustedInsecureHosts {
+                    CertificateTrustStore.shared.restoreTrustedHosts(trustedHosts)
                 }
 
                 let cookiesToRestore = package.cookies?.compactMap { $0.toHTTPCookie() } ?? []
