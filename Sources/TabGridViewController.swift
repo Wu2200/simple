@@ -40,7 +40,7 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
         cv.delegate = self
         cv.alwaysBounceVertical = true
         cv.showsVerticalScrollIndicator = false
-        cv.register(TabGridCell.self, forCellReuseIdentifier: "TabGridCell")
+        cv.register(TabGridCell.self, forCellWithReuseIdentifier: "TabGridCell")
         self.collectionView = cv
 
         addButton.translatesAutoresizingMaskIntoConstraints = false
@@ -92,7 +92,7 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        guard isViewLoaded, let cv = collectionView else { return }
+        guard isViewLoaded, collectionView != nil else { return }
         updateLayoutInsets()
 
         if !hasScrolledToBottomInitially && !tabs.isEmpty {
