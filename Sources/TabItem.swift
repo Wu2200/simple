@@ -194,7 +194,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         let disableCalloutSource = """
         (function() {
-            var css = '* { -webkit-touch-callout: none !important; }';
+            var css = '* { -webkit-touch-callout: none !important; } a, img, video { -webkit-touch-callout: none !important; }';
             var head = document.head || document.documentElement;
             var style = document.createElement('style');
             style.type = 'text/css';
@@ -328,6 +328,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        webView.allowsLinkPreview = false
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.keyboardDismissMode = .onDrag
         webView.scrollView.contentInsetAdjustmentBehavior = .automatic
@@ -335,9 +336,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.scrollView.backgroundColor = .white
         webView.isOpaque = true
 
+        purgeContextMenuInteractions()
+
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleWebLongPress(_:)))
-        longPress.minimumPressDuration = 0.45
-        longPress.cancelsTouchesInView = false
+        longPress.minimumPressDuration = 0.4
+        longPress.cancelsTouchesInView = true
         longPress.delegate = self
         webView.addGestureRecognizer(longPress)
     }
@@ -401,8 +404,32 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         return pendingRestoreURL ?? url
     }
 
+    func purgeContextMenuInteractions() {
+        disableContextMenuInteractions(in: webView)
+    }
+
+    private func disableContextMenuInteractions(in targetView: UIView) {
+        for interaction in targetView.interactions {
+            if let menuInteraction = interaction as? UIContextMenuInteraction {
+                menuInteraction.isEnabled = false
+                targetView.removeInteraction(menuInteraction)
+            }
+        }
+        for subview in targetView.subviews {
+            disableContextMenuInteractions(in: subview)
+        }
+    }
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
+        false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        let typeName = String(describing: type(of: otherGestureRecognizer))
+        if typeName.contains("ContextMenu") || typeName.contains("LongPress") || typeName.contains("TouchAction") || typeName.contains("Preview") {
+            return true
+        }
+        return false
     }
 
     @objc private func handleWebLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -552,21 +579,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
 
-        if let linkURL = linkURL {
-            alert.addAction(UIAlertAction(title: "新标签打开", style: .default) { [weak self] _ in
-                self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: false)
-            })
-
-            alert.addAction(UIAlertAction(title: "后台打开", style: .default) { [weak self] _ in
-                self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: true)
-            })
-
-            alert.addAction(UIAlertAction(title: "拷贝链接", style: .default) { [weak self] _ in
-                UIPasteboard.general.string = linkURL.absoluteString
-                self?.delegate?.tabRequestShowToast("已拷贝链接")
-            })
-        }
-
         if let imgURL = imageURL {
             alert.addAction(UIAlertAction(title: "保存图片", style: .default) { [weak self] _ in
                 self?.saveImageToPhotos(from: imgURL)
@@ -580,10 +592,27 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             alert.addAction(UIAlertAction(title: "共享图片", style: .default) { [weak self] _ in
                 self?.share(items: [imgURL])
             })
-        } else if let linkURL = linkURL {
-            alert.addAction(UIAlertAction(title: "共享链接", style: .default) { [weak self] _ in
-                self?.share(items: [linkURL])
+        }
+
+        if let linkURL = linkURL {
+            alert.addAction(UIAlertAction(title: "新标签打开", style: .default) { [weak self] _ in
+                self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: false)
             })
+
+            alert.addAction(UIAlertAction(title: "后台打开", style: .default) { [weak self] _ in
+                self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: true)
+            })
+
+            alert.addAction(UIAlertAction(title: "拷贝链接", style: .default) { [weak self] _ in
+                UIPasteboard.general.string = linkURL.absoluteString
+                self?.delegate?.tabRequestShowToast("已拷贝链接")
+            })
+
+            if imageURL == nil {
+                alert.addAction(UIAlertAction(title: "共享链接", style: .default) { [weak self] _ in
+                    self?.share(items: [linkURL])
+                })
+            }
         }
 
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -1084,6 +1113,18 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         completionHandler(nil)
     }
 
+    func webView(
+        _ webView: WKWebView,
+        contextMenuWillPresentForElement elementInfo: WKContextMenuElementInfo
+    ) {
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        contextMenuDidEndForElement elementInfo: WKContextMenuElementInfo
+    ) {
+    }
+
     private func saveImageToPhotos(from url: URL) {
         let rawURLStr = url.absoluteString
         if rawURLStr.hasPrefix("data:") {
@@ -1209,6 +1250,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         isLoading = true
+        purgeContextMenuInteractions()
         if !isLoadingFailureDocument {
             isDisplayingFailurePage = false
         }
@@ -1218,6 +1260,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        purgeContextMenuInteractions()
         if !isDisplayingFailurePage, let currentURL = webView.url, !currentURL.absoluteString.contains("about:blank") {
             if previousURL != currentURL {
                 previousURL = url
@@ -1236,6 +1279,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         isLoading = false
+        purgeContextMenuInteractions()
         if !isDisplayingFailurePage {
             url = webView.url
             title = webView.title ?? url?.host ?? "新标签页"
@@ -1262,6 +1306,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         withError error: Error
     ) {
         isLoading = false
+        purgeContextMenuInteractions()
         if shouldIgnoreNavigationError(error) {
             delegate?.tabDidUpdate(self)
             return
@@ -1278,6 +1323,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         withError error: Error
     ) {
         isLoading = false
+        purgeContextMenuInteractions()
         if shouldIgnoreNavigationError(error) {
             delegate?.tabDidUpdate(self)
             return
