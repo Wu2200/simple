@@ -499,6 +499,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let js = """
         (function() {
             try {
+                if (window.__inline_video_helper_injected__) return;
+                window.__inline_video_helper_injected__ = true;
+
                 function fixInlineVideo(v) {
                     if (!v) return;
                     v.setAttribute('playsinline', 'true');
@@ -837,10 +840,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             injectAndRunUserScripts()
         }
         extractHighResFaviconIfNeeded()
-        DispatchQueue.main.async { [weak webView] in
-            webView?.setNeedsLayout()
-            webView?.layoutIfNeeded()
-        }
         updateSnapshot()
         delegate?.tabDidUpdate(self)
     }
