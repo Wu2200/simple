@@ -992,7 +992,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
         }
         iconContainer.layer.cornerRadius = 16
-        iconContainer.cornerCurve = .continuous
+        iconContainer.layer.cornerCurve = .continuous
         iconContainer.layer.shadowColor = UIColor.black.cgColor
         iconContainer.layer.shadowOpacity = 0.04
         iconContainer.layer.shadowRadius = 5
