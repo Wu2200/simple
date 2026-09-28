@@ -850,8 +850,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let inspectJS = """
         (function() {
             var touch = window.__lastTouchPos;
-            var x = touch ? touch.x : -1;
-            var y = touch ? touch.y : -1;
+            var tx = touch ? touch.x : -1;
+            var ty = touch ? touch.y : -1;
             var touchTarget = touch ? touch.target : null;
             var fallbackLink = "\(escapedLink)";
 
@@ -864,6 +864,22 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 } catch(e) {
                     return trimmed;
                 }
+            }
+
+            function isIconOrTiny(el, url) {
+                if (!el) return false;
+                var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+                var w = r ? r.width : (el.offsetWidth || el.naturalWidth || 0);
+                var h = r ? r.height : (el.offsetHeight || el.naturalHeight || 0);
+                if (w > 0 && h > 0 && (w < 48 || h < 48)) return true;
+                var u = (url || '').toLowerCase();
+                if (u.indexOf('favicon') !== -1 || u.indexOf('site_icon') !== -1 || u.indexOf('logo') !== -1) {
+                    if (w < 80 && h < 80) return true;
+                }
+                var cls = (el.className || '').toString().toLowerCase();
+                var id = (el.id || '').toLowerCase();
+                if (cls.indexOf('favicon') !== -1 || cls.indexOf('site-icon') !== -1 || id.indexOf('favicon') !== -1) return true;
+                return false;
             }
 
             function isRealImg(s) {
@@ -961,28 +977,33 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 return '';
             }
 
-            function findBestImageInContainer(container) {
-                if (!container || !container.querySelectorAll) return null;
-                var imgs = container.querySelectorAll('img, amp-img, picture, canvas');
-                var bestEl = null;
-                var bestArea = 0;
-                var bestSrc = '';
-                for (var i = 0; i < imgs.length; i++) {
-                    var el = imgs[i];
-                    var src = getSrc(el);
-                    if (!src) continue;
-                    var r = el.getBoundingClientRect();
-                    var w = r.width || el.offsetWidth || el.naturalWidth || 0;
-                    var h = r.height || el.offsetHeight || el.naturalHeight || 0;
-                    var area = w * h;
-                    if (area > bestArea) {
-                        bestArea = area;
-                        bestEl = el;
-                        bestSrc = src;
-                    }
+            function getDirectOrChildImage(root) {
+                if (!root) return null;
+                var direct = getSrc(root);
+                if (direct && isRealImg(direct)) {
+                    return { el: root, src: direct };
                 }
-                if (bestEl && bestSrc) {
-                    return { el: bestEl, src: bestSrc };
+                if (root.querySelectorAll) {
+                    var list = root.querySelectorAll('img, amp-img, picture, canvas');
+                    var bestEl = null;
+                    var bestArea = 0;
+                    var bestSrc = '';
+                    for (var i = 0; i < list.length; i++) {
+                        var cand = list[i];
+                        var src = getSrc(cand);
+                        if (!src || !isRealImg(src)) continue;
+                        if (isIconOrTiny(cand, src)) continue;
+                        var r = cand.getBoundingClientRect();
+                        var area = (r.width || 0) * (r.height || 0);
+                        if (area >= bestArea) {
+                            bestArea = area;
+                            bestEl = cand;
+                            bestSrc = src;
+                        }
+                    }
+                    if (bestEl && bestSrc) {
+                        return { el: bestEl, src: bestSrc };
+                    }
                 }
                 return null;
             }
@@ -992,10 +1013,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             var targetImgEl = null;
 
             if (touchTarget) {
-                var directSrc = getSrc(touchTarget);
-                if (directSrc) {
-                    resolvedImg = directSrc;
-                    targetImgEl = touchTarget;
+                var targetImg = getDirectOrChildImage(touchTarget);
+                if (targetImg) {
+                    resolvedImg = targetImg.src;
+                    targetImgEl = targetImg.el;
                 }
                 var cur = touchTarget;
                 var depth = 0;
@@ -1004,10 +1025,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
                     }
                     if (!resolvedImg) {
-                        var directCurSrc = getSrc(cur);
-                        if (directCurSrc) {
-                            resolvedImg = directCurSrc;
-                            targetImgEl = cur;
+                        var pImg = getDirectOrChildImage(cur);
+                        if (pImg) {
+                            resolvedImg = pImg.src;
+                            targetImgEl = pImg.el;
                         }
                     }
                     cur = cur.parentElement;
@@ -1015,56 +1036,52 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             }
 
-            if ((!resolvedImg || !resolvedLink) && x >= 0 && y >= 0) {
-                var els = [];
-                if (document.elementsFromPoint) {
-                    els = document.elementsFromPoint(x, y) || [];
-                } else if (document.elementFromPoint) {
-                    var se = document.elementFromPoint(x, y);
-                    if (se) els = [se];
-                }
-                for (var j = 0; j < els.length; j++) {
-                    var item = els[j];
-                    if (!item || item === document.body || item === document.documentElement) continue;
-                    if (!resolvedLink) {
-                        var a = item.tagName === 'A' ? item : (item.closest ? item.closest('a') : null);
-                        if (a) {
-                            resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
-                        }
+            if ((!resolvedImg || !resolvedLink) && tx >= 0 && ty >= 0) {
+                var testPoints = [
+                    { x: tx, y: ty },
+                    { x: tx - 14, y: ty },
+                    { x: tx + 14, y: ty },
+                    { x: tx, y: ty - 14 },
+                    { x: tx, y: ty + 14 }
+                ];
+                for (var p = 0; p < testPoints.length; p++) {
+                    var pt = testPoints[p];
+                    var els = [];
+                    if (document.elementsFromPoint) {
+                        els = document.elementsFromPoint(pt.x, pt.y) || [];
+                    } else if (document.elementFromPoint) {
+                        var se = document.elementFromPoint(pt.x, pt.y);
+                        if (se) els = [se];
                     }
-                    if (!resolvedImg) {
-                        var fromItem = getSrc(item);
-                        if (fromItem) {
-                            resolvedImg = fromItem;
-                            targetImgEl = item;
+                    for (var j = 0; j < els.length; j++) {
+                        var item = els[j];
+                        if (!item || item === document.body || item === document.documentElement) continue;
+                        if (!resolvedLink) {
+                            var a = item.tagName === 'A' ? item : (item.closest ? item.closest('a') : null);
+                            if (a) {
+                                resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
+                            }
                         }
+                        if (!resolvedImg) {
+                            var fromItem = getDirectOrChildImage(item);
+                            if (fromItem) {
+                                resolvedImg = fromItem.src;
+                                targetImgEl = fromItem.el;
+                            }
+                        }
+                        if (resolvedImg && resolvedLink) break;
                     }
                     if (resolvedImg && resolvedLink) break;
                 }
             }
 
-            if (!resolvedImg && resolvedLink) {
-                var allAnchors = document.querySelectorAll('a');
-                for (var k = 0; k < allAnchors.length; k++) {
-                    var anc = allAnchors[k];
-                    var aHref = cleanURL(anc.href || anc.getAttribute('href') || '');
-                    if (aHref && aHref === resolvedLink) {
-                        var bestFromAnchor = findBestImageInContainer(anc);
-                        if (bestFromAnchor) {
-                            resolvedImg = bestFromAnchor.src;
-                            targetImgEl = bestFromAnchor.el;
-                        }
-                        if (!resolvedImg) {
-                            var parentCard = anc.closest ? anc.closest('.g, .MjjYud, [data-ved], [data-hveid], article, li, .result, .c-container, .tF2Cxc') : null;
-                            if (parentCard) {
-                                var bestFromCard = findBestImageInContainer(parentCard);
-                                if (bestFromCard) {
-                                    resolvedImg = bestFromCard.src;
-                                    targetImgEl = bestFromCard.el;
-                                }
-                            }
-                        }
-                        if (resolvedImg) break;
+            if (!resolvedImg && touchTarget) {
+                var card = touchTarget.closest ? touchTarget.closest('.g, .MjjYud, [data-ved], [data-hveid], article, li, .result, .c-container, .tF2Cxc') : null;
+                if (card) {
+                    var cardImg = getDirectOrChildImage(card);
+                    if (cardImg) {
+                        resolvedImg = cardImg.src;
+                        targetImgEl = cardImg.el;
                     }
                 }
             }
