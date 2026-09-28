@@ -256,6 +256,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if (window.__simple_scroll_guard__) return;
         window.__simple_scroll_guard__ = true;
 
+        try {
+            if ('scrollRestoration' in history) {
+                history.scrollRestoration = 'manual';
+            }
+            Object.defineProperty(history, 'scrollRestoration', {
+                get: function() { return 'manual'; },
+                set: function() {},
+                configurable: true
+            });
+        } catch(e) {}
+
         var userMoved = false;
 
         function markUserScrolled() {
@@ -322,197 +333,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
             return origFocus.apply(this, arguments);
         };
-    })();
-    """
-
-    private static let coreContextMenuSource = """
-    (function() {
-        if (window.__simple_context_injected__) return;
-        window.__simple_context_injected__ = true;
-
-        window.__simple_context_info = null;
-
-        function resolveUrl(u) {
-            if (!u || typeof u !== 'string') return '';
-            var trimmed = u.trim().replace(/^["']|["']$/g, '');
-            if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
-            try {
-                return new URL(trimmed, window.location.href).href;
-            } catch(e) {
-                return trimmed;
-            }
-        }
-
-        function isNonEmptyImg(s) {
-            if (!s || typeof s !== 'string') return false;
-            var t = s.trim().replace(/^["']|["']$/g, '');
-            if (!t) return false;
-            if (t.startsWith('data:image/')) return true;
-            if (t.startsWith('blob:')) return true;
-            var low = t.toLowerCase();
-            if (low.indexOf('blank.gif') !== -1 || low.indexOf('pixel.gif') !== -1) return false;
-            return low.startsWith('http://') || low.startsWith('https://') || low.startsWith('//');
-        }
-
-        function parseSrcset(val) {
-            if (!val) return '';
-            var parts = val.split(',');
-            var bestUrl = '';
-            var maxW = 0;
-            for (var i = 0; i < parts.length; i++) {
-                var item = parts[i].trim().split(/\\s+/);
-                if (item.length > 0 && item[0]) {
-                    var w = 0;
-                    if (item.length > 1) {
-                        var m = item[1].match(/(\\d+)/);
-                        if (m) w = parseInt(m[1], 10);
-                    }
-                    if (w >= maxW) {
-                        maxW = w;
-                        bestUrl = item[0];
-                    }
-                }
-            }
-            return bestUrl;
-        }
-
-        function svgToString(svgEl) {
-            try {
-                var s = new XMLSerializer();
-                var str = s.serializeToString(svgEl);
-                if (!svgEl.getAttribute('xmlns')) {
-                    str = str.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
-                }
-                return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(str);
-            } catch(e) {
-                return '';
-            }
-        }
-
-        function extractDirectImage(el) {
-            if (!el) return null;
-            var tag = (el.tagName || '').toUpperCase();
-            var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-
-            if (tag === 'IMG' || tag === 'AMP-IMG') {
-                var c = [
-                    el.currentSrc,
-                    el.src,
-                    el.getAttribute('src'),
-                    el.getAttribute('data-original'),
-                    el.getAttribute('data-src'),
-                    el.getAttribute('data-url'),
-                    el.getAttribute('srcset')
-                ];
-                for (var idx = 0; idx < c.length; idx++) {
-                    var item = c[idx];
-                    if (item) {
-                        var parsed = parseSrcset(item) || item;
-                        if (isNonEmptyImg(parsed)) {
-                            return { url: resolveUrl(parsed), rect: rect };
-                        }
-                    }
-                }
-            }
-
-            if (tag === 'SVG') {
-                var sUrl = svgToString(el);
-                if (sUrl) return { url: sUrl, rect: rect };
-            }
-
-            if (tag === 'CANVAS') {
-                try {
-                    return { url: el.toDataURL('image/png'), rect: rect };
-                } catch(e) {}
-            }
-
-            if (tag === 'VIDEO' && el.poster && isNonEmptyImg(el.poster)) {
-                return { url: resolveUrl(el.poster), rect: rect };
-            }
-
-            try {
-                var bg = window.getComputedStyle(el).backgroundImage;
-                if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
-                    var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
-                    if (m && m[1] && isNonEmptyImg(m[1])) {
-                        return { url: resolveUrl(m[1]), rect: rect };
-                    }
-                }
-            } catch(e) {}
-
-            return null;
-        }
-
-        function analyzeTarget(el) {
-            if (!el || el === document.body || el === document.documentElement) {
-                return { imgSrc: '', linkHref: '', rect: null };
-            }
-
-            var linkEl = (el.tagName === 'A') ? el : (el.closest ? el.closest('a') : null);
-            var linkHref = (linkEl && linkEl.href) ? resolveUrl(linkEl.href) : '';
-
-            var tag = (el.tagName || '').toUpperCase();
-            var isTextContent = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'SPAN', 'STRONG', 'EM', 'B', 'I'].indexOf(tag) !== -1;
-
-            var directImg = extractDirectImage(el);
-            if (directImg) {
-                return {
-                    imgSrc: directImg.url,
-                    linkHref: linkHref,
-                    rect: directImg.rect ? { x: directImg.rect.left, y: directImg.rect.top, width: directImg.rect.width, height: directImg.rect.height } : null
-                };
-            }
-
-            var parentSvg = el.closest ? el.closest('svg') : null;
-            if (parentSvg) {
-                var pUrl = svgToString(parentSvg);
-                if (pUrl) {
-                    var pr = parentSvg.getBoundingClientRect();
-                    return {
-                        imgSrc: pUrl,
-                        linkHref: linkHref,
-                        rect: pr ? { x: pr.left, y: pr.top, width: pr.width, height: pr.height } : null
-                    };
-                }
-            }
-
-            var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-            var isSmallContainer = r && r.width > 0 && r.height > 0 && r.width <= 70 && r.height <= 70;
-
-            if (isSmallContainer && !isTextContent) {
-                var innerImg = el.querySelector('img, svg, picture, canvas');
-                if (innerImg) {
-                    var innerDirect = extractDirectImage(innerImg);
-                    if (innerDirect) {
-                        return {
-                            imgSrc: innerDirect.url,
-                            linkHref: linkHref,
-                            rect: innerDirect.rect ? { x: innerDirect.rect.left, y: innerDirect.rect.top, width: innerDirect.rect.width, height: innerDirect.rect.height } : null
-                        };
-                    }
-                }
-            }
-
-            return {
-                imgSrc: '',
-                linkHref: linkHref,
-                rect: null
-            };
-        }
-
-        function onContextMenu(e) {
-            window.__simple_context_info = analyzeTarget(e.target);
-        }
-
-        function onTouchStart(e) {
-            var t = (e.touches && e.touches.length > 0) ? e.touches[0] : null;
-            if (t && t.target) {
-                window.__simple_context_info = analyzeTarget(t.target);
-            }
-        }
-
-        window.addEventListener('contextmenu', onContextMenu, true);
-        window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
     })();
     """
 
@@ -588,16 +408,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if !hasGuard {
             let script = WKUserScript(
                 source: Self.coreScrollGuardSource,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            )
-            controller.addUserScript(script)
-        }
-
-        let hasContext = controller.userScripts.contains { $0.source.contains("__simple_context_injected__") }
-        if !hasContext {
-            let script = WKUserScript(
-                source: Self.coreContextMenuSource,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
@@ -1125,115 +935,26 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
         completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
     ) {
-        let fetchContextJS = """
-        (function() {
-            var info = window.__simple_context_info;
-            return info || null;
-        })();
-        """
-
-        webView.evaluateJavaScript(fetchContextJS) { [weak self] result, _ in
-            guard let self = self else {
-                completionHandler(nil)
-                return
-            }
-
-            var detectedLinkURL = elementInfo.linkURL
-            var detectedImageString: String? = nil
-
-            if let dict = result as? [String: Any] {
-                if let imgSrc = dict["imgSrc"] as? String, !imgSrc.isEmpty {
-                    detectedImageString = imgSrc
-                }
-                if let linkHref = dict["linkHref"] as? String, !linkHref.isEmpty {
-                    detectedLinkURL = URL(string: linkHref) ?? detectedLinkURL
-                }
-            }
-
-            guard detectedLinkURL != nil || (detectedImageString != nil && !detectedImageString!.isEmpty) else {
-                completionHandler(nil)
-                return
-            }
-
-            let finalLink = detectedLinkURL
-            let finalImageString = detectedImageString
-
-            let previewProvider: UIContextMenuContentPreviewProvider? = {
-                guard let imageStr = finalImageString, !imageStr.isEmpty else { return nil }
-                return {
-                    let vc = UIViewController()
-                    let iv = UIImageView()
-                    iv.translatesAutoresizingMaskIntoConstraints = false
-                    iv.contentMode = .scaleAspectFit
-                    iv.clipsToBounds = true
-                    vc.view.addSubview(iv)
-                    NSLayoutConstraint.activate([
-                        iv.topAnchor.constraint(equalTo: vc.view.topAnchor),
-                        iv.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor),
-                        iv.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor),
-                        iv.bottomAnchor.constraint(equalTo: vc.view.bottomAnchor)
-                    ])
-                    self.loadPreviewImage(from: imageStr) { img in
-                        DispatchQueue.main.async {
-                            iv.image = img
-                            if let img = img, img.size.width > 0, img.size.height > 0 {
-                                let ratio = img.size.height / img.size.width
-                                vc.preferredContentSize = CGSize(width: 320, height: min(max(320 * ratio, 120), 460))
-                            }
-                        }
-                    }
-                    return vc
-                }
-            }()
-
-            let config = UIContextMenuConfiguration(identifier: nil, previewProvider: previewProvider) { [weak self] _ in
-                guard let self = self else { return UIMenu(title: "", children: []) }
-                var actions: [UIMenuElement] = []
-
-                if let imageStr = finalImageString, !imageStr.isEmpty {
-                    let saveAction = UIAction(title: "保存图片", image: UIImage(systemName: "arrow.down.to.line")) { [weak self] _ in
-                        self?.saveImageToPhotos(from: imageStr)
-                    }
-                    let copyImageLinkAction = UIAction(title: "拷贝图片链接", image: UIImage(systemName: "link")) { [weak self] _ in
-                        UIPasteboard.general.string = imageStr
-                        self?.delegate?.tabRequestShowToast("已拷贝图片链接")
-                    }
-                    actions.append(contentsOf: [saveAction, copyImageLinkAction])
-
-                    if let imgURL = URL(string: imageStr), imgURL.scheme?.hasPrefix("http") == true {
-                        let openImageAction = UIAction(title: "在新标签打开图片", image: UIImage(systemName: "arrow.up.right.square")) { [weak self] _ in
-                            self?.delegate?.tabRequestNewTab(url: imgURL, inBackground: false)
-                        }
-                        actions.append(openImageAction)
-                    }
-                }
-
-                if let link = finalLink {
-                    let isLinkSameAsImage = (finalImageString != nil && link.absoluteString == finalImageString)
-                    if !isLinkSameAsImage {
-                        let linkTitle = (finalImageString != nil) ? "打开网页链接" : "新标签打开"
-                        let backgroundTitle = (finalImageString != nil) ? "后台打开网页" : "后台打开"
-                        let copyTitle = (finalImageString != nil) ? "拷贝网页链接" : "拷贝链接"
-
-                        let openAction = UIAction(title: linkTitle, image: UIImage(systemName: "safari")) { [weak self] _ in
-                            self?.delegate?.tabRequestNewTab(url: link, inBackground: false)
-                        }
-                        let backgroundAction = UIAction(title: backgroundTitle, image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
-                            self?.delegate?.tabRequestNewTab(url: link, inBackground: true)
-                        }
-                        let copyLinkAction = UIAction(title: copyTitle, image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
-                            UIPasteboard.general.string = link.absoluteString
-                            self?.delegate?.tabRequestShowToast("已拷贝链接")
-                        }
-                        actions.append(contentsOf: [openAction, backgroundAction, copyLinkAction])
-                    }
-                }
-
-                return UIMenu(title: "", children: actions)
-            }
-
-            completionHandler(config)
+        guard let link = elementInfo.linkURL else {
+            completionHandler(nil)
+            return
         }
+
+        let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            let openAction = UIAction(title: "新标签打开", image: UIImage(systemName: "safari")) { [weak self] _ in
+                self?.delegate?.tabRequestNewTab(url: link, inBackground: false)
+            }
+            let backgroundAction = UIAction(title: "后台打开", image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
+                self?.delegate?.tabRequestNewTab(url: link, inBackground: true)
+            }
+            let copyLinkAction = UIAction(title: "拷贝链接", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                UIPasteboard.general.string = link.absoluteString
+                self?.delegate?.tabRequestShowToast("已拷贝链接")
+            }
+            return UIMenu(title: "", children: [openAction, backgroundAction, copyLinkAction])
+        }
+
+        completionHandler(config)
     }
 
     func webView(
@@ -1241,267 +962,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         contextMenuForElement elementInfo: WKContextMenuElementInfo,
         willCommitWithAnimator animator: UIContextMenuInteractionCommitAnimating
     ) {
-    }
-
-    private func loadPreviewImage(from imageString: String, completion: @escaping (UIImage?) -> Void) {
-        let raw = imageString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if raw.contains("image/svg+xml") {
-            convertSvgToImage(urlString: raw, completion: completion)
-            return
-        }
-        if raw.hasPrefix("data:") {
-            if let comma = raw.firstIndex(of: ",") {
-                let payload = String(raw[raw.index(after: comma)...])
-                if let data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters), let img = UIImage(data: data) {
-                    completion(img)
-                    return
-                }
-            }
-            completion(nil)
-            return
-        }
-        if raw.hasPrefix("blob:") {
-            completion(nil)
-            return
-        }
-        guard let url = URL(string: raw) else {
-            completion(nil)
-            return
-        }
-        var req = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 4.0)
-        req.setValue(webView.customUserAgent ?? UserAgentStore.shared.getSelectedUA(), forHTTPHeaderField: "User-Agent")
-        if let referer = webView.url?.absoluteString {
-            req.setValue(referer, forHTTPHeaderField: "Referer")
-        }
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            if let data = data, let img = UIImage(data: data) {
-                completion(img)
-            } else {
-                completion(nil)
-            }
-        }.resume()
-    }
-
-    private func saveImageToPhotos(from imageString: String) {
-        let raw = imageString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else {
-            delegate?.tabRequestShowToast("获取图片失败")
-            return
-        }
-
-        if raw.contains("image/svg+xml") {
-            convertSvgToImage(urlString: raw) { [weak self] img in
-                if let img = img {
-                    self?.writeImageToAlbum(img)
-                } else {
-                    self?.delegate?.tabRequestShowToast("保存图片失败")
-                }
-            }
-            return
-        }
-
-        if raw.hasPrefix("data:") {
-            guard let commaIndex = raw.firstIndex(of: ",") else {
-                delegate?.tabRequestShowToast("图片格式无效")
-                return
-            }
-            let meta = String(raw[..<commaIndex])
-            var payload = String(raw[raw.index(after: commaIndex)...])
-
-            if meta.contains(";base64") {
-                if let unescaped = payload.removingPercentEncoding {
-                    payload = unescaped
-                }
-                payload = payload.replacingOccurrences(of: "\n", with: "")
-                                 .replacingOccurrences(of: "\r", with: "")
-                                 .replacingOccurrences(of: " ", with: "+")
-                                 .trimmingCharacters(in: .whitespacesAndNewlines)
-                let rem = payload.count % 4
-                if rem > 0 {
-                    payload.append(String(repeating: "=", count: 4 - rem))
-                }
-                guard let data = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]),
-                      let image = UIImage(data: data) else {
-                    delegate?.tabRequestShowToast("图片解析失败")
-                    return
-                }
-                writeImageToAlbum(image)
-            } else {
-                if let decodedString = payload.removingPercentEncoding,
-                   let data = decodedString.data(using: .utf8),
-                   let image = UIImage(data: data) {
-                    writeImageToAlbum(image)
-                } else {
-                    delegate?.tabRequestShowToast("图片解析失败")
-                }
-            }
-            return
-        }
-
-        if raw.hasPrefix("blob:") {
-            let escapedBlob = raw.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            let js = """
-            (function() {
-                return fetch("\(escapedBlob)").then(function(res) {
-                    if (!res.ok) throw new Error('HTTP ' + res.status);
-                    return res.blob();
-                }).then(function(blob) {
-                    return new Promise(function(resolve, reject) {
-                        var reader = new FileReader();
-                        reader.onloadend = function() {
-                            if (reader.result) {
-                                resolve({ success: true, data: reader.result });
-                            } else {
-                                reject(new Error('读取失败'));
-                            }
-                        };
-                        reader.onerror = function() { reject(new Error('读取错误')); };
-                        reader.readAsDataURL(blob);
-                    });
-                }).catch(function(err) {
-                    return { success: false, error: err.message || '获取图片失败' };
-                });
-            })();
-            """
-            webView.evaluateJavaScript(js) { [weak self] result, _ in
-                guard let self = self else { return }
-                if let dict = result as? [String: Any],
-                   let success = dict["success"] as? Bool, success,
-                   let dataUrl = dict["data"] as? String {
-                    self.saveImageToPhotos(from: dataUrl)
-                    return
-                }
-                self.delegate?.tabRequestShowToast("读取Blob图片失败")
-            }
-            return
-        }
-
-        guard let url = URL(string: raw) else {
-            delegate?.tabRequestShowToast("无效图片链接")
-            return
-        }
-
-        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
-            guard let self = self else { return }
-            var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 15.0)
-            request.setValue(self.webView.customUserAgent ?? UserAgentStore.shared.getSelectedUA(), forHTTPHeaderField: "User-Agent")
-            if let currentReferer = self.webView.url?.absoluteString {
-                request.setValue(currentReferer, forHTTPHeaderField: "Referer")
-            }
-            let matchingCookies = cookies.filter { cookie in
-                guard let host = url.host?.lowercased() else { return false }
-                let domain = cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
-                return host == domain || host.hasSuffix("." + domain)
-            }
-            let headerFields = HTTPCookie.requestHeaderFields(with: matchingCookies)
-            for (k, v) in headerFields {
-                request.setValue(v, forHTTPHeaderField: k)
-            }
-
-            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-                guard let self = self else { return }
-                if let httpResponse = response as? HTTPURLResponse, (httpResponse.statusCode == 403 || httpResponse.statusCode == 401),
-                   let currentReferer = self.webView.url?.absoluteString, !currentReferer.isEmpty {
-                    var retryReq = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 15.0)
-                    retryReq.setValue(self.webView.customUserAgent ?? UserAgentStore.shared.getSelectedUA(), forHTTPHeaderField: "User-Agent")
-                    for (k, v) in headerFields {
-                        retryReq.setValue(v, forHTTPHeaderField: k)
-                    }
-                    URLSession.shared.dataTask(with: retryReq) { [weak self] retryData, retryResp, retryErr in
-                        self?.handleDownloadedImageData(data: retryData, response: retryResp, error: retryErr, originalURLString: raw)
-                    }.resume()
-                    return
-                }
-                self.handleDownloadedImageData(data: data, response: response, error: error, originalURLString: raw)
-            }.resume()
-        }
-    }
-
-    private func convertSvgToImage(urlString: String, completion: @escaping (UIImage?) -> Void) {
-        let escaped = urlString.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let js = """
-        (function() {
-            return new Promise(function(resolve, reject) {
-                var img = new Image();
-                img.onload = function() {
-                    var w = Math.max(img.naturalWidth || img.width || 0, 128);
-                    var h = Math.max(img.naturalHeight || img.height || 0, 128);
-                    var cvs = document.createElement('canvas');
-                    cvs.width = w * 2;
-                    cvs.height = h * 2;
-                    var ctx = cvs.getContext('2d');
-                    ctx.drawImage(img, 0, 0, cvs.width, cvs.height);
-                    resolve(cvs.toDataURL('image/png'));
-                };
-                img.onerror = function() { resolve(''); };
-                img.src = "\(escaped)";
-            });
-        })();
-        """
-        webView.evaluateJavaScript(js) { result, _ in
-            if let dataUrl = result as? String, let comma = dataUrl.firstIndex(of: ",") {
-                let base64 = String(dataUrl[dataUrl.index(after: comma)...])
-                if let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
-                   let image = UIImage(data: data) {
-                    completion(image)
-                    return
-                }
-            }
-            completion(nil)
-        }
-    }
-
-    private func handleDownloadedImageData(data: Data?, response: URLResponse?, error: Error?, originalURLString: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            if let data = data, let image = UIImage(data: data), (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? true {
-                self.writeImageToAlbum(image)
-                return
-            }
-
-            let escapedImg = originalURLString.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            let fallbackJS = """
-            (function() {
-                var targetSrc = "\(escapedImg)";
-                var imgs = document.querySelectorAll('img, amp-img');
-                for (var i = 0; i < imgs.length; i++) {
-                    var item = imgs[i];
-                    if (item.currentSrc === targetSrc || item.src === targetSrc || item.getAttribute('src') === targetSrc) {
-                        try {
-                            var canvas = document.createElement('canvas');
-                            canvas.width = item.naturalWidth || item.width || 300;
-                            canvas.height = item.naturalHeight || item.height || 300;
-                            var ctx = canvas.getContext('2d');
-                            ctx.drawImage(item, 0, 0);
-                            return canvas.toDataURL('image/png');
-                        } catch(e) {
-                            return '';
-                        }
-                    }
-                }
-                return '';
-            })();
-            """
-            self.webView.evaluateJavaScript(fallbackJS) { [weak self] result, _ in
-                if let dataUrl = result as? String, dataUrl.hasPrefix("data:image/") {
-                    self?.saveImageToPhotos(from: dataUrl)
-                    return
-                }
-                self?.delegate?.tabRequestShowToast("下载图片失败")
-            }
-        }
-    }
-
-    private func writeImageToAlbum(_ image: UIImage) {
-        UIImageWriteToSavedPhotosAlbum(image, self, #selector(image(_:didFinishSavingWithError:contextInfo:)), nil)
-    }
-
-    @objc private func image(_ image: UIImage, didFinishSavingWithError error: Error?, contextInfo: UnsafeRawPointer) {
-        if let error = error {
-            delegate?.tabRequestShowToast("保存失败: \(error.localizedDescription)")
-        } else {
-            delegate?.tabRequestShowToast("已保存图片到相册")
-        }
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -1512,6 +972,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         hasInjectedScriptsForCurrentPage = false
         registeredCommands.removeAll()
         ensureCoreScripts()
+        webView.scrollView.setContentOffset(.zero, animated: false)
         delegate?.tabDidUpdate(self)
     }
 
