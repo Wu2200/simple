@@ -426,7 +426,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private let failureURLLabel = UILabel()
     private let failureBackButton = TouchButton()
     private let failureReloadButton = TouchButton()
-    private let failureBypassButton = TouchButton()
 
     private let editingDimmingView = UIView()
 
@@ -1159,24 +1158,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(alert, animated: true)
     }
 
-    private func isCertificateError(_ error: Error?) -> Bool {
-        guard let err = error as NSError? else { return false }
-        if err.domain == NSURLErrorDomain {
-            let certCodes: Set<Int> = [
-                NSURLErrorServerCertificateHasBadDate,
-                NSURLErrorServerCertificateUntrusted,
-                NSURLErrorServerCertificateHasUnknownRoot,
-                NSURLErrorServerCertificateNotYetValid,
-                NSURLErrorClientCertificateRejected,
-                NSURLErrorClientCertificateRequired,
-                -1200, -1201, -1202, -1203, -1204, -1205, -1206
-            ]
-            if certCodes.contains(err.code) { return true }
-        }
-        let desc = err.localizedDescription.lowercased()
-        return desc.contains("certificate") || desc.contains("证书")
-    }
-
     private func configureFailureView() {
         failureOverlayView.translatesAutoresizingMaskIntoConstraints = false
         failureOverlayView.backgroundColor = .systemBackground
@@ -1216,7 +1197,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureTitleLabel.text = "无法打开网页"
 
         failureReasonLabel.translatesAutoresizingMaskIntoConstraints = false
-        failureReasonLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        failureReasonLabel.font = .systemFont(size: 13, weight: .regular)
         failureReasonLabel.textColor = .secondaryLabel
         failureReasonLabel.textAlignment = .center
         failureReasonLabel.numberOfLines = 0
@@ -1245,16 +1226,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureReloadButton.configuration = reloadConfig
         failureReloadButton.addTarget(self, action: #selector(handleFailureReload), for: .touchUpInside)
 
-        failureBypassButton.translatesAutoresizingMaskIntoConstraints = false
-        var bypassConfig = UIButton.Configuration.tinted()
-        bypassConfig.title = "继续访问此网站"
-        bypassConfig.cornerStyle = .capsule
-        bypassConfig.baseForegroundColor = .systemRed
-        bypassConfig.baseBackgroundColor = UIColor.systemRed.withAlphaComponent(0.12)
-        failureBypassButton.configuration = bypassConfig
-        failureBypassButton.addTarget(self, action: #selector(handleFailureBypass), for: .touchUpInside)
-        failureBypassButton.isHidden = true
-
         let failureButtons = UIStackView(arrangedSubviews: [failureBackButton, failureReloadButton])
         failureButtons.translatesAutoresizingMaskIntoConstraints = false
         failureButtons.axis = .horizontal
@@ -1266,8 +1237,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             failureTitleLabel,
             failureReasonLabel,
             failureURLLabel,
-            failureButtons,
-            failureBypassButton
+            failureButtons
         ])
         failureStack.translatesAutoresizingMaskIntoConstraints = false
         failureStack.axis = .vertical
@@ -1288,7 +1258,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             failureIconView.heightAnchor.constraint(equalToConstant: 26),
 
             failureButtons.heightAnchor.constraint(equalToConstant: 40),
-            failureBypassButton.heightAnchor.constraint(equalToConstant: 40),
 
             failureStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 24),
             failureStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
@@ -2096,12 +2065,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureOverlayView.isHidden = false
         let targetURL = tab.failedURL ?? tab.url
         failureURLLabel.text = targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? ""
-        let isCert = isCertificateError(tab.failureError)
-        failureBypassButton.isHidden = !isCert
-        if isCert {
-            failureTitleLabel.text = "此连接非私人连接"
-            failureReasonLabel.text = "此网站的安全证书无效，可能在冒充该网站来窃取您的个人信息。如果了解涉及的风险，您可以继续访问此网站。"
-        } else if let err = tab.failureError as NSError? {
+        if let err = tab.failureError as NSError? {
             failureTitleLabel.text = "无法打开网页"
             failureReasonLabel.text = err.localizedDescription
         }
@@ -2485,31 +2449,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         activeTab.webView.load(URLRequest(url: targetURL))
         updateUIState()
         updateAddressRightButtons()
-    }
-
-    @objc private func handleFailureBypass() {
-        guard let targetURL = activeTab.failedURL ?? activeTab.url,
-              let host = targetURL.host, !host.isEmpty else { return }
-
-        let alert = UIAlertController(
-            title: "安全性提示",
-            message: "继续访问该网站可能会将您的隐私和数据置于风险之中。是否仍要继续访问？",
-            preferredStyle: .alert
-        )
-
-        alert.addAction(UIAlertAction(title: "继续访问", style: .destructive) { [weak self] _ in
-            guard let self = self else { return }
-            TabItem.allowedInsecureHosts.insert(host)
-            self.activeTab.clearFailureState()
-            self.failureOverlayView.isHidden = true
-            self.showBrowserUI()
-            self.activeTab.webView.load(URLRequest(url: targetURL))
-            self.updateUIState()
-            self.updateAddressRightButtons()
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
     }
 
     @objc private func goBack() {
