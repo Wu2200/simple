@@ -411,7 +411,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private func disableContextMenuInteractions(in targetView: UIView) {
         for interaction in targetView.interactions {
             if let menuInteraction = interaction as? UIContextMenuInteraction {
-                menuInteraction.isEnabled = false
                 targetView.removeInteraction(menuInteraction)
             }
         }
@@ -638,7 +637,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     private func topViewController() -> UIViewController? {
-        let root = webView.window?.rootViewController ?? UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        let keyWindow = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow }
+        let root = webView.window?.rootViewController ?? keyWindow?.rootViewController
         var top = root
         while let presented = top?.presentedViewController {
             top = presented
