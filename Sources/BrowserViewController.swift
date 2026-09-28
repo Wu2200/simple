@@ -395,6 +395,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private var activeTabIndex = 0
     private var isFullscreen = false
     private var progressObservation: NSKeyValueObservation?
+    private var isCompletingProgress = false
 
     private var editingShortcutIdForCustomIcon: String?
     private var cachedAddBookmarkIcon: UIImage?
@@ -512,18 +513,22 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func resetProgress() {
+        isCompletingProgress = false
         progressView.layer.removeAllAnimations()
-        progressView.setProgress(0, animated: false)
         progressView.alpha = 0
+        progressView.setProgress(0, animated: false)
     }
 
     private func completeProgress() {
+        guard !isCompletingProgress else { return }
+        isCompletingProgress = true
         progressView.setProgress(1.0, animated: true)
-        UIView.animate(withDuration: 0.22, delay: 0.08, options: [.curveEaseOut], animations: {
+        UIView.animate(withDuration: 0.25, delay: 0.05, options: [.curveEaseOut], animations: {
             self.progressView.alpha = 0
         }, completion: { [weak self] finished in
-            if finished && self?.activeTab.isLoading == false {
+            if finished {
                 self?.progressView.setProgress(0, animated: false)
+                self?.isCompletingProgress = false
             }
         })
     }
@@ -1915,7 +1920,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     private func configureFullscreenExitGesture() {
         let gesture = UILongPressGestureRecognizer(target: self, action: #selector(handleFullscreenExitGesture(_:)))
-        gesture.minimumPressDuration = 2.0
+        gesture.minimumPressDuration = 1.0
         gesture.numberOfTouchesRequired = 2
         gesture.cancelsTouchesInView = false
         view.addGestureRecognizer(gesture)
@@ -2055,6 +2060,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 let progress = Float(observedWebView.estimatedProgress)
 
                 if observedWebView.isLoading {
+                    if self.isCompletingProgress {
+                        return
+                    }
                     if self.progressView.alpha < 1 {
                         self.progressView.alpha = 1
                     }
