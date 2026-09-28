@@ -1,8 +1,6 @@
 import UIKit
 import WebKit
 
-// MARK: - 管理网站数据主页面（仅展示主域名）
-
 final class WebsiteDataManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
     private var allGroups: [MainDomainGroup] = []
     private var filteredGroups: [MainDomainGroup] = []
@@ -48,7 +46,7 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "锁定的域名仅保护其登录状态（Cookies 与登录数据），网页缓存文件仍会正常清理以避免积攒占用存储。点击进入可独立锁定/解锁各具体域名。"
+        label.text = "锁定的域名仅保护其登录状态，网页缓存文件仍会正常清理以避免积攒占用存储。点击进入可独立锁定或解锁各具体域名。"
         label.textColor = .secondaryLabel
         label.font = .systemFont(ofSize: 13, weight: .regular)
         label.numberOfLines = 0
@@ -88,7 +86,7 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
     private func setupSearchController() {
         searchController.searchResultsUpdater = self
         searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "搜索主域名或数据类型(如Cookie)"
+        searchController.searchBar.placeholder = "搜索主域名或数据类型"
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
         definesPresentationContext = true
@@ -143,8 +141,6 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
         }
         present(alert, animated: true)
     }
-
-    // MARK: - UITableViewDataSource & Delegate
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         return filteredGroups.count
@@ -213,8 +209,6 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
     }
 }
 
-// MARK: - 关联域名管理页面 (二级详情页 - 独立勾选/锁定每个域名)
-
 final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let mainDomain: String
     private var records: [WKWebsiteDataRecord]
@@ -281,7 +275,7 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "主站点 [ \(mainDomain) ] 共有 \(records.count) 个域名。点击单项可独立切换锁定；锁定的站点仅保护登录凭据（Cookies 与登录数据），缓存文件在清理时仍会被正常释放。"
+        label.text = "主站点共 \(records.count) 个域名。点击单项可独立切换锁定；锁定的站点仅保护登录凭据，缓存文件在清理时仍会被正常释放。"
         label.textColor = .secondaryLabel
         label.font = .systemFont(ofSize: 13, weight: .regular)
         label.numberOfLines = 0
@@ -317,8 +311,6 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
     }
-
-    // MARK: - UITableViewDataSource & Delegate
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         return records.count
@@ -376,8 +368,6 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
         return UISwipeActionsConfiguration(actions: [deleteAction, lockAction])
     }
 }
-
-// MARK: - 自定义网站数据单元格
 
 final class WebsiteDataDetailCell: UITableViewCell {
     static let reuseIdentifier = "WebsiteDataDetailCell"
@@ -562,8 +552,6 @@ final class WebsiteDataDetailCell: UITableViewCell {
     }
 }
 
-// MARK: - 辅助控制器保持完整性
-
 final class DomainSettingsViewController: UITableViewController {
     private let domain: String
     var onSettingsChanged: (() -> Void)?
@@ -592,7 +580,7 @@ final class DomainSettingsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return section == 0 ? 3 : 1
+        return section == 0 ? 4 : 1
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -616,6 +604,11 @@ final class DomainSettingsViewController: UITableViewController {
                 switchView.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "userScripts", defaultVal: true)
                 switchView.isEnabled = true
                 switchView.addTarget(self, action: #selector(handleSwitchChanged(_:)), for: .valueChanged)
+            } else if indexPath.row == 3 {
+                cell.textLabel?.text = "信任网站证书"
+                switchView.isOn = CertificateTrustStore.shared.isHostTrusted(domain)
+                switchView.isEnabled = true
+                switchView.addTarget(self, action: #selector(handleSwitchChanged(_:)), for: .valueChanged)
             }
             cell.accessoryView = switchView
         } else {
@@ -633,6 +626,13 @@ final class DomainSettingsViewController: UITableViewController {
             onSettingsChanged?()
         } else if sender.tag == 2 {
             DomainSettingsStore.shared.setBool(domain: domain, setting: "userScripts", value: sender.isOn)
+            onSettingsChanged?()
+        } else if sender.tag == 3 {
+            if sender.isOn {
+                CertificateTrustStore.shared.trustHost(domain)
+            } else {
+                CertificateTrustStore.shared.untrustHost(domain)
+            }
             onSettingsChanged?()
         }
     }
