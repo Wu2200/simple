@@ -523,7 +523,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard !isCompletingProgress else { return }
         isCompletingProgress = true
         progressView.setProgress(1.0, animated: true)
-        UIView.animate(withDuration: 0.25, delay: 0.05, options: [.curveEaseOut], animations: {
+        UIView.animate(withDuration: 0.25, delay: 0.05, options: [.curveEaseOut, .allowUserInteraction], animations: {
             self.progressView.alpha = 0
         }, completion: { [weak self] finished in
             if finished {
@@ -1966,7 +1966,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         activeTabIndex = index
 
         let tab = activeTab
-        tab.purgeContextMenuInteractions()
         tab.webView.translatesAutoresizingMaskIntoConstraints = false
         webContainer.addSubview(tab.webView)
 
