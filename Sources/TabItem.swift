@@ -154,7 +154,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 }
 
-final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIScrollViewDelegate {
+final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let id = UUID()
     let webView: WKWebView
     var title = "主页"
@@ -177,6 +177,345 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     weak var delegate: TabItemDelegate?
 
+    private static let coreDownloadScriptSource = """
+    (function() {
+        if (window.__simple_download_hooked__) return;
+        window.__simple_download_hooked__ = true;
+
+        function sendBlobData(url, filename) {
+            if (!url) return;
+            if (url.startsWith('data:')) {
+                try {
+                    window.webkit.messageHandlers.DownloadBridge.postMessage({
+                        filename: filename || 'file',
+                        dataUrl: url
+                    });
+                } catch(e) {}
+                return;
+            }
+            if (url.startsWith('blob:')) {
+                fetch(url).then(function(res) {
+                    return res.blob();
+                }).then(function(blob) {
+                    var reader = new FileReader();
+                    reader.onloadend = function() {
+                        try {
+                            window.webkit.messageHandlers.DownloadBridge.postMessage({
+                                filename: filename || 'file',
+                                dataUrl: reader.result
+                            });
+                        } catch(e) {}
+                    };
+                    reader.readAsDataURL(blob);
+                }).catch(function(err) {});
+                return;
+            }
+        }
+
+        var origClick = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function() {
+            var href = this.href || '';
+            var dl = this.getAttribute('download');
+            if (dl !== null || href.startsWith('blob:') || href.startsWith('data:')) {
+                var name = dl || this.download || 'downloaded_file';
+                sendBlobData(href, name);
+                return;
+            }
+            return origClick.apply(this, arguments);
+        };
+
+        document.addEventListener('click', function(e) {
+            var el = e.target;
+            while (el && el.tagName !== 'A') {
+                el = el.parentElement;
+            }
+            if (!el) return;
+            var href = el.href || el.getAttribute('href') || '';
+            var dl = el.getAttribute('download');
+            if (dl !== null || href.startsWith('blob:') || href.startsWith('data:')) {
+                e.preventDefault();
+                e.stopPropagation();
+                var name = dl || el.download || 'downloaded_file';
+                sendBlobData(href, name);
+            }
+        }, true);
+
+        var origOpen = window.open;
+        window.open = function(url) {
+            if (typeof url === 'string' && (url.startsWith('blob:') || url.startsWith('data:'))) {
+                sendBlobData(url, 'downloaded_file');
+                return null;
+            }
+            return origOpen.apply(this, arguments);
+        };
+    })();
+    """
+
+    private static let coreScrollGuardSource = """
+    (function() {
+        if (window.__simple_scroll_guard__) return;
+        window.__simple_scroll_guard__ = true;
+
+        var userMoved = false;
+
+        function markUserScrolled() {
+            userMoved = true;
+        }
+
+        window.addEventListener('touchstart', markUserScrolled, { capture: true, passive: true });
+        window.addEventListener('touchmove', markUserScrolled, { capture: true, passive: true });
+        window.addEventListener('wheel', markUserScrolled, { capture: true, passive: true });
+
+        var origScrollTo = window.scrollTo;
+        window.scrollTo = function() {
+            var x = arguments[0];
+            var y = arguments[1];
+            if (typeof x === 'object' && x !== null) {
+                y = x.top;
+                x = x.left;
+            }
+            var currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
+            if (userMoved && currentY > 30 && (y === 0 || y === 1 || (typeof y === 'number' && y < 30))) {
+                return;
+            }
+            return origScrollTo.apply(this, arguments);
+        };
+
+        var origScroll = window.scroll;
+        window.scroll = function() {
+            var x = arguments[0];
+            var y = arguments[1];
+            if (typeof x === 'object' && x !== null) {
+                y = x.top;
+                x = x.left;
+            }
+            var currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
+            if (userMoved && currentY > 30 && (y === 0 || y === 1 || (typeof y === 'number' && y < 30))) {
+                return;
+            }
+            return origScroll.apply(this, arguments);
+        };
+
+        if (Element.prototype.scrollIntoView) {
+            var origScrollIntoView = Element.prototype.scrollIntoView;
+            Element.prototype.scrollIntoView = function() {
+                var currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
+                if (userMoved && currentY > 30) {
+                    var r = this.getBoundingClientRect();
+                    if (r && r.top < 0) {
+                        return;
+                    }
+                }
+                return origScrollIntoView.apply(this, arguments);
+            };
+        }
+
+        var origFocus = HTMLElement.prototype.focus;
+        HTMLElement.prototype.focus = function(options) {
+            var currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
+            if (userMoved && currentY > 30 && (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA')) {
+                var opts = options || {};
+                if (typeof opts === 'object') {
+                    opts.preventScroll = true;
+                    return origFocus.call(this, opts);
+                }
+            }
+            return origFocus.apply(this, arguments);
+        };
+    })();
+    """
+
+    private static let coreContextMenuSource = """
+    (function() {
+        if (window.__simple_context_injected__) return;
+        window.__simple_context_injected__ = true;
+
+        window.__simple_context_info = null;
+
+        function resolveUrl(u) {
+            if (!u || typeof u !== 'string') return '';
+            var trimmed = u.trim().replace(/^["']|["']$/g, '');
+            if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
+            try {
+                return new URL(trimmed, window.location.href).href;
+            } catch(e) {
+                return trimmed;
+            }
+        }
+
+        function isNonEmptyImg(s) {
+            if (!s || typeof s !== 'string') return false;
+            var t = s.trim().replace(/^["']|["']$/g, '');
+            if (!t) return false;
+            if (t.startsWith('data:image/')) return true;
+            if (t.startsWith('blob:')) return true;
+            var low = t.toLowerCase();
+            if (low.indexOf('blank.gif') !== -1 || low.indexOf('pixel.gif') !== -1) return false;
+            return low.startsWith('http://') || low.startsWith('https://') || low.startsWith('//');
+        }
+
+        function parseSrcset(val) {
+            if (!val) return '';
+            var parts = val.split(',');
+            var bestUrl = '';
+            var maxW = 0;
+            for (var i = 0; i < parts.length; i++) {
+                var item = parts[i].trim().split(/\\s+/);
+                if (item.length > 0 && item[0]) {
+                    var w = 0;
+                    if (item.length > 1) {
+                        var m = item[1].match(/(\\d+)/);
+                        if (m) w = parseInt(m[1], 10);
+                    }
+                    if (w >= maxW) {
+                        maxW = w;
+                        bestUrl = item[0];
+                    }
+                }
+            }
+            return bestUrl;
+        }
+
+        function svgToString(svgEl) {
+            try {
+                var s = new XMLSerializer();
+                var str = s.serializeToString(svgEl);
+                if (!svgEl.getAttribute('xmlns')) {
+                    str = str.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+                }
+                return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(str);
+            } catch(e) {
+                return '';
+            }
+        }
+
+        function extractDirectImage(el) {
+            if (!el) return null;
+            var tag = (el.tagName || '').toUpperCase();
+            var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+
+            if (tag === 'IMG' || tag === 'AMP-IMG') {
+                var c = [
+                    el.currentSrc,
+                    el.src,
+                    el.getAttribute('src'),
+                    el.getAttribute('data-original'),
+                    el.getAttribute('data-src'),
+                    el.getAttribute('data-url'),
+                    el.getAttribute('srcset')
+                ];
+                for (var idx = 0; idx < c.length; idx++) {
+                    var item = c[idx];
+                    if (item) {
+                        var parsed = parseSrcset(item) || item;
+                        if (isNonEmptyImg(parsed)) {
+                            return { url: resolveUrl(parsed), rect: rect };
+                        }
+                    }
+                }
+            }
+
+            if (tag === 'SVG') {
+                var sUrl = svgToString(el);
+                if (sUrl) return { url: sUrl, rect: rect };
+            }
+
+            if (tag === 'CANVAS') {
+                try {
+                    return { url: el.toDataURL('image/png'), rect: rect };
+                } catch(e) {}
+            }
+
+            if (tag === 'VIDEO' && el.poster && isNonEmptyImg(el.poster)) {
+                return { url: resolveUrl(el.poster), rect: rect };
+            }
+
+            try {
+                var bg = window.getComputedStyle(el).backgroundImage;
+                if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
+                    var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
+                    if (m && m[1] && isNonEmptyImg(m[1])) {
+                        return { url: resolveUrl(m[1]), rect: rect };
+                    }
+                }
+            } catch(e) {}
+
+            return null;
+        }
+
+        function analyzeTarget(el) {
+            if (!el || el === document.body || el === document.documentElement) {
+                return { imgSrc: '', linkHref: '', rect: null };
+            }
+
+            var linkEl = (el.tagName === 'A') ? el : (el.closest ? el.closest('a') : null);
+            var linkHref = (linkEl && linkEl.href) ? resolveUrl(linkEl.href) : '';
+
+            var tag = (el.tagName || '').toUpperCase();
+            var isTextContent = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'SPAN', 'STRONG', 'EM', 'B', 'I'].indexOf(tag) !== -1;
+
+            var directImg = extractDirectImage(el);
+            if (directImg) {
+                return {
+                    imgSrc: directImg.url,
+                    linkHref: linkHref,
+                    rect: directImg.rect ? { x: directImg.rect.left, y: directImg.rect.top, width: directImg.rect.width, height: directImg.rect.height } : null
+                };
+            }
+
+            var parentSvg = el.closest ? el.closest('svg') : null;
+            if (parentSvg) {
+                var pUrl = svgToString(parentSvg);
+                if (pUrl) {
+                    var pr = parentSvg.getBoundingClientRect();
+                    return {
+                        imgSrc: pUrl,
+                        linkHref: linkHref,
+                        rect: pr ? { x: pr.left, y: pr.top, width: pr.width, height: pr.height } : null
+                    };
+                }
+            }
+
+            var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            var isSmallContainer = r && r.width > 0 && r.height > 0 && r.width <= 70 && r.height <= 70;
+
+            if (isSmallContainer && !isTextContent) {
+                var innerImg = el.querySelector('img, svg, picture, canvas');
+                if (innerImg) {
+                    var innerDirect = extractDirectImage(innerImg);
+                    if (innerDirect) {
+                        return {
+                            imgSrc: innerDirect.url,
+                            linkHref: linkHref,
+                            rect: innerDirect.rect ? { x: innerDirect.rect.left, y: innerDirect.rect.top, width: innerDirect.rect.width, height: innerDirect.rect.height } : null
+                        };
+                    }
+                }
+            }
+
+            return {
+                imgSrc: '',
+                linkHref: linkHref,
+                rect: null
+            };
+        }
+
+        function onContextMenu(e) {
+            window.__simple_context_info = analyzeTarget(e.target);
+        }
+
+        function onTouchStart(e) {
+            var t = (e.touches && e.touches.length > 0) ? e.touches[0] : null;
+            if (t && t.target) {
+                window.__simple_context_info = analyzeTarget(t.target);
+            }
+        }
+
+        window.addEventListener('contextmenu', onContextMenu, true);
+        window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    })();
+    """
+
     override init() {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -193,206 +532,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let userContentController = WKUserContentController()
         configuration.userContentController = userContentController
 
-        let downloadBridgeSource = """
-        (function() {
-            if (window.__simple_download_hooked__) return;
-            window.__simple_download_hooked__ = true;
-
-            function sendBlobData(url, filename) {
-                if (!url) return;
-                if (url.startsWith('data:')) {
-                    try {
-                        window.webkit.messageHandlers.DownloadBridge.postMessage({
-                            filename: filename || 'file',
-                            dataUrl: url
-                        });
-                    } catch(e) {}
-                    return;
-                }
-                if (url.startsWith('blob:')) {
-                    fetch(url).then(function(res) {
-                        return res.blob();
-                    }).then(function(blob) {
-                        var reader = new FileReader();
-                        reader.onloadend = function() {
-                            try {
-                                window.webkit.messageHandlers.DownloadBridge.postMessage({
-                                    filename: filename || 'file',
-                                    dataUrl: reader.result
-                                });
-                            } catch(e) {}
-                        };
-                        reader.readAsDataURL(blob);
-                    }).catch(function(err) {});
-                    return;
-                }
-            }
-
-            var origClick = HTMLAnchorElement.prototype.click;
-            HTMLAnchorElement.prototype.click = function() {
-                var href = this.href || '';
-                var dl = this.getAttribute('download');
-                if (dl !== null || href.startsWith('blob:') || href.startsWith('data:')) {
-                    var name = dl || this.download || 'downloaded_file';
-                    sendBlobData(href, name);
-                    return;
-                }
-                return origClick.apply(this, arguments);
-            };
-
-            document.addEventListener('click', function(e) {
-                var el = e.target;
-                while (el && el.tagName !== 'A') {
-                    el = el.parentElement;
-                }
-                if (!el) return;
-                var href = el.href || el.getAttribute('href') || '';
-                var dl = el.getAttribute('download');
-                if (dl !== null || href.startsWith('blob:') || href.startsWith('data:')) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    var name = dl || el.download || 'downloaded_file';
-                    sendBlobData(href, name);
-                }
-            }, true);
-
-            var origOpen = window.open;
-            window.open = function(url) {
-                if (typeof url === 'string' && (url.startsWith('blob:') || url.startsWith('data:'))) {
-                    sendBlobData(url, 'downloaded_file');
-                    return null;
-                }
-                return origOpen.apply(this, arguments);
-            };
-        })();
-        """
-        let downloadScript = WKUserScript(
-            source: downloadBridgeSource,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        )
-        userContentController.addUserScript(downloadScript)
-
-        let scrollGuardSource = """
-        (function() {
-            if (window.__simple_scroll_guard__) return;
-            window.__simple_scroll_guard__ = true;
-
-            var userHasScrolled = false;
-            var touchActive = false;
-
-            function onTouchStart() {
-                touchActive = true;
-            }
-
-            function onTouchMove() {
-                userHasScrolled = true;
-            }
-
-            function onTouchEnd() {
-                touchActive = false;
-            }
-
-            window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
-            window.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
-            window.addEventListener('touchend', onTouchEnd, { capture: true, passive: true });
-            window.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true });
-            window.addEventListener('wheel', onTouchMove, { capture: true, passive: true });
-
-            var origScrollTo = window.scrollTo;
-            window.scrollTo = function() {
-                var x = arguments[0];
-                var y = arguments[1];
-                if (typeof x === 'object' && x !== null) {
-                    y = x.top;
-                    x = x.left;
-                }
-                var isTopJump = (x === 0 || x === undefined) && (y === 0 || y === 1 || y < 20);
-                if (userHasScrolled && isTopJump) {
-                    return;
-                }
-                return origScrollTo.apply(this, arguments);
-            };
-
-            var origScroll = window.scroll;
-            window.scroll = function() {
-                var x = arguments[0];
-                var y = arguments[1];
-                if (typeof x === 'object' && x !== null) {
-                    y = x.top;
-                    x = x.left;
-                }
-                var isTopJump = (x === 0 || x === undefined) && (y === 0 || y === 1 || y < 20);
-                if (userHasScrolled && isTopJump) {
-                    return;
-                }
-                return origScroll.apply(this, arguments);
-            };
-
-            if (Element.prototype.scrollIntoView) {
-                var origScrollIntoView = Element.prototype.scrollIntoView;
-                Element.prototype.scrollIntoView = function() {
-                    if (userHasScrolled && !touchActive) {
-                        return;
-                    }
-                    return origScrollIntoView.apply(this, arguments);
-                };
-            }
-
-            var origFocus = HTMLElement.prototype.focus;
-            HTMLElement.prototype.focus = function(options) {
-                if (userHasScrolled && (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA')) {
-                    var opts = options || {};
-                    if (typeof opts === 'object') {
-                        opts.preventScroll = true;
-                        return origFocus.call(this, opts);
-                    }
-                }
-                return origFocus.apply(this, arguments);
-            };
-        })();
-        """
-        let scrollGuardScript = WKUserScript(
-            source: scrollGuardSource,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        )
-        userContentController.addUserScript(scrollGuardScript)
-
-        let touchScriptSource = """
-        (function() {
-            if (window.__simple_touch_injected__) return;
-            window.__simple_touch_injected__ = true;
-            window.__simple_last_touch = null;
-
-            function saveTouch(e) {
-                var t = (e.touches && e.touches.length > 0) ? e.touches[0] : (e.changedTouches && e.changedTouches.length > 0 ? e.changedTouches[0] : e);
-                if (t && typeof t.clientX === 'number') {
-                    window.__simple_last_touch = {
-                        x: t.clientX,
-                        y: t.clientY,
-                        target: e.target
-                    };
-                }
-            }
-
-            window.addEventListener('touchstart', saveTouch, { capture: true, passive: true });
-            window.addEventListener('touchmove', saveTouch, { capture: true, passive: true });
-            window.addEventListener('pointerdown', saveTouch, { capture: true, passive: true });
-            window.addEventListener('mousedown', saveTouch, { capture: true, passive: true });
-        })();
-        """
-        let touchScript = WKUserScript(
-            source: touchScriptSource,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        )
-        userContentController.addUserScript(touchScript)
-
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
 
         webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
+
+        ensureCoreScripts()
 
         AdBlockManager.shared.attach(to: webView)
         userContentController.add(self, name: "GM")
@@ -404,22 +549,68 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.keyboardDismissMode = .onDrag
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.scrollView.delegate = self
         webView.backgroundColor = .white
         webView.scrollView.backgroundColor = .white
         webView.isOpaque = true
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAdBlockRulesAppliedNotification(_:)),
+            name: NSNotification.Name("SimpleAdBlockRulesApplied"),
+            object: nil
+        )
     }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         destroy()
     }
 
+    @objc private func handleAdBlockRulesAppliedNotification(_ notification: Notification) {
+        guard let targetWebView = notification.object as? WKWebView, targetWebView == self.webView else { return }
+        ensureCoreScripts()
+    }
+
+    private func ensureCoreScripts() {
+        let controller = webView.configuration.userContentController
+
+        let hasDownload = controller.userScripts.contains { $0.source.contains("__simple_download_hooked__") }
+        if !hasDownload {
+            let script = WKUserScript(
+                source: Self.coreDownloadScriptSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(script)
+        }
+
+        let hasGuard = controller.userScripts.contains { $0.source.contains("__simple_scroll_guard__") }
+        if !hasGuard {
+            let script = WKUserScript(
+                source: Self.coreScrollGuardSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(script)
+        }
+
+        let hasContext = controller.userScripts.contains { $0.source.contains("__simple_context_injected__") }
+        if !hasContext {
+            let script = WKUserScript(
+                source: Self.coreContextMenuSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(script)
+        }
+    }
+
     func destroy() {
+        NotificationCenter.default.removeObserver(self)
         AdBlockManager.shared.detach(from: webView)
         delegate = nil
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
-        webView.scrollView.delegate = nil
         webView.stopLoading()
         webView.evaluateJavaScript("""
         (function(){
@@ -934,248 +1125,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
         completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
     ) {
-        let rawLink = elementInfo.linkURL?.absoluteString ?? ""
-        let escapedLink = rawLink.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-
-        let inspectJS = """
+        let fetchContextJS = """
         (function() {
-            var touch = window.__simple_last_touch;
-            var tx = (touch && typeof touch.x === 'number') ? touch.x : -1;
-            var ty = (touch && typeof touch.y === 'number') ? touch.y : -1;
-            var fallbackLink = "\(escapedLink)";
-
-            function cleanURL(u) {
-                if (!u || typeof u !== 'string') return '';
-                var trimmed = u.trim().replace(/^["']|["']$/g, '');
-                if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
-                try {
-                    return new URL(trimmed, window.location.href).href;
-                } catch(e) {
-                    return trimmed;
-                }
-            }
-
-            function isRealImg(s) {
-                if (!s || typeof s !== 'string') return false;
-                var trimmed = s.trim().replace(/^["']|["']$/g, '');
-                if (!trimmed) return false;
-                if (trimmed.startsWith('data:image/svg+xml')) return true;
-                if (trimmed.startsWith('data:image/')) {
-                    if (trimmed.length < 150 && trimmed.indexOf('R0lGODlhAQAB') !== -1) return false;
-                    return true;
-                }
-                if (trimmed.startsWith('blob:')) return true;
-                var lower = trimmed.toLowerCase();
-                if (lower.indexOf('blank.gif') !== -1 || lower.indexOf('pixel.gif') !== -1 || lower.indexOf('spacer.gif') !== -1) return false;
-                return lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('//');
-            }
-
-            function parseSrcset(val) {
-                if (!val) return '';
-                var parts = val.split(',');
-                var bestUrl = '';
-                var maxW = 0;
-                for (var k = 0; k < parts.length; k++) {
-                    var item = parts[k].trim().split(/\\s+/);
-                    if (item.length > 0 && item[0]) {
-                        var w = 0;
-                        if (item.length > 1) {
-                            var m = item[1].match(/(\\d+)/);
-                            if (m) w = parseInt(m[1], 10);
-                        }
-                        if (w >= maxW) {
-                            maxW = w;
-                            bestUrl = item[0];
-                        }
-                    }
-                }
-                return bestUrl;
-            }
-
-            function svgToDataUrl(svgNode) {
-                try {
-                    var s = new XMLSerializer();
-                    var str = s.serializeToString(svgNode);
-                    if (!svgNode.getAttribute('xmlns')) {
-                        str = str.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
-                    }
-                    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(str);
-                } catch(e) {
-                    return '';
-                }
-            }
-
-            function extractImageFromNode(node) {
-                if (!node) return null;
-                var tag = (node.tagName || '').toUpperCase();
-                var r = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
-
-                if (tag === 'IMG' || tag === 'AMP-IMG') {
-                    var candidates = [
-                        node.currentSrc,
-                        node.src,
-                        node.getAttribute('src'),
-                        node.getAttribute('data-original'),
-                        node.getAttribute('data-src'),
-                        node.getAttribute('data-actualsrc'),
-                        node.getAttribute('data-lazy-src'),
-                        node.getAttribute('data-url'),
-                        node.getAttribute('data-orig'),
-                        node.getAttribute('data-cover'),
-                        node.getAttribute('data-echo'),
-                        node.getAttribute('srcset'),
-                        node.getAttribute('data-srcset')
-                    ];
-                    for (var cIdx = 0; cIdx < candidates.length; cIdx++) {
-                        var c = candidates[cIdx];
-                        if (c) {
-                            var p = parseSrcset(c) || c;
-                            if (isRealImg(p)) return { src: cleanURL(p), rect: r, el: node };
-                        }
-                    }
-                }
-
-                if (tag === 'SVG') {
-                    var dataUrl = svgToDataUrl(node);
-                    if (dataUrl) return { src: dataUrl, rect: r, el: node };
-                }
-
-                var pSvg = node.closest ? node.closest('svg') : null;
-                if (pSvg) {
-                    var pData = svgToDataUrl(pSvg);
-                    if (pData) {
-                        var pr = pSvg.getBoundingClientRect ? pSvg.getBoundingClientRect() : r;
-                        return { src: pData, rect: pr, el: pSvg };
-                    }
-                }
-
-                if (tag === 'PICTURE') {
-                    var sources = node.querySelectorAll('source');
-                    for (var sIdx = 0; sIdx < sources.length; sIdx++) {
-                        var ss = sources[sIdx].getAttribute('srcset') || sources[sIdx].getAttribute('src');
-                        if (ss) {
-                            var parsed = parseSrcset(ss) || ss;
-                            if (isRealImg(parsed)) return { src: cleanURL(parsed), rect: r, el: node };
-                        }
-                    }
-                    var inner = node.querySelector('img, amp-img');
-                    if (inner) {
-                        var fromInner = extractImageFromNode(inner);
-                        if (fromInner) return fromInner;
-                    }
-                }
-
-                if (tag === 'CANVAS') {
-                    try {
-                        return { src: node.toDataURL('image/png'), rect: r, el: node };
-                    } catch(e) {}
-                }
-
-                if (tag === 'VIDEO' && node.poster && isRealImg(node.poster)) {
-                    return { src: cleanURL(node.poster), rect: r, el: node };
-                }
-
-                try {
-                    var bg = window.getComputedStyle(node).backgroundImage;
-                    if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
-                        var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
-                        if (m && m[1] && isRealImg(m[1])) {
-                            return { src: cleanURL(m[1]), rect: r, el: node };
-                        }
-                    }
-                } catch(e) {}
-
-                return null;
-            }
-
-            function pointDistanceToRect(x, y, rect) {
-                if (!rect || rect.width <= 0 || rect.height <= 0) return 999999;
-                var dx = 0;
-                if (x < rect.left) dx = rect.left - x;
-                else if (x > rect.right) dx = x - rect.right;
-
-                var dy = 0;
-                if (y < rect.top) dy = rect.top - y;
-                else if (y > rect.bottom) dy = y - rect.bottom;
-
-                return Math.sqrt(dx * dx + dy * dy);
-            }
-
-            var bestImage = null;
-            var bestDistance = 999999;
-            var maxAllowedDistance = 30;
-
-            var resolvedLink = fallbackLink ? cleanURL(fallbackLink) : '';
-
-            var candidateElements = [];
-            if (tx >= 0 && ty >= 0) {
-                if (document.elementsFromPoint) {
-                    candidateElements = document.elementsFromPoint(tx, ty) || [];
-                } else {
-                    var single = document.elementFromPoint(tx, ty);
-                    if (single) candidateElements = [single];
-                }
-            }
-
-            if (candidateElements.length === 0 && touch && touch.target) {
-                candidateElements = [touch.target];
-            }
-
-            for (var i = 0; i < candidateElements.length; i++) {
-                var el = candidateElements[i];
-                if (!el || el === document.body || el === document.documentElement) continue;
-
-                if (!resolvedLink) {
-                    var a = (el.tagName === 'A') ? el : (el.closest ? el.closest('a') : null);
-                    if (a && a.href) {
-                        resolvedLink = cleanURL(a.href);
-                    }
-                }
-
-                var directImg = extractImageFromNode(el);
-                if (directImg && directImg.src && directImg.rect) {
-                    var d = (tx >= 0 && ty >= 0) ? pointDistanceToRect(tx, ty, directImg.rect) : 0;
-                    if (d < maxAllowedDistance && d < bestDistance) {
-                        bestDistance = d;
-                        bestImage = directImg;
-                    }
-                }
-
-                if (el.querySelectorAll) {
-                    var subs = el.querySelectorAll('img, svg, picture, canvas, [style*="background-image"], [data-src]');
-                    for (var j = 0; j < subs.length; j++) {
-                        var subImg = extractImageFromNode(subs[j]);
-                        if (subImg && subImg.src && subImg.rect) {
-                            var sd = (tx >= 0 && ty >= 0) ? pointDistanceToRect(tx, ty, subImg.rect) : 999999;
-                            if (sd < maxAllowedDistance && sd < bestDistance) {
-                                bestDistance = sd;
-                                bestImage = subImg;
-                            }
-                        }
-                    }
-                }
-            }
-
-            var resolvedImg = (bestImage && bestImage.src) ? bestImage.src : '';
-            var rectData = null;
-            if (bestImage && bestImage.rect && bestImage.rect.width > 0 && bestImage.rect.height > 0) {
-                rectData = {
-                    x: bestImage.rect.left,
-                    y: bestImage.rect.top,
-                    width: bestImage.rect.width,
-                    height: bestImage.rect.height
-                };
-            }
-
-            return {
-                imgSrc: resolvedImg,
-                linkHref: resolvedLink,
-                rect: rectData
-            };
+            var info = window.__simple_context_info;
+            return info || null;
         })();
         """
 
-        webView.evaluateJavaScript(inspectJS) { [weak self] result, _ in
+        webView.evaluateJavaScript(fetchContextJS) { [weak self] result, _ in
             guard let self = self else {
                 completionHandler(nil)
                 return
@@ -1183,22 +1140,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             var detectedLinkURL = elementInfo.linkURL
             var detectedImageString: String? = nil
-            var detectedRect: CGRect? = nil
 
             if let dict = result as? [String: Any] {
-                if detectedLinkURL == nil, let linkHref = dict["linkHref"] as? String, !linkHref.isEmpty {
-                    detectedLinkURL = URL(string: linkHref)
-                }
                 if let imgSrc = dict["imgSrc"] as? String, !imgSrc.isEmpty {
                     detectedImageString = imgSrc
                 }
-                if let rDict = dict["rect"] as? [String: Any],
-                   let rx = rDict["x"] as? CGFloat,
-                   let ry = rDict["y"] as? CGFloat,
-                   let rw = rDict["width"] as? CGFloat,
-                   let rh = rDict["height"] as? CGFloat,
-                   rw > 0, rh > 0 {
-                    detectedRect = CGRect(x: rx, y: ry, width: rw, height: rh)
+                if let linkHref = dict["linkHref"] as? String, !linkHref.isEmpty {
+                    detectedLinkURL = URL(string: linkHref) ?? detectedLinkURL
                 }
             }
 
@@ -1209,21 +1157,48 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             let finalLink = detectedLinkURL
             let finalImageString = detectedImageString
-            let finalRect = detectedRect
 
-            let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            let previewProvider: UIContextMenuContentPreviewProvider? = {
+                guard let imageStr = finalImageString, !imageStr.isEmpty else { return nil }
+                return {
+                    let vc = UIViewController()
+                    let iv = UIImageView()
+                    iv.translatesAutoresizingMaskIntoConstraints = false
+                    iv.contentMode = .scaleAspectFit
+                    iv.clipsToBounds = true
+                    vc.view.addSubview(iv)
+                    NSLayoutConstraint.activate([
+                        iv.topAnchor.constraint(equalTo: vc.view.topAnchor),
+                        iv.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor),
+                        iv.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor),
+                        iv.bottomAnchor.constraint(equalTo: vc.view.bottomAnchor)
+                    ])
+                    self.loadPreviewImage(from: imageStr) { img in
+                        DispatchQueue.main.async {
+                            iv.image = img
+                            if let img = img, img.size.width > 0, img.size.height > 0 {
+                                let ratio = img.size.height / img.size.width
+                                vc.preferredContentSize = CGSize(width: 320, height: min(max(320 * ratio, 120), 460))
+                            }
+                        }
+                    }
+                    return vc
+                }
+            }()
+
+            let config = UIContextMenuConfiguration(identifier: nil, previewProvider: previewProvider) { [weak self] _ in
                 guard let self = self else { return UIMenu(title: "", children: []) }
                 var actions: [UIMenuElement] = []
 
                 if let imageStr = finalImageString, !imageStr.isEmpty {
-                    let saveImageAction = UIAction(title: "保存图片", image: UIImage(systemName: "arrow.down.to.line")) { [weak self] _ in
-                        self?.saveImageToPhotos(from: imageStr, fallbackRect: finalRect)
+                    let saveAction = UIAction(title: "保存图片", image: UIImage(systemName: "arrow.down.to.line")) { [weak self] _ in
+                        self?.saveImageToPhotos(from: imageStr)
                     }
                     let copyImageLinkAction = UIAction(title: "拷贝图片链接", image: UIImage(systemName: "link")) { [weak self] _ in
                         UIPasteboard.general.string = imageStr
                         self?.delegate?.tabRequestShowToast("已拷贝图片链接")
                     }
-                    actions.append(contentsOf: [saveImageAction, copyImageLinkAction])
+                    actions.append(contentsOf: [saveAction, copyImageLinkAction])
 
                     if let imgURL = URL(string: imageStr), imgURL.scheme?.hasPrefix("http") == true {
                         let openImageAction = UIAction(title: "在新标签打开图片", image: UIImage(systemName: "arrow.up.right.square")) { [weak self] _ in
@@ -1268,21 +1243,66 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     ) {
     }
 
-    private func saveImageToPhotos(from imageString: String, fallbackRect: CGRect? = nil) {
+    private func loadPreviewImage(from imageString: String, completion: @escaping (UIImage?) -> Void) {
+        let raw = imageString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.contains("image/svg+xml") {
+            convertSvgToImage(urlString: raw, completion: completion)
+            return
+        }
+        if raw.hasPrefix("data:") {
+            if let comma = raw.firstIndex(of: ",") {
+                let payload = String(raw[raw.index(after: comma)...])
+                if let data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters), let img = UIImage(data: data) {
+                    completion(img)
+                    return
+                }
+            }
+            completion(nil)
+            return
+        }
+        if raw.hasPrefix("blob:") {
+            completion(nil)
+            return
+        }
+        guard let url = URL(string: raw) else {
+            completion(nil)
+            return
+        }
+        var req = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 4.0)
+        req.setValue(webView.customUserAgent ?? UserAgentStore.shared.getSelectedUA(), forHTTPHeaderField: "User-Agent")
+        if let referer = webView.url?.absoluteString {
+            req.setValue(referer, forHTTPHeaderField: "Referer")
+        }
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            if let data = data, let img = UIImage(data: data) {
+                completion(img)
+            } else {
+                completion(nil)
+            }
+        }.resume()
+    }
+
+    private func saveImageToPhotos(from imageString: String) {
         let raw = imageString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else {
-            fallbackSaveViaSnapshot(rect: fallbackRect)
+            delegate?.tabRequestShowToast("获取图片失败")
             return
         }
 
         if raw.contains("image/svg+xml") {
-            convertSvgDataToPngAndSave(urlString: raw, fallbackRect: fallbackRect)
+            convertSvgToImage(urlString: raw) { [weak self] img in
+                if let img = img {
+                    self?.writeImageToAlbum(img)
+                } else {
+                    self?.delegate?.tabRequestShowToast("保存图片失败")
+                }
+            }
             return
         }
 
         if raw.hasPrefix("data:") {
             guard let commaIndex = raw.firstIndex(of: ",") else {
-                fallbackSaveViaSnapshot(rect: fallbackRect)
+                delegate?.tabRequestShowToast("图片格式无效")
                 return
             }
             let meta = String(raw[..<commaIndex])
@@ -1302,7 +1322,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
                 guard let data = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]),
                       let image = UIImage(data: data) else {
-                    fallbackSaveViaSnapshot(rect: fallbackRect)
+                    delegate?.tabRequestShowToast("图片解析失败")
                     return
                 }
                 writeImageToAlbum(image)
@@ -1312,7 +1332,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                    let image = UIImage(data: data) {
                     writeImageToAlbum(image)
                 } else {
-                    fallbackSaveViaSnapshot(rect: fallbackRect)
+                    delegate?.tabRequestShowToast("图片解析失败")
                 }
             }
             return
@@ -1343,21 +1363,21 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 });
             })();
             """
-            webView.evaluateJavaScript(js) { [weak self] result, error in
+            webView.evaluateJavaScript(js) { [weak self] result, _ in
                 guard let self = self else { return }
                 if let dict = result as? [String: Any],
                    let success = dict["success"] as? Bool, success,
                    let dataUrl = dict["data"] as? String {
-                    self.saveImageToPhotos(from: dataUrl, fallbackRect: fallbackRect)
+                    self.saveImageToPhotos(from: dataUrl)
                     return
                 }
-                self.fallbackSaveViaSnapshot(rect: fallbackRect)
+                self.delegate?.tabRequestShowToast("读取Blob图片失败")
             }
             return
         }
 
         guard let url = URL(string: raw) else {
-            fallbackSaveViaSnapshot(rect: fallbackRect)
+            delegate?.tabRequestShowToast("无效图片链接")
             return
         }
 
@@ -1388,16 +1408,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         retryReq.setValue(v, forHTTPHeaderField: k)
                     }
                     URLSession.shared.dataTask(with: retryReq) { [weak self] retryData, retryResp, retryErr in
-                        self?.handleDownloadedImageData(data: retryData, response: retryResp, error: retryErr, originalURLString: raw, fallbackRect: fallbackRect)
+                        self?.handleDownloadedImageData(data: retryData, response: retryResp, error: retryErr, originalURLString: raw)
                     }.resume()
                     return
                 }
-                self.handleDownloadedImageData(data: data, response: response, error: error, originalURLString: raw, fallbackRect: fallbackRect)
+                self.handleDownloadedImageData(data: data, response: response, error: error, originalURLString: raw)
             }.resume()
         }
     }
 
-    private func convertSvgDataToPngAndSave(urlString: String, fallbackRect: CGRect?) {
+    private func convertSvgToImage(urlString: String, completion: @escaping (UIImage?) -> Void) {
         let escaped = urlString.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let js = """
         (function() {
@@ -1418,21 +1438,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             });
         })();
         """
-        webView.evaluateJavaScript(js) { [weak self] result, _ in
-            guard let self = self else { return }
+        webView.evaluateJavaScript(js) { result, _ in
             if let dataUrl = result as? String, let comma = dataUrl.firstIndex(of: ",") {
                 let base64 = String(dataUrl[dataUrl.index(after: comma)...])
                 if let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
                    let image = UIImage(data: data) {
-                    self.writeImageToAlbum(image)
+                    completion(image)
                     return
                 }
             }
-            self.fallbackSaveViaSnapshot(rect: fallbackRect)
+            completion(nil)
         }
     }
 
-    private func handleDownloadedImageData(data: Data?, response: URLResponse?, error: Error?, originalURLString: String, fallbackRect: CGRect?) {
+    private func handleDownloadedImageData(data: Data?, response: URLResponse?, error: Error?, originalURLString: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if let data = data, let image = UIImage(data: data), (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? true {
@@ -1465,35 +1484,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             """
             self.webView.evaluateJavaScript(fallbackJS) { [weak self] result, _ in
                 if let dataUrl = result as? String, dataUrl.hasPrefix("data:image/") {
-                    self?.saveImageToPhotos(from: dataUrl, fallbackRect: fallbackRect)
+                    self?.saveImageToPhotos(from: dataUrl)
                     return
                 }
-                self?.fallbackSaveViaSnapshot(rect: fallbackRect)
-            }
-        }
-    }
-
-    private func fallbackSaveViaSnapshot(rect: CGRect?) {
-        guard let rect = rect, rect.width > 8, rect.height > 8, webView.bounds.width > 0, webView.bounds.height > 0 else {
-            delegate?.tabRequestShowToast("保存图片失败")
-            return
-        }
-
-        let intersectRect = rect.intersection(webView.bounds)
-        guard intersectRect.width > 8, intersectRect.height > 8 else {
-            delegate?.tabRequestShowToast("保存图片失败")
-            return
-        }
-
-        let config = WKSnapshotConfiguration()
-        config.rect = intersectRect
-        config.afterScreenUpdates = true
-
-        webView.takeSnapshot(with: config) { [weak self] image, error in
-            if let image = image, error == nil {
-                self?.writeImageToAlbum(image)
-            } else {
-                self?.delegate?.tabRequestShowToast("保存图片失败")
+                self?.delegate?.tabRequestShowToast("下载图片失败")
             }
         }
     }
@@ -1517,6 +1511,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
         hasInjectedScriptsForCurrentPage = false
         registeredCommands.removeAll()
+        ensureCoreScripts()
         delegate?.tabDidUpdate(self)
     }
 
@@ -1528,6 +1523,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             url = currentURL
             title = webView.title ?? url?.host ?? "新标签页"
         }
+        ensureCoreScripts()
         applyDesktopViewAdaptationIfNeeded()
         injectInlineVideoHelper()
         if !hasInjectedScriptsForCurrentPage {
