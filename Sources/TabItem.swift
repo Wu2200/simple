@@ -222,9 +222,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                             } catch(e) {}
                         };
                         reader.readAsDataURL(blob);
-                    }).catch(function(err) {
-                        console.log('[DownloadBridge] fetch blob failed', err);
-                    });
+                    }).catch(function(err) {});
                     return;
                 }
             }
@@ -662,9 +660,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 (document.head || document.documentElement).appendChild(style);
                 return style;
             };
-            window.GM_log = function(msg) {
-                console.log('[Tampermonkey]', msg);
-            };
+            window.GM_log = function(msg) {};
             window.GM_xmlhttpRequest = function(opts) {
                 var id = 'xhr_' + Math.random().toString(36).substr(2, 9);
                 window.__gm_xhr_callbacks__ = window.__gm_xhr_callbacks__ || {};
@@ -786,9 +782,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
                 try {
                     \(script.code)
-                } catch(e) {
-                    console.error('[UserScript Error]', e);
-                }
+                } catch(e) {}
             })('\(script.id)', \(valuesJSON));
             \n
             """
@@ -825,6 +819,22 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             webView.load(navigationAction.request)
         }
         return nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let serverTrust = challenge.protectionSpace.serverTrust {
+            let host = challenge.protectionSpace.host.lowercased()
+            if CertificateTrustStore.shared.isHostTrusted(host) {
+                completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                return
+            }
+        }
+        completionHandler(.performDefaultHandling, nil)
     }
 
     func webView(
