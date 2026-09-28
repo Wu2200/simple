@@ -154,7 +154,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 }
 
-final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
     let id = UUID()
     let webView: WKWebView
     var title = "主页"
@@ -191,6 +191,23 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         let userContentController = WKUserContentController()
         configuration.userContentController = userContentController
+
+        let disableCalloutSource = """
+        (function() {
+            var css = '* { -webkit-touch-callout: none !important; }';
+            var head = document.head || document.documentElement;
+            var style = document.createElement('style');
+            style.type = 'text/css';
+            style.appendChild(document.createTextNode(css));
+            head.appendChild(style);
+        })();
+        """
+        let disableCalloutScript = WKUserScript(
+            source: disableCalloutSource,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        userContentController.addUserScript(disableCalloutScript)
 
         let downloadBridgeSource = """
         (function() {
@@ -317,6 +334,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.backgroundColor = .white
         webView.scrollView.backgroundColor = .white
         webView.isOpaque = true
+
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleWebLongPress(_:)))
+        longPress.minimumPressDuration = 0.45
+        longPress.cancelsTouchesInView = false
+        longPress.delegate = self
+        webView.addGestureRecognizer(longPress)
     }
 
     deinit {
@@ -376,6 +399,222 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             return failedURL ?? url
         }
         return pendingRestoreURL ?? url
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
+    }
+
+    @objc private func handleWebLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        let location = gesture.location(in: webView)
+        let x = location.x
+        let y = location.y
+
+        let js = """
+        (function(x, y) {
+            function cleanURL(u) {
+                if (!u) return '';
+                if (u.startsWith('data:') || u.startsWith('blob:')) return u;
+                try {
+                    return new URL(u, window.location.href).href;
+                } catch(e) {
+                    return u;
+                }
+            }
+
+            function parseSrcset(val) {
+                if (!val) return '';
+                var parts = val.split(',');
+                var bestUrl = '';
+                var maxW = 0;
+                for (var i = 0; i < parts.length; i++) {
+                    var item = parts[i].trim().split(/\\s+/);
+                    if (item.length > 0 && item[0]) {
+                        var w = 0;
+                        if (item.length > 1) {
+                            var m = item[1].match(/(\\d+)/);
+                            if (m) w = parseInt(m[1], 10);
+                        }
+                        if (w >= maxW) {
+                            maxW = w;
+                            bestUrl = item[0];
+                        }
+                    }
+                }
+                return bestUrl;
+            }
+
+            function getElementImage(el) {
+                if (!el) return '';
+                if (el.tagName === 'IMG') {
+                    var s = el.currentSrc || el.src;
+                    if (s && !s.startsWith('data:image/svg+xml')) return cleanURL(s);
+                    var ds = el.getAttribute('data-src') || el.getAttribute('data-original') || el.getAttribute('data-actualsrc') || el.getAttribute('data-lazy-src') || el.getAttribute('data-url') || el.getAttribute('data-srcset');
+                    if (ds) {
+                        var fromDs = parseSrcset(ds) || ds;
+                        return cleanURL(fromDs);
+                    }
+                    var ss = el.getAttribute('srcset');
+                    if (ss) {
+                        var fromSs = parseSrcset(ss);
+                        if (fromSs) return cleanURL(fromSs);
+                    }
+                    if (s) return cleanURL(s);
+                }
+                if (el.tagName === 'VIDEO' && el.poster) {
+                    return cleanURL(el.poster);
+                }
+                if (el.tagName === 'CANVAS') {
+                    try {
+                        return el.toDataURL('image/png');
+                    } catch(e) { return ''; }
+                }
+                try {
+                    var bg = window.getComputedStyle(el).backgroundImage;
+                    if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
+                        var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
+                        if (m && m[1]) return cleanURL(m[1]);
+                    }
+                } catch(e) {}
+                return '';
+            }
+
+            var els = [];
+            if (document.elementsFromPoint) {
+                els = document.elementsFromPoint(x, y) || [];
+            } else {
+                var el = document.elementFromPoint(x, y);
+                if (el) els = [el];
+            }
+
+            var detectedImg = '';
+            var detectedLink = '';
+
+            for (var i = 0; i < els.length; i++) {
+                var node = els[i];
+                if (!node || node === document.body || node === document.documentElement) continue;
+
+                if (!detectedLink) {
+                    var aNode = node.closest ? node.closest('a') : null;
+                    if (aNode && aNode.href) {
+                        detectedLink = cleanURL(aNode.href);
+                    }
+                }
+
+                if (!detectedImg) {
+                    detectedImg = getElementImage(node);
+                    if (!detectedImg && node.querySelector) {
+                        var innerImg = node.querySelector('img');
+                        if (innerImg) {
+                            detectedImg = getElementImage(innerImg);
+                        }
+                    }
+                }
+
+                if (detectedImg && detectedLink) break;
+            }
+
+            return {
+                imgSrc: detectedImg,
+                linkHref: detectedLink
+            };
+        })(\(x), \(y));
+        """
+
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self = self else { return }
+            var detectedLinkURL: URL?
+            var detectedImageURL: URL?
+
+            if let dict = result as? [String: Any] {
+                if let linkHref = dict["linkHref"] as? String, !linkHref.isEmpty {
+                    if let directURL = URL(string: linkHref) {
+                        detectedLinkURL = directURL.scheme == nil ? URL(string: linkHref, relativeTo: self.url)?.absoluteURL : directURL
+                    }
+                }
+                if let imgSrc = dict["imgSrc"] as? String, !imgSrc.isEmpty {
+                    if imgSrc.hasPrefix("data:") {
+                        detectedImageURL = URL(string: imgSrc)
+                    } else if let directURL = URL(string: imgSrc) {
+                        detectedImageURL = directURL.scheme == nil ? URL(string: imgSrc, relativeTo: self.url)?.absoluteURL : directURL
+                    }
+                }
+            }
+
+            guard detectedLinkURL != nil || detectedImageURL != nil else { return }
+            self.showContextMenuSheet(linkURL: detectedLinkURL, imageURL: detectedImageURL, at: location)
+        }
+    }
+
+    private func showContextMenuSheet(linkURL: URL?, imageURL: URL?, at point: CGPoint) {
+        guard let presenter = topViewController() else { return }
+
+        let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+
+        if let linkURL = linkURL {
+            alert.addAction(UIAlertAction(title: "新标签打开", style: .default) { [weak self] _ in
+                self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: false)
+            })
+
+            alert.addAction(UIAlertAction(title: "后台打开", style: .default) { [weak self] _ in
+                self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: true)
+            })
+
+            alert.addAction(UIAlertAction(title: "拷贝链接", style: .default) { [weak self] _ in
+                UIPasteboard.general.string = linkURL.absoluteString
+                self?.delegate?.tabRequestShowToast("已拷贝链接")
+            })
+        }
+
+        if let imgURL = imageURL {
+            alert.addAction(UIAlertAction(title: "保存图片", style: .default) { [weak self] _ in
+                self?.saveImageToPhotos(from: imgURL)
+            })
+
+            alert.addAction(UIAlertAction(title: "拷贝图片链接", style: .default) { [weak self] _ in
+                UIPasteboard.general.string = imgURL.absoluteString
+                self?.delegate?.tabRequestShowToast("已拷贝图片链接")
+            })
+
+            alert.addAction(UIAlertAction(title: "共享图片", style: .default) { [weak self] _ in
+                self?.share(items: [imgURL])
+            })
+        } else if let linkURL = linkURL {
+            alert.addAction(UIAlertAction(title: "共享链接", style: .default) { [weak self] _ in
+                self?.share(items: [linkURL])
+            })
+        }
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = webView
+            popover.sourceRect = CGRect(x: point.x, y: point.y, width: 1, height: 1)
+            popover.permittedArrowDirections = [.up, .down]
+        }
+
+        presenter.present(alert, animated: true)
+    }
+
+    private func share(items: [Any]) {
+        guard let presenter = topViewController() else { return }
+        let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = webView
+            popover.sourceRect = CGRect(x: webView.bounds.midX, y: webView.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+        presenter.present(activity, animated: true)
+    }
+
+    private func topViewController() -> UIViewController? {
+        let root = webView.window?.rootViewController ?? UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        var top = root
+        while let presented = top?.presentedViewController {
+            top = presented
+        }
+        return top
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -842,301 +1081,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
         completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
     ) {
-        let rawLink = elementInfo.linkURL?.absoluteString ?? ""
-        let escapedLink = rawLink.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-
-        let inspectJS = """
-        (function() {
-            var touch = window.__lastTouchInfo;
-            var x = touch ? touch.x : -1;
-            var y = touch ? touch.y : -1;
-            var touchTarget = touch ? touch.target : null;
-            var fallbackLink = "\(escapedLink)";
-
-            function cleanURL(u) {
-                if (!u) return '';
-                if (u.startsWith('data:') || u.startsWith('blob:')) return u;
-                try {
-                    return new URL(u, window.location.href).href;
-                } catch(e) {
-                    return u;
-                }
-            }
-
-            function getSrc(el) {
-                if (!el) return '';
-                if (el.tagName === 'IMG') {
-                    return el.currentSrc || el.src || el.getAttribute('data-src') || el.getAttribute('data-original') || el.getAttribute('data-actualsrc') || el.getAttribute('data-lazy-src') || el.getAttribute('data-url') || '';
-                }
-                if (el.tagName === 'VIDEO' && el.poster) {
-                    return el.poster;
-                }
-                if (el.tagName === 'CANVAS') {
-                    try {
-                        return el.toDataURL('image/png');
-                    } catch(e) { return ''; }
-                }
-                return '';
-            }
-
-            function getBg(el) {
-                if (!el) return '';
-                try {
-                    var bg = window.getComputedStyle(el).backgroundImage;
-                    if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
-                        var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
-                        if (m && m[1]) return m[1];
-                    }
-                } catch(e) {}
-                return '';
-            }
-
-            function svgToPng(svgEl) {
-                try {
-                    var r = svgEl.getBoundingClientRect();
-                    var w = Math.max(r.width || 0, 32);
-                    var h = Math.max(r.height || 0, 32);
-                    var s = new XMLSerializer();
-                    var str = s.serializeToString(svgEl);
-                    if (!svgEl.getAttribute('xmlns')) {
-                        str = str.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
-                    }
-                    var svgData = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(str);
-                    var cvs = document.createElement('canvas');
-                    cvs.width = w * 2;
-                    cvs.height = h * 2;
-                    var ctx = cvs.getContext('2d');
-                    var img = new Image();
-                    img.src = svgData;
-                    if (img.complete) {
-                        ctx.drawImage(img, 0, 0, cvs.width, cvs.height);
-                        return cvs.toDataURL('image/png');
-                    }
-                    return svgData;
-                } catch(e) { return ''; }
-            }
-
-            function findImage(el) {
-                if (!el) return '';
-                var d = getSrc(el);
-                if (d) return cleanURL(d);
-                if (el.tagName === 'svg' || el.tagName === 'SVG') {
-                    return svgToPng(el);
-                }
-                var pSvg = el.closest ? el.closest('svg') : null;
-                if (pSvg) {
-                    return svgToPng(pSvg);
-                }
-                var b = getBg(el);
-                if (b) return cleanURL(b);
-                if (el.querySelector) {
-                    var i = el.querySelector('img');
-                    var is = getSrc(i);
-                    if (is) return cleanURL(is);
-                    var sv = el.querySelector('svg');
-                    if (sv) return svgToPng(sv);
-                    var c = el.querySelector('canvas');
-                    var cs = getSrc(c);
-                    if (cs) return cs;
-                }
-                return '';
-            }
-
-            var resolvedImg = '';
-            var resolvedLink = fallbackLink ? cleanURL(fallbackLink) : '';
-
-            if (touchTarget) {
-                resolvedImg = findImage(touchTarget);
-                var cur = touchTarget;
-                var depth = 0;
-                while (cur && depth < 8 && cur !== document.body && cur !== document.documentElement) {
-                    if (!resolvedLink && cur.tagName === 'A') {
-                        resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
-                    }
-                    if (!resolvedImg) {
-                        resolvedImg = findImage(cur);
-                    }
-                    cur = cur.parentElement;
-                    depth++;
-                }
-            }
-
-            if ((!resolvedImg || !resolvedLink) && x >= 0 && y >= 0) {
-                var els = [];
-                if (document.elementsFromPoint) {
-                    els = document.elementsFromPoint(x, y) || [];
-                } else {
-                    var se = document.elementFromPoint(x, y);
-                    if (se) els = [se];
-                }
-                for (var j = 0; j < els.length; j++) {
-                    var item = els[j];
-                    if (!item || item === document.body || item === document.documentElement) continue;
-                    if (!resolvedLink) {
-                        var a = item.closest ? item.closest('a') : null;
-                        if (a) {
-                            resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
-                        }
-                    }
-                    if (!resolvedImg) {
-                        resolvedImg = findImage(item);
-                    }
-                    if (resolvedImg && resolvedLink) break;
-                }
-            }
-
-            if (!resolvedImg && fallbackLink) {
-                var allAnchors = document.querySelectorAll('a');
-                for (var k = 0; k < allAnchors.length; k++) {
-                    var anc = allAnchors[k];
-                    if (cleanURL(anc.href) === resolvedLink || (anc.getAttribute('href') && cleanURL(anc.getAttribute('href')) === resolvedLink)) {
-                        resolvedImg = findImage(anc);
-                        if (resolvedImg) break;
-                    }
-                }
-            }
-
-            return {
-                imgSrc: resolvedImg,
-                linkHref: resolvedLink
-            };
-        })();
-        """
-
-        var isHandled = false
-
-        let fallbackWork = DispatchWorkItem { [weak self] in
-            guard !isHandled else { return }
-            isHandled = true
-            if let linkURL = elementInfo.linkURL {
-                let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                    guard let self = self else { return nil }
-                    let openNewTab = UIAction(title: "新标签打开", image: UIImage(systemName: "safari")) { [weak self] _ in
-                        self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: false)
-                    }
-                    let openBackground = UIAction(title: "后台打开", image: UIImage(systemName: "square.badge.plus")) { [weak self] _ in
-                        self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: true)
-                    }
-                    let copyLink = UIAction(title: "拷贝链接", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
-                        UIPasteboard.general.string = linkURL.absoluteString
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        self?.delegate?.tabRequestShowToast("已拷贝链接")
-                    }
-                    return UIMenu(title: "", children: [openNewTab, openBackground, copyLink])
-                }
-                completionHandler(config)
-            } else {
-                completionHandler(nil)
-            }
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: fallbackWork)
-
-        webView.evaluateJavaScript(inspectJS) { [weak self] result, _ in
-            guard !isHandled else { return }
-            isHandled = true
-            fallbackWork.cancel()
-
-            guard let self = self else {
-                completionHandler(nil)
-                return
-            }
-
-            var detectedLinkURL = elementInfo.linkURL
-            var detectedImageURL: URL?
-
-            if let dict = result as? [String: Any] {
-                if detectedLinkURL == nil, let linkHref = dict["linkHref"] as? String, !linkHref.isEmpty {
-                    if let directURL = URL(string: linkHref) {
-                        detectedLinkURL = directURL.scheme == nil ? URL(string: linkHref, relativeTo: self.url)?.absoluteURL : directURL
-                    }
-                }
-                if let imgSrc = dict["imgSrc"] as? String, !imgSrc.isEmpty {
-                    if imgSrc.hasPrefix("data:") {
-                        detectedImageURL = URL(string: imgSrc)
-                    } else if let directURL = URL(string: imgSrc) {
-                        detectedImageURL = directURL.scheme == nil ? URL(string: imgSrc, relativeTo: self.url)?.absoluteURL : directURL
-                    }
-                }
-            }
-
-            let hasLink = detectedLinkURL != nil
-            let hasImage = detectedImageURL != nil
-
-            guard hasLink || hasImage else {
-                completionHandler(nil)
-                return
-            }
-
-            let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                guard let self = self else { return nil }
-                var actions: [UIMenuElement] = []
-
-                if let linkURL = detectedLinkURL {
-                    let openNewTab = UIAction(
-                        title: "新标签打开",
-                        image: UIImage(systemName: "safari")
-                    ) { [weak self] _ in
-                        self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: false)
-                    }
-                    actions.append(openNewTab)
-
-                    let openBackground = UIAction(
-                        title: "后台打开",
-                        image: UIImage(systemName: "square.badge.plus")
-                    ) { [weak self] _ in
-                        self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: true)
-                    }
-                    actions.append(openBackground)
-
-                    let copyLink = UIAction(
-                        title: "拷贝链接",
-                        image: UIImage(systemName: "doc.on.doc")
-                    ) { [weak self] _ in
-                        UIPasteboard.general.string = linkURL.absoluteString
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        self?.delegate?.tabRequestShowToast("已拷贝链接")
-                    }
-                    actions.append(copyLink)
-                }
-
-                if let imgURL = detectedImageURL {
-                    let saveImage = UIAction(
-                        title: "保存图片",
-                        image: UIImage(systemName: "square.and.arrow.down")
-                    ) { [weak self] _ in
-                        self?.saveImageToPhotos(from: imgURL)
-                    }
-                    actions.append(saveImage)
-
-                    let copyImageURL = UIAction(
-                        title: "拷贝图片链接",
-                        image: UIImage(systemName: "link")
-                    ) { [weak self] _ in
-                        UIPasteboard.general.string = imgURL.absoluteString
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        self?.delegate?.tabRequestShowToast("已拷贝图片链接")
-                    }
-                    actions.append(copyImageURL)
-                }
-
-                return UIMenu(title: "", children: actions)
-            }
-
-            completionHandler(config)
-        }
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        contextMenuForElement elementInfo: WKContextMenuElementInfo,
-        willCommitWithAnimator animator: UIContextMenuInteractionCommitAnimating
-    ) {
-        animator.addCompletion { [weak self] in
-            if let linkURL = elementInfo.linkURL {
-                self?.delegate?.tabRequestNewTab(url: linkURL, inBackground: false)
-            }
-        }
+        completionHandler(nil)
     }
 
     private func saveImageToPhotos(from url: URL) {
