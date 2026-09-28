@@ -512,8 +512,20 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func resetProgress() {
+        progressView.layer.removeAllAnimations()
         progressView.setProgress(0, animated: false)
         progressView.alpha = 0
+    }
+
+    private func completeProgress() {
+        progressView.setProgress(1.0, animated: true)
+        UIView.animate(withDuration: 0.22, delay: 0.08, options: [.curveEaseOut], animations: {
+            self.progressView.alpha = 0
+        }, completion: { [weak self] finished in
+            if finished && self?.activeTab.isLoading == false {
+                self?.progressView.setProgress(0, animated: false)
+            }
+        })
     }
 
     private func configureFaviconObserver() {
@@ -980,7 +992,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
         }
         iconContainer.layer.cornerRadius = 16
-        iconContainer.layer.cornerCurve = .continuous
+        iconContainer.cornerCurve = .continuous
         iconContainer.layer.shadowColor = UIColor.black.cgColor
         iconContainer.layer.shadowOpacity = 0.04
         iconContainer.layer.shadowRadius = 5
@@ -1949,6 +1961,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         activeTabIndex = index
 
         let tab = activeTab
+        tab.purgeContextMenuInteractions()
         tab.webView.translatesAutoresizingMaskIntoConstraints = false
         webContainer.addSubview(tab.webView)
 
@@ -2029,17 +2042,33 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             DispatchQueue.main.async {
                 guard let self = self,
                       self.tabs.indices.contains(self.activeTabIndex),
-                      observedWebView == self.activeTab.webView,
-                      observedWebView.isLoading,
-                      self.homeView.alpha < 0.5,
-                      !self.activeTab.isDisplayingFailurePage else {
-                    self?.resetProgress()
-                    self?.updateAddressRightButtons()
+                      observedWebView == self.activeTab.webView else {
                     return
                 }
 
-                self.progressView.alpha = 1
-                self.progressView.setProgress(Float(observedWebView.estimatedProgress), animated: true)
+                if self.homeView.alpha > 0.5 || self.activeTab.isDisplayingFailurePage {
+                    self.resetProgress()
+                    self.updateAddressRightButtons()
+                    return
+                }
+
+                let progress = Float(observedWebView.estimatedProgress)
+
+                if observedWebView.isLoading {
+                    if self.progressView.alpha < 1 {
+                        self.progressView.alpha = 1
+                    }
+                    let currentProgress = self.progressView.progress
+                    let nextProgress = max(currentProgress, progress)
+                    if nextProgress >= 1.0 {
+                        self.completeProgress()
+                    } else {
+                        self.progressView.setProgress(nextProgress, animated: true)
+                    }
+                } else {
+                    self.completeProgress()
+                }
+
                 self.updateAddressRightButtons()
             }
         }
@@ -2053,6 +2082,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
         addressField.text = (raw == "about:blank") ? "" : raw
+
+        resetProgress()
+        progressView.alpha = 1
+        progressView.setProgress(0.08, animated: false)
+
         activeTab.webView.load(URLRequest(url: url))
 
         if let host = url.host {
@@ -2342,7 +2376,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         if !tab.isLoading {
-            resetProgress()
+            completeProgress()
 
             if !tab.isDisplayingFailurePage,
                let url = tab.url,
