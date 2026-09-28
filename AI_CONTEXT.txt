@@ -376,6 +376,10 @@ jobs:
         <key>NSAllowsArbitraryLoadsInWebContent</key>
         <true/>
     </dict>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>需要访问相册以保存网页图片</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>需要访问相册以选取站点图标或保存图片</string>
     <key>UILaunchStoryboardName</key>
     <string>LaunchScreen</string>
     <key>UIRequiresFullScreen</key>
