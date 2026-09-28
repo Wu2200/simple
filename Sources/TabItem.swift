@@ -154,7 +154,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 }
 
-final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIScrollViewDelegate {
     let id = UUID()
     let webView: WKWebView
     var title = "主页"
@@ -273,12 +273,97 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         )
         userContentController.addUserScript(downloadScript)
 
+        let scrollGuardSource = """
+        (function() {
+            if (window.__simple_scroll_guard__) return;
+            window.__simple_scroll_guard__ = true;
+
+            var userHasScrolled = false;
+            var touchActive = false;
+
+            function onTouchStart() {
+                touchActive = true;
+            }
+
+            function onTouchMove() {
+                userHasScrolled = true;
+            }
+
+            function onTouchEnd() {
+                touchActive = false;
+            }
+
+            window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+            window.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
+            window.addEventListener('touchend', onTouchEnd, { capture: true, passive: true });
+            window.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true });
+            window.addEventListener('wheel', onTouchMove, { capture: true, passive: true });
+
+            var origScrollTo = window.scrollTo;
+            window.scrollTo = function() {
+                var x = arguments[0];
+                var y = arguments[1];
+                if (typeof x === 'object' && x !== null) {
+                    y = x.top;
+                    x = x.left;
+                }
+                var isTopJump = (x === 0 || x === undefined) && (y === 0 || y === 1 || y < 20);
+                if (userHasScrolled && isTopJump) {
+                    return;
+                }
+                return origScrollTo.apply(this, arguments);
+            };
+
+            var origScroll = window.scroll;
+            window.scroll = function() {
+                var x = arguments[0];
+                var y = arguments[1];
+                if (typeof x === 'object' && x !== null) {
+                    y = x.top;
+                    x = x.left;
+                }
+                var isTopJump = (x === 0 || x === undefined) && (y === 0 || y === 1 || y < 20);
+                if (userHasScrolled && isTopJump) {
+                    return;
+                }
+                return origScroll.apply(this, arguments);
+            };
+
+            if (Element.prototype.scrollIntoView) {
+                var origScrollIntoView = Element.prototype.scrollIntoView;
+                Element.prototype.scrollIntoView = function() {
+                    if (userHasScrolled && !touchActive) {
+                        return;
+                    }
+                    return origScrollIntoView.apply(this, arguments);
+                };
+            }
+
+            var origFocus = HTMLElement.prototype.focus;
+            HTMLElement.prototype.focus = function(options) {
+                if (userHasScrolled && (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA')) {
+                    var opts = options || {};
+                    if (typeof opts === 'object') {
+                        opts.preventScroll = true;
+                        return origFocus.call(this, opts);
+                    }
+                }
+                return origFocus.apply(this, arguments);
+            };
+        })();
+        """
+        let scrollGuardScript = WKUserScript(
+            source: scrollGuardSource,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        userContentController.addUserScript(scrollGuardScript)
+
         let touchScriptSource = """
         (function() {
             if (window.__simple_touch_injected__) return;
             window.__simple_touch_injected__ = true;
             window.__simple_last_touch = null;
-            window.__simple_context_target = null;
 
             function saveTouch(e) {
                 var t = (e.touches && e.touches.length > 0) ? e.touches[0] : (e.changedTouches && e.changedTouches.length > 0 ? e.changedTouches[0] : e);
@@ -294,10 +379,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             window.addEventListener('touchstart', saveTouch, { capture: true, passive: true });
             window.addEventListener('touchmove', saveTouch, { capture: true, passive: true });
             window.addEventListener('pointerdown', saveTouch, { capture: true, passive: true });
-            window.addEventListener('contextmenu', function(e) {
-                saveTouch(e);
-                window.__simple_context_target = e.target;
-            }, { capture: true, passive: true });
+            window.addEventListener('mousedown', saveTouch, { capture: true, passive: true });
         })();
         """
         let touchScript = WKUserScript(
@@ -322,6 +404,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.keyboardDismissMode = .onDrag
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.delegate = self
         webView.backgroundColor = .white
         webView.scrollView.backgroundColor = .white
         webView.isOpaque = true
@@ -336,6 +419,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         delegate = nil
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
+        webView.scrollView.delegate = nil
         webView.stopLoading()
         webView.evaluateJavaScript("""
         (function(){
@@ -856,10 +940,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let inspectJS = """
         (function() {
             var touch = window.__simple_last_touch;
-            var ctxTarget = window.__simple_context_target;
-            var directTarget = ctxTarget || (touch ? touch.target : null);
-            var tx = touch ? touch.x : -1;
-            var ty = touch ? touch.y : -1;
+            var tx = (touch && typeof touch.x === 'number') ? touch.x : -1;
+            var ty = (touch && typeof touch.y === 'number') ? touch.y : -1;
             var fallbackLink = "\(escapedLink)";
 
             function cleanURL(u) {
@@ -1006,131 +1088,82 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 return null;
             }
 
-            function isPointInRect(x, y, rect, pad) {
-                if (!rect) return false;
-                if (rect.width <= 0 && rect.height <= 0) return false;
-                var p = typeof pad === 'number' ? pad : 12;
-                return (x >= rect.left - p && x <= rect.right + p && y >= rect.top - p && y <= rect.bottom + p);
+            function pointDistanceToRect(x, y, rect) {
+                if (!rect || rect.width <= 0 || rect.height <= 0) return 999999;
+                var dx = 0;
+                if (x < rect.left) dx = rect.left - x;
+                else if (x > rect.right) dx = x - rect.right;
+
+                var dy = 0;
+                if (y < rect.top) dy = rect.top - y;
+                else if (y > rect.bottom) dy = y - rect.bottom;
+
+                return Math.sqrt(dx * dx + dy * dy);
             }
 
-            var resolvedImg = '';
+            var bestImage = null;
+            var bestDistance = 999999;
+            var maxAllowedDistance = 30;
+
             var resolvedLink = fallbackLink ? cleanURL(fallbackLink) : '';
-            var targetRect = null;
 
-            var hitImage = null;
-
-            if (directTarget) {
-                var directFound = extractImageFromNode(directTarget);
-                if (directFound && directFound.src) {
-                    hitImage = directFound;
+            var candidateElements = [];
+            if (tx >= 0 && ty >= 0) {
+                if (document.elementsFromPoint) {
+                    candidateElements = document.elementsFromPoint(tx, ty) || [];
                 } else {
-                    var subImages = directTarget.querySelectorAll ? directTarget.querySelectorAll('img, svg, picture, canvas, [style*="background-image"], [data-src]') : [];
-                    for (var si = 0; si < subImages.length; si++) {
-                        var subFound = extractImageFromNode(subImages[si]);
-                        if (subFound && subFound.src) {
-                            if (tx >= 0 && ty >= 0) {
-                                if (isPointInRect(tx, ty, subFound.rect, 14)) {
-                                    hitImage = subFound;
-                                    break;
-                                }
-                            } else {
-                                hitImage = subFound;
-                                break;
-                            }
-                        }
-                    }
+                    var single = document.elementFromPoint(tx, ty);
+                    if (single) candidateElements = [single];
                 }
+            }
+
+            if (candidateElements.length === 0 && touch && touch.target) {
+                candidateElements = [touch.target];
+            }
+
+            for (var i = 0; i < candidateElements.length; i++) {
+                var el = candidateElements[i];
+                if (!el || el === document.body || el === document.documentElement) continue;
 
                 if (!resolvedLink) {
-                    var directA = directTarget.tagName === 'A' ? directTarget : (directTarget.closest ? directTarget.closest('a') : null);
-                    if (directA) {
-                        resolvedLink = cleanURL(directA.href || directA.getAttribute('href') || '');
+                    var a = (el.tagName === 'A') ? el : (el.closest ? el.closest('a') : null);
+                    if (a && a.href) {
+                        resolvedLink = cleanURL(a.href);
                     }
                 }
-            }
 
-            if (!hitImage && tx >= 0 && ty >= 0) {
-                var probePoints = [
-                    { x: tx, y: ty },
-                    { x: tx - 4, y: ty },
-                    { x: tx + 4, y: ty },
-                    { x: tx, y: ty - 4 },
-                    { x: tx, y: ty + 4 },
-                    { x: tx - 10, y: ty },
-                    { x: tx + 10, y: ty },
-                    { x: tx, y: ty - 10 },
-                    { x: tx, y: ty + 10 }
-                ];
-
-                for (var pIdx = 0; pIdx < probePoints.length; pIdx++) {
-                    var pt = probePoints[pIdx];
-                    var els = [];
-                    if (document.elementsFromPoint) {
-                        els = document.elementsFromPoint(pt.x, pt.y) || [];
+                var directImg = extractImageFromNode(el);
+                if (directImg && directImg.src && directImg.rect) {
+                    var d = (tx >= 0 && ty >= 0) ? pointDistanceToRect(tx, ty, directImg.rect) : 0;
+                    if (d < maxAllowedDistance && d < bestDistance) {
+                        bestDistance = d;
+                        bestImage = directImg;
                     }
-                    for (var eIdx = 0; eIdx < els.length; eIdx++) {
-                        var el = els[eIdx];
-                        if (!el || el === document.body || el === document.documentElement) continue;
+                }
 
-                        if (!resolvedLink) {
-                            var a = el.tagName === 'A' ? el : (el.closest ? el.closest('a') : null);
-                            if (a) {
-                                resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
+                if (el.querySelectorAll) {
+                    var subs = el.querySelectorAll('img, svg, picture, canvas, [style*="background-image"], [data-src]');
+                    for (var j = 0; j < subs.length; j++) {
+                        var subImg = extractImageFromNode(subs[j]);
+                        if (subImg && subImg.src && subImg.rect) {
+                            var sd = (tx >= 0 && ty >= 0) ? pointDistanceToRect(tx, ty, subImg.rect) : 999999;
+                            if (sd < maxAllowedDistance && sd < bestDistance) {
+                                bestDistance = sd;
+                                bestImage = subImg;
                             }
                         }
-
-                        if (!hitImage) {
-                            var candidate = extractImageFromNode(el);
-                            if (candidate && candidate.src && isPointInRect(tx, ty, candidate.rect, 16)) {
-                                hitImage = candidate;
-                            }
-                            if (!hitImage && el.querySelectorAll) {
-                                var nested = el.querySelectorAll('img, svg, picture, canvas');
-                                for (var ni = 0; ni < nested.length; ni++) {
-                                    var nCand = extractImageFromNode(nested[ni]);
-                                    if (nCand && nCand.src && isPointInRect(tx, ty, nCand.rect, 16)) {
-                                        hitImage = nCand;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        if (hitImage && resolvedLink) break;
                     }
-                    if (hitImage) break;
                 }
             }
 
-            if (!hitImage && directTarget) {
-                var cur = directTarget;
-                var depth = 0;
-                while (cur && depth < 3 && cur !== document.body && cur !== document.documentElement) {
-                    if (!resolvedLink && cur.tagName === 'A') {
-                        resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
-                    }
-                    var pCand = extractImageFromNode(cur);
-                    if (pCand && pCand.src && (tx < 0 || isPointInRect(tx, ty, pCand.rect, 20))) {
-                        hitImage = pCand;
-                        break;
-                    }
-                    cur = cur.parentElement;
-                    depth++;
-                }
-            }
-
-            if (hitImage && hitImage.src) {
-                resolvedImg = hitImage.src;
-                targetRect = hitImage.rect;
-            }
-
+            var resolvedImg = (bestImage && bestImage.src) ? bestImage.src : '';
             var rectData = null;
-            if (targetRect && targetRect.width > 0 && targetRect.height > 0) {
+            if (bestImage && bestImage.rect && bestImage.rect.width > 0 && bestImage.rect.height > 0) {
                 rectData = {
-                    x: targetRect.left,
-                    y: targetRect.top,
-                    width: targetRect.width,
-                    height: targetRect.height
+                    x: bestImage.rect.left,
+                    y: bestImage.rect.top,
+                    width: bestImage.rect.width,
+                    height: bestImage.rect.height
                 };
             }
 
@@ -1509,12 +1542,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if !isDisplayingFailurePage {
             url = webView.url
             title = webView.title ?? url?.host ?? "新标签页"
-        }
-        applyDesktopViewAdaptationIfNeeded()
-        injectInlineVideoHelper()
-        if !hasInjectedScriptsForCurrentPage {
-            hasInjectedScriptsForCurrentPage = true
-            injectAndRunUserScripts()
         }
         extractHighResFaviconIfNeeded()
         delegate?.tabDidUpdate(self)
