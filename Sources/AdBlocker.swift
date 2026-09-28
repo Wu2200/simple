@@ -242,6 +242,13 @@ final class AdBlockManager {
         controller.removeAllContentRuleLists()
         controller.removeAllUserScripts()
 
+        defer {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("SimpleAdBlockRulesApplied"),
+                object: webView
+            )
+        }
+
         guard isEnabled else {
             return
         }
