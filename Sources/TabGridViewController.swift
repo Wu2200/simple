@@ -143,6 +143,10 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
         }
     }
 
+    func reloadGrid() {
+        collectionView.reloadData()
+    }
+
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
         tabs.count
     }
