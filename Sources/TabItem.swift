@@ -155,6 +155,8 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
 }
 
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    static var allowedInsecureHosts: Set<String> = []
+
     let id = UUID()
     let webView: WKWebView
     var title = "主页"
@@ -282,7 +284,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             try {
                 var style = document.createElement('style');
-                style.textContent = 'img, svg, a, picture, video, canvas, [role="img"] { -webkit-touch-callout: default !important; }';
+                style.textContent = 'img, svg, a, picture, video, canvas, [role="img"] { -webkit-touch-callout: default !important; -webkit-user-select: auto !important; }';
                 (document.head || document.documentElement).appendChild(style);
             } catch(e) {}
 
@@ -301,9 +303,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             window.addEventListener('touchmove', handleTouch, { capture: true, passive: true });
             window.addEventListener('pointerdown', handleTouch, { capture: true, passive: true });
             window.addEventListener('contextmenu', function(e) {
-                window.__lastTouchX = e.clientX;
-                window.__lastTouchY = e.clientY;
-                window.__lastTouchTarget = e.target;
+                handleTouch(e);
             }, { capture: true, passive: true });
         })();
         """
@@ -837,6 +837,22 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func webView(
         _ webView: WKWebView,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let serverTrust = challenge.protectionSpace.serverTrust {
+            let host = challenge.protectionSpace.host
+            if TabItem.allowedInsecureHosts.contains(host) {
+                completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                return
+            }
+        }
+        completionHandler(.performDefaultHandling, nil)
+    }
+
+    func webView(
+        _ webView: WKWebView,
         contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
         completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
     ) {
@@ -854,9 +870,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             function getImgSrc(img) {
                 if (!img) return '';
-                if (img.currentSrc && !img.currentSrc.startsWith('blob:')) return img.currentSrc;
-                if (img.src && !img.src.startsWith('blob:')) return img.src;
-                var attrs = ['data-src', 'data-original', 'data-actualsrc', 'data-lazy-src', 'data-url', 'data-href', 'src'];
+                if (img.currentSrc) return img.currentSrc;
+                if (img.src) return img.src;
+                var attrs = ['data-src', 'data-original', 'data-actualsrc', 'data-lazy-src', 'data-url', 'data-href', 'data-bg', 'data-background', 'lazyload-src', 'src'];
                 for (var a = 0; a < attrs.length; a++) {
                     var v = img.getAttribute(attrs[a]);
                     if (v) return v;
@@ -888,10 +904,23 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             function getBg(el) {
                 if (!el || !window.getComputedStyle) return '';
                 try {
-                    var bg = window.getComputedStyle(el).backgroundImage;
+                    var style = window.getComputedStyle(el);
+                    var bg = style.backgroundImage;
                     if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
                         var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
                         if (m && m[1]) return m[1];
+                    }
+                    var beforeStyle = window.getComputedStyle(el, '::before');
+                    var beforeBg = beforeStyle.backgroundImage;
+                    if (beforeBg && beforeBg !== 'none' && beforeBg.indexOf('url(') !== -1) {
+                        var mb = beforeBg.match(/url\\(['"]?(.*?)['"]?\\)/i);
+                        if (mb && mb[1]) return mb[1];
+                    }
+                    var afterStyle = window.getComputedStyle(el, '::after');
+                    var afterBg = afterStyle.backgroundImage;
+                    if (afterBg && afterBg !== 'none' && afterBg.indexOf('url(') !== -1) {
+                        var ma = afterBg.match(/url\\(['"]?(.*?)['"]?\\)/i);
+                        if (ma && ma[1]) return ma[1];
                     }
                 } catch(e) {}
                 return '';
@@ -905,7 +934,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 if (tag === 'CANVAS') {
                     try { return el.toDataURL('image/png'); } catch(e) { return ''; }
                 }
-                if (tag === 'VIDEO' && el.poster) return el.poster;
+                if (tag === 'VIDEO') {
+                    if (el.poster) return el.poster;
+                    if (el.currentSrc) return el.currentSrc;
+                }
 
                 var pSvg = el.closest ? el.closest('svg') : null;
                 if (pSvg) return getSvgData(pSvg);
@@ -933,10 +965,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     if (cvs) {
                         try { return cvs.toDataURL('image/png'); } catch(e) {}
                     }
-                    var allBg = el.querySelectorAll('*');
-                    for (var i = 0; i < Math.min(allBg.length, 6); i++) {
-                        var b = getBg(allBg[i]);
-                        if (b) return b;
+                    var allSub = el.querySelectorAll('*');
+                    for (var i = 0; i < Math.min(allSub.length, 8); i++) {
+                        var subImg = findImageInElement(allSub[i]);
+                        if (subImg) return subImg;
                     }
                 }
                 return '';
@@ -947,16 +979,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             var candidates = [];
 
+            if (touchTarget) {
+                candidates.push(touchTarget);
+            }
+
             try {
                 var actives = document.querySelectorAll(':active');
                 for (var i = actives.length - 1; i >= 0; i--) {
                     candidates.push(actives[i]);
                 }
             } catch(e) {}
-
-            if (touchTarget) {
-                candidates.push(touchTarget);
-            }
 
             if (tx >= 0 && ty >= 0) {
                 try {
@@ -997,7 +1029,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     if (!resolvedImg) {
                         var p = node.parentElement;
                         var depth = 0;
-                        while (p && depth < 6 && p !== document.body && p !== document.documentElement) {
+                        while (p && depth < 8 && p !== document.body && p !== document.documentElement) {
                             if (!resolvedLink && p.tagName === 'A') {
                                 resolvedLink = p.href || p.getAttribute('href') || '';
                             }
@@ -1053,7 +1085,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
                 completionHandler(config)
             } else {
-                completionHandler(nil)
+                let emptyConfig = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+                    return UIMenu(title: "", children: [])
+                }
+                completionHandler(emptyConfig)
             }
         }
 
@@ -1096,7 +1131,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             let hasImage = (detectedImageURL != nil) || (detectedImageString != nil && !detectedImageString!.isEmpty)
 
             guard hasLink || hasImage else {
-                completionHandler(nil)
+                let emptyConfig = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+                    return UIMenu(title: "", children: [])
+                }
+                completionHandler(emptyConfig)
                 return
             }
 
@@ -1199,12 +1237,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             return
         }
 
-        guard let url = URL(string: urlString) ?? URL(string: urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "") else {
+        if urlString.hasPrefix("blob:") {
             fallbackSaveImageViaJS(urlString: urlString)
             return
         }
 
-        if url.scheme == "blob" {
+        guard let url = URL(string: urlString) ?? URL(string: urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "") else {
             fallbackSaveImageViaJS(urlString: urlString)
             return
         }
