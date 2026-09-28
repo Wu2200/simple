@@ -620,9 +620,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             onConfirm?(false)
         })
 
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
-            onConfirm?(false)
-        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
 
         present(alert, animated: true)
     }
@@ -2243,7 +2241,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func tabDidUpdate(_ tab: TabItem) {
-        guard !tabs.isEmpty, tab.id == activeTab.id else {
+        guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex), tab.id == activeTab.id else {
             persistCurrentSession()
             return
         }
@@ -2732,9 +2730,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         navigationController.modalPresentationStyle = .pageSheet
         self.present(navigationController, animated: true)
 
-        activeTab.updateSnapshot { [weak manager] in
-            DispatchQueue.main.async {
-                manager?.reloadGrid()
+        let tabToSnapshot = activeTab
+        if !tabToSnapshot.isLoading {
+            tabToSnapshot.updateSnapshot { [weak manager] in
+                DispatchQueue.main.async {
+                    manager?.reloadGrid()
+                }
             }
         }
     }
