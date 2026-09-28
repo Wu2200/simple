@@ -1,5 +1,4 @@
 import UIKit
-import UIKit.UIGestureRecognizerSubclass
 import WebKit
 
 protocol TabItemDelegate: AnyObject {
@@ -155,33 +154,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 }
 
-final class WebTouchTrackerGestureRecognizer: UIGestureRecognizer {
-    var onTouch: ((CGPoint) -> Void)?
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let touch = touches.first {
-            onTouch?(touch.location(in: view))
-        }
-        state = .possible
-    }
-
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let touch = touches.first {
-            onTouch?(touch.location(in: view))
-        }
-        state = .possible
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-        state = .possible
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-        state = .possible
-    }
-}
-
-final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
+final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let id = UUID()
     let webView: WKWebView
     var title = "主页"
@@ -201,8 +174,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var hasInjectedScriptsForCurrentPage = false
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
-    private var lastNativeTouchPoint: CGPoint?
-    private var touchTrackerGesture: WebTouchTrackerGestureRecognizer?
 
     weak var delegate: TabItemDelegate?
 
@@ -304,15 +275,15 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         let touchScriptSource = """
         (function() {
-            if (window.__touch_tracker_injected__) return;
-            window.__touch_tracker_injected__ = true;
-            window.__lastTouchPos = null;
-            window.__lastContextMenuTarget = null;
+            if (window.__simple_touch_injected__) return;
+            window.__simple_touch_injected__ = true;
+            window.__simple_last_touch = null;
+            window.__simple_context_target = null;
 
-            function onTouch(e) {
-                if (e.touches && e.touches.length > 0) {
-                    var t = e.touches[0];
-                    window.__lastTouchPos = {
+            function saveTouch(e) {
+                var t = (e.touches && e.touches.length > 0) ? e.touches[0] : (e.changedTouches && e.changedTouches.length > 0 ? e.changedTouches[0] : e);
+                if (t && typeof t.clientX === 'number') {
+                    window.__simple_last_touch = {
                         x: t.clientX,
                         y: t.clientY,
                         target: e.target
@@ -320,31 +291,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             }
 
-            function onPointer(e) {
-                if (e.isPrimary) {
-                    window.__lastTouchPos = {
-                        x: e.clientX,
-                        y: e.clientY,
-                        target: e.target
-                    };
-                }
-            }
-
-            function onContextMenu(e) {
-                var x = (typeof e.clientX === 'number' && e.clientX >= 0) ? e.clientX : (window.__lastTouchPos ? window.__lastTouchPos.x : -1);
-                var y = (typeof e.clientY === 'number' && e.clientY >= 0) ? e.clientY : (window.__lastTouchPos ? window.__lastTouchPos.y : -1);
-                window.__lastContextMenuTarget = e.target;
-                window.__lastTouchPos = {
-                    x: x,
-                    y: y,
-                    target: e.target
-                };
-            }
-
-            window.addEventListener('touchstart', onTouch, { capture: true, passive: true });
-            window.addEventListener('touchmove', onTouch, { capture: true, passive: true });
-            window.addEventListener('pointerdown', onPointer, { capture: true, passive: true });
-            window.addEventListener('contextmenu', onContextMenu, { capture: true, passive: true });
+            window.addEventListener('touchstart', saveTouch, { capture: true, passive: true });
+            window.addEventListener('touchmove', saveTouch, { capture: true, passive: true });
+            window.addEventListener('pointerdown', saveTouch, { capture: true, passive: true });
+            window.addEventListener('contextmenu', function(e) {
+                saveTouch(e);
+                window.__simple_context_target = e.target;
+            }, { capture: true, passive: true });
         })();
         """
         let touchScript = WKUserScript(
@@ -356,17 +309,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
-
-        let tracker = WebTouchTrackerGestureRecognizer()
-        tracker.cancelsTouchesInView = false
-        tracker.delaysTouchesBegan = false
-        tracker.delaysTouchesEnded = false
-        tracker.delegate = self
-        tracker.onTouch = { [weak self] pt in
-            self?.lastNativeTouchPoint = pt
-        }
-        webView.addGestureRecognizer(tracker)
-        touchTrackerGesture = tracker
 
         webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
 
@@ -390,10 +332,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func destroy() {
-        if let tracker = touchTrackerGesture {
-            webView.removeGestureRecognizer(tracker)
-            touchTrackerGesture = nil
-        }
         AdBlockManager.shared.detach(from: webView)
         delegate = nil
         webView.navigationDelegate = nil
@@ -416,10 +354,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.load(URLRequest(url: URL(string: "about:blank")!))
         webView.removeFromSuperview()
         snapshot = nil
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
     }
 
     func clearFailureState() {
@@ -918,17 +852,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     ) {
         let rawLink = elementInfo.linkURL?.absoluteString ?? ""
         let escapedLink = rawLink.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let nativeX = lastNativeTouchPoint?.x ?? -1
-        let nativeY = lastNativeTouchPoint?.y ?? -1
 
         let inspectJS = """
         (function() {
-            var nativeX = \(nativeX);
-            var nativeY = \(nativeY);
-            var touch = window.__lastTouchPos;
-            var tx = nativeX >= 0 ? nativeX : (touch ? touch.x : -1);
-            var ty = nativeY >= 0 ? nativeY : (touch ? touch.y : -1);
-            var touchTarget = window.__lastContextMenuTarget || (touch ? touch.target : null);
+            var touch = window.__simple_last_touch;
+            var ctxTarget = window.__simple_context_target;
+            var directTarget = ctxTarget || (touch ? touch.target : null);
+            var tx = touch ? touch.x : -1;
+            var ty = touch ? touch.y : -1;
             var fallbackLink = "\(escapedLink)";
 
             function cleanURL(u) {
@@ -951,9 +882,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     if (trimmed.length < 150 && trimmed.indexOf('R0lGODlhAQAB') !== -1) return false;
                     return true;
                 }
+                if (trimmed.startsWith('blob:')) return true;
                 var lower = trimmed.toLowerCase();
                 if (lower.indexOf('blank.gif') !== -1 || lower.indexOf('pixel.gif') !== -1 || lower.indexOf('spacer.gif') !== -1) return false;
-                return true;
+                return lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('//');
             }
 
             function parseSrcset(val) {
@@ -1040,7 +972,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 if (!container) return null;
                 var direct = extractImageFromNode(container);
                 if (direct) {
-                    return { src: direct, el: container };
+                    var dr = container.getBoundingClientRect ? container.getBoundingClientRect() : null;
+                    return { src: direct, el: container, rect: dr };
                 }
                 if (!container.querySelectorAll) return null;
 
@@ -1067,14 +1000,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     var score = area;
 
                     if (targetX >= 0 && targetY >= 0 && r && (r.width > 0 || r.height > 0)) {
-                        var inside = (targetX >= r.left - 8 && targetX <= r.right + 8 && targetY >= r.top - 8 && targetY <= r.bottom + 8);
+                        var inside = (targetX >= r.left - 10 && targetX <= r.right + 10 && targetY >= r.top - 10 && targetY <= r.bottom + 10);
                         if (inside) {
                             score += 1000000;
                         } else {
                             var cx = (r.left + r.right) / 2;
                             var cy = (r.top + r.bottom) / 2;
                             var dist = Math.hypot(targetX - cx, targetY - cy);
-                            score -= dist * 200;
+                            score -= dist * 250;
                         }
                     }
 
@@ -1084,7 +1017,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
                     if (score > bestScore) {
                         bestScore = score;
-                        best = { src: src, el: el };
+                        best = { src: src, el: el, rect: r };
                     }
                 }
                 return best;
@@ -1092,22 +1025,37 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             var resolvedImg = '';
             var resolvedLink = fallbackLink ? cleanURL(fallbackLink) : '';
+            var targetRect = null;
 
-            if (tx >= 0 && ty >= 0) {
-                var points = [
+            if (directTarget) {
+                var fromDirect = findBestImageInContainer(directTarget, tx, ty);
+                if (fromDirect && fromDirect.src) {
+                    resolvedImg = fromDirect.src;
+                    targetRect = fromDirect.rect;
+                }
+                if (!resolvedLink) {
+                    var directA = directTarget.tagName === 'A' ? directTarget : (directTarget.closest ? directTarget.closest('a') : null);
+                    if (directA) {
+                        resolvedLink = cleanURL(directA.href || directA.getAttribute('href') || '');
+                    }
+                }
+            }
+
+            if (!resolvedImg && tx >= 0 && ty >= 0) {
+                var probePoints = [
                     { x: tx, y: ty },
-                    { x: tx - 6, y: ty },
-                    { x: tx + 6, y: ty },
-                    { x: tx, y: ty - 6 },
-                    { x: tx, y: ty + 6 },
-                    { x: tx - 12, y: ty },
-                    { x: tx + 12, y: ty },
-                    { x: tx, y: ty - 12 },
-                    { x: tx, y: ty + 12 }
+                    { x: tx - 8, y: ty },
+                    { x: tx + 8, y: ty },
+                    { x: tx, y: ty - 8 },
+                    { x: tx, y: ty + 8 },
+                    { x: tx - 16, y: ty },
+                    { x: tx + 16, y: ty },
+                    { x: tx, y: ty - 16 },
+                    { x: tx, y: ty + 16 }
                 ];
 
-                for (var pIdx = 0; pIdx < points.length; pIdx++) {
-                    var pt = points[pIdx];
+                for (var pIdx = 0; pIdx < probePoints.length; pIdx++) {
+                    var pt = probePoints[pIdx];
                     var els = [];
                     if (document.elementsFromPoint) {
                         els = document.elementsFromPoint(pt.x, pt.y) || [];
@@ -1127,6 +1075,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                             var found = findBestImageInContainer(el, tx, ty);
                             if (found && found.src) {
                                 resolvedImg = found.src;
+                                targetRect = found.rect;
                             }
                         }
 
@@ -1136,28 +1085,22 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             }
 
-            if (!resolvedImg && touchTarget) {
-                var cur = touchTarget;
+            if (!resolvedImg && directTarget) {
+                var cur = directTarget;
                 var depth = 0;
                 while (cur && depth < 8 && cur !== document.body && cur !== document.documentElement) {
                     if (!resolvedLink && cur.tagName === 'A') {
                         resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
                     }
                     if (!resolvedImg) {
-                        var found = findBestImageInContainer(cur, tx, ty);
-                        if (found && found.src) {
-                            resolvedImg = found.src;
+                        var foundParent = findBestImageInContainer(cur, tx, ty);
+                        if (foundParent && foundParent.src) {
+                            resolvedImg = foundParent.src;
+                            targetRect = foundParent.rect;
                         }
                     }
                     cur = cur.parentElement;
                     depth++;
-                }
-            }
-
-            if (!resolvedLink && touchTarget) {
-                var targetA = touchTarget.tagName === 'A' ? touchTarget : (touchTarget.closest ? touchTarget.closest('a') : null);
-                if (targetA) {
-                    resolvedLink = cleanURL(targetA.href || targetA.getAttribute('href') || '');
                 }
             }
 
@@ -1166,10 +1109,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 for (var aIdx = 0; aIdx < allA.length; aIdx++) {
                     var anc = allA[aIdx];
                     var aHref = cleanURL(anc.href || anc.getAttribute('href') || '');
-                    if (aHref && aHref === resolvedLink) {
+                    if (aHref && (aHref === resolvedLink || resolvedLink.startsWith(aHref) || aHref.startsWith(resolvedLink))) {
                         var foundInA = findBestImageInContainer(anc, tx, ty);
                         if (foundInA && foundInA.src) {
                             resolvedImg = foundInA.src;
+                            targetRect = foundInA.rect;
                             break;
                         }
                         var card = anc.closest ? anc.closest('.g, .MjjYud, [data-ved], [data-hveid], article, li, .result, .c-container, .tF2Cxc, div') : null;
@@ -1177,6 +1121,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                             var foundInCard = findBestImageInContainer(card, tx, ty);
                             if (foundInCard && foundInCard.src) {
                                 resolvedImg = foundInCard.src;
+                                targetRect = foundInCard.rect;
                                 break;
                             }
                         }
@@ -1184,9 +1129,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             }
 
+            var rectData = null;
+            if (targetRect && targetRect.width > 0 && targetRect.height > 0) {
+                rectData = {
+                    x: targetRect.left,
+                    y: targetRect.top,
+                    width: targetRect.width,
+                    height: targetRect.height
+                };
+            }
+
             return {
                 imgSrc: resolvedImg,
-                linkHref: resolvedLink
+                linkHref: resolvedLink,
+                rect: rectData
             };
         })();
         """
@@ -1199,6 +1155,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             var detectedLinkURL = elementInfo.linkURL
             var detectedImageString: String? = nil
+            var detectedRect: CGRect? = nil
 
             if let dict = result as? [String: Any] {
                 if detectedLinkURL == nil, let linkHref = dict["linkHref"] as? String, !linkHref.isEmpty {
@@ -1206,6 +1163,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
                 if let imgSrc = dict["imgSrc"] as? String, !imgSrc.isEmpty {
                     detectedImageString = imgSrc
+                }
+                if let rDict = dict["rect"] as? [String: Any],
+                   let rx = rDict["x"] as? CGFloat,
+                   let ry = rDict["y"] as? CGFloat,
+                   let rw = rDict["width"] as? CGFloat,
+                   let rh = rDict["height"] as? CGFloat,
+                   rw > 0, rh > 0 {
+                    detectedRect = CGRect(x: rx, y: ry, width: rw, height: rh)
                 }
             }
 
@@ -1216,6 +1181,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             let finalLink = detectedLinkURL
             let finalImageString = detectedImageString
+            let finalRect = detectedRect
 
             let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
                 guard let self = self else { return UIMenu(title: "", children: []) }
@@ -1223,7 +1189,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
                 if let imageStr = finalImageString, !imageStr.isEmpty {
                     let saveImageAction = UIAction(title: "保存图片", image: UIImage(systemName: "arrow.down.to.line")) { [weak self] _ in
-                        self?.saveImageToPhotos(from: imageStr)
+                        self?.saveImageToPhotos(from: imageStr, fallbackRect: finalRect)
                     }
                     let copyImageLinkAction = UIAction(title: "拷贝图片链接", image: UIImage(systemName: "link")) { [weak self] _ in
                         UIPasteboard.general.string = imageStr
@@ -1274,16 +1240,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     ) {
     }
 
-    private func saveImageToPhotos(from imageString: String) {
+    private func saveImageToPhotos(from imageString: String, fallbackRect: CGRect? = nil) {
         let raw = imageString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else {
-            delegate?.tabRequestShowToast("保存图片失败：图片地址为空")
+            fallbackSaveViaSnapshot(rect: fallbackRect)
             return
         }
 
         if raw.hasPrefix("data:") {
             guard let commaIndex = raw.firstIndex(of: ",") else {
-                delegate?.tabRequestShowToast("保存图片失败：数据格式无效")
+                fallbackSaveViaSnapshot(rect: fallbackRect)
                 return
             }
             let meta = String(raw[..<commaIndex])
@@ -1303,7 +1269,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
                 guard let data = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]),
                       let image = UIImage(data: data) else {
-                    delegate?.tabRequestShowToast("保存图片失败：无法解码 Base64 数据")
+                    fallbackSaveViaSnapshot(rect: fallbackRect)
                     return
                 }
                 writeImageToAlbum(image)
@@ -1313,7 +1279,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                    let image = UIImage(data: data) {
                     writeImageToAlbum(image)
                 } else {
-                    delegate?.tabRequestShowToast("保存图片失败：无法解析数据")
+                    fallbackSaveViaSnapshot(rect: fallbackRect)
                 }
             }
             return
@@ -1346,24 +1312,19 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             """
             webView.evaluateJavaScript(js) { [weak self] result, error in
                 guard let self = self else { return }
-                if let error = error {
-                    self.delegate?.tabRequestShowToast("保存图片失败：\(error.localizedDescription)")
+                if let dict = result as? [String: Any],
+                   let success = dict["success"] as? Bool, success,
+                   let dataUrl = dict["data"] as? String {
+                    self.saveImageToPhotos(from: dataUrl, fallbackRect: fallbackRect)
                     return
                 }
-                guard let dict = result as? [String: Any],
-                      let success = dict["success"] as? Bool, success,
-                      let dataUrl = dict["data"] as? String else {
-                    let errMsg = (result as? [String: Any])?["error"] as? String ?? "无法读取临时图片"
-                    self.delegate?.tabRequestShowToast("保存图片失败：\(errMsg)")
-                    return
-                }
-                self.saveImageToPhotos(from: dataUrl)
+                self.fallbackSaveViaSnapshot(rect: fallbackRect)
             }
             return
         }
 
         guard let url = URL(string: raw) else {
-            delegate?.tabRequestShowToast("保存图片失败：无效的图片地址")
+            fallbackSaveViaSnapshot(rect: fallbackRect)
             return
         }
 
@@ -1394,16 +1355,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         retryReq.setValue(v, forHTTPHeaderField: k)
                     }
                     URLSession.shared.dataTask(with: retryReq) { [weak self] retryData, retryResp, retryErr in
-                        self?.handleDownloadedImageData(data: retryData, response: retryResp, error: retryErr, originalURLString: raw)
+                        self?.handleDownloadedImageData(data: retryData, response: retryResp, error: retryErr, originalURLString: raw, fallbackRect: fallbackRect)
                     }.resume()
                     return
                 }
-                self.handleDownloadedImageData(data: data, response: response, error: error, originalURLString: raw)
+                self.handleDownloadedImageData(data: data, response: response, error: error, originalURLString: raw, fallbackRect: fallbackRect)
             }.resume()
         }
     }
 
-    private func handleDownloadedImageData(data: Data?, response: URLResponse?, error: Error?, originalURLString: String) {
+    private func handleDownloadedImageData(data: Data?, response: URLResponse?, error: Error?, originalURLString: String, fallbackRect: CGRect?) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if let data = data, let image = UIImage(data: data), (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? true {
@@ -1436,18 +1397,35 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             """
             self.webView.evaluateJavaScript(fallbackJS) { [weak self] result, _ in
                 if let dataUrl = result as? String, dataUrl.hasPrefix("data:image/") {
-                    self?.saveImageToPhotos(from: dataUrl)
+                    self?.saveImageToPhotos(from: dataUrl, fallbackRect: fallbackRect)
                     return
                 }
-                if let error = error {
-                    self?.delegate?.tabRequestShowToast("保存图片失败：\(error.localizedDescription)")
-                    return
-                }
-                if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
-                    self?.delegate?.tabRequestShowToast("保存图片失败：HTTP \(httpResponse.statusCode)")
-                    return
-                }
-                self?.delegate?.tabRequestShowToast("保存图片失败：图片数据无法解析")
+                self?.fallbackSaveViaSnapshot(rect: fallbackRect)
+            }
+        }
+    }
+
+    private func fallbackSaveViaSnapshot(rect: CGRect?) {
+        guard let rect = rect, rect.width > 8, rect.height > 8, webView.bounds.width > 0, webView.bounds.height > 0 else {
+            delegate?.tabRequestShowToast("保存图片失败")
+            return
+        }
+
+        let intersectRect = rect.intersection(webView.bounds)
+        guard intersectRect.width > 8, intersectRect.height > 8 else {
+            delegate?.tabRequestShowToast("保存图片失败")
+            return
+        }
+
+        let config = WKSnapshotConfiguration()
+        config.rect = intersectRect
+        config.afterScreenUpdates = true
+
+        webView.takeSnapshot(with: config) { [weak self] image, error in
+            if let image = image, error == nil {
+                self?.writeImageToAlbum(image)
+            } else {
+                self?.delegate?.tabRequestShowToast("保存图片失败")
             }
         }
     }
