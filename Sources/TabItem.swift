@@ -174,6 +174,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var hasInjectedScriptsForCurrentPage = false
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
+    private var userScrolledDuringLoading = false
 
     weak var delegate: TabItemDelegate?
 
@@ -251,91 +252,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    private static let coreScrollGuardSource = """
-    (function() {
-        if (window.__simple_scroll_guard__) return;
-        window.__simple_scroll_guard__ = true;
-
-        try {
-            if ('scrollRestoration' in history) {
-                history.scrollRestoration = 'manual';
-            }
-            Object.defineProperty(history, 'scrollRestoration', {
-                get: function() { return 'manual'; },
-                set: function() {},
-                configurable: true
-            });
-        } catch(e) {}
-
-        var userMoved = false;
-
-        function markUserScrolled() {
-            userMoved = true;
-        }
-
-        window.addEventListener('touchstart', markUserScrolled, { capture: true, passive: true });
-        window.addEventListener('touchmove', markUserScrolled, { capture: true, passive: true });
-        window.addEventListener('wheel', markUserScrolled, { capture: true, passive: true });
-
-        var origScrollTo = window.scrollTo;
-        window.scrollTo = function() {
-            var x = arguments[0];
-            var y = arguments[1];
-            if (typeof x === 'object' && x !== null) {
-                y = x.top;
-                x = x.left;
-            }
-            var currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
-            if (userMoved && currentY > 30 && (y === 0 || y === 1 || (typeof y === 'number' && y < 30))) {
-                return;
-            }
-            return origScrollTo.apply(this, arguments);
-        };
-
-        var origScroll = window.scroll;
-        window.scroll = function() {
-            var x = arguments[0];
-            var y = arguments[1];
-            if (typeof x === 'object' && x !== null) {
-                y = x.top;
-                x = x.left;
-            }
-            var currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
-            if (userMoved && currentY > 30 && (y === 0 || y === 1 || (typeof y === 'number' && y < 30))) {
-                return;
-            }
-            return origScroll.apply(this, arguments);
-        };
-
-        if (Element.prototype.scrollIntoView) {
-            var origScrollIntoView = Element.prototype.scrollIntoView;
-            Element.prototype.scrollIntoView = function() {
-                var currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
-                if (userMoved && currentY > 30) {
-                    var r = this.getBoundingClientRect();
-                    if (r && r.top < 0) {
-                        return;
-                    }
-                }
-                return origScrollIntoView.apply(this, arguments);
-            };
-        }
-
-        var origFocus = HTMLElement.prototype.focus;
-        HTMLElement.prototype.focus = function(options) {
-            var currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
-            if (userMoved && currentY > 30 && (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA')) {
-                var opts = options || {};
-                if (typeof opts === 'object') {
-                    opts.preventScroll = true;
-                    return origFocus.call(this, opts);
-                }
-            }
-            return origFocus.apply(this, arguments);
-        };
-    })();
-    """
-
     override init() {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -373,6 +289,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.scrollView.backgroundColor = .white
         webView.isOpaque = true
 
+        webView.scrollView.panGestureRecognizer.addTarget(self, action: #selector(handleScrollViewPan(_:)))
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAdBlockRulesAppliedNotification(_:)),
@@ -384,6 +302,22 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     deinit {
         NotificationCenter.default.removeObserver(self)
         destroy()
+    }
+
+    @objc private func handleScrollViewPan(_ gesture: UIPanGestureRecognizer) {
+        if isLoading && (gesture.state == .began || gesture.state == .changed) {
+            userScrolledDuringLoading = true
+        }
+    }
+
+    func reloadFromTop() {
+        userScrolledDuringLoading = false
+        webView.scrollView.setContentOffset(.zero, animated: false)
+        if let currentURL = url ?? webView.url {
+            webView.load(URLRequest(url: currentURL))
+        } else {
+            webView.reload()
+        }
     }
 
     @objc private func handleAdBlockRulesAppliedNotification(_ notification: Notification) {
@@ -398,16 +332,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if !hasDownload {
             let script = WKUserScript(
                 source: Self.coreDownloadScriptSource,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            )
-            controller.addUserScript(script)
-        }
-
-        let hasGuard = controller.userScripts.contains { $0.source.contains("__simple_scroll_guard__") }
-        if !hasGuard {
-            let script = WKUserScript(
-                source: Self.coreScrollGuardSource,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
@@ -972,7 +896,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         hasInjectedScriptsForCurrentPage = false
         registeredCommands.removeAll()
         ensureCoreScripts()
-        webView.scrollView.setContentOffset(.zero, animated: false)
+        userScrolledDuringLoading = false
         delegate?.tabDidUpdate(self)
     }
 
@@ -1001,6 +925,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             title = webView.title ?? url?.host ?? "新标签页"
         }
         extractHighResFaviconIfNeeded()
+
+        if userScrolledDuringLoading {
+            let currentOffset = webView.scrollView.contentOffset
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.userScrolledDuringLoading else { return }
+                if self.webView.scrollView.contentOffset != currentOffset && !self.webView.scrollView.isDragging {
+                    self.webView.scrollView.setContentOffset(currentOffset, animated: false)
+                }
+            }
+        }
+
         delegate?.tabDidUpdate(self)
     }
 
