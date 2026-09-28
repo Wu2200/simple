@@ -1,8 +1,6 @@
 import UIKit
 import WebKit
 
-// MARK: - 主域名聚合数据模型
-
 struct MainDomainGroup {
     let mainDomain: String
     var records: [WKWebsiteDataRecord]
@@ -27,8 +25,6 @@ struct MainDomainGroup {
         return records.contains { $0.dataTypes.contains(WKWebsiteDataTypeCookies) }
     }
 }
-
-// MARK: - 关联域名拓扑识别引擎
 
 enum DomainRelationEngine {
     static let companionMap: [(keyword: String, targetRoot: String)] = [
@@ -152,8 +148,6 @@ enum DomainRelationEngine {
         }
     }
 }
-
-// MARK: - 基础模型定义
 
 struct UserScript: Codable {
     var id: String
@@ -513,8 +507,6 @@ final class BookmarkStore {
         return String(sub[..<endRange.lowerBound])
     }
 }
-
-// MARK: - 主页快捷方式模型与存储 (支持自定义上传图片 Logo)
 
 struct HomeShortcutItem: Codable, Equatable {
     var id: String
@@ -920,8 +912,6 @@ final class DomainSettingsStore {
     }
 }
 
-// MARK: - Cookie 与网站登录数据锁定管理器 (支持单个域名精确独立锁定，清理时保护登录凭据)
-
 final class CookieLockStore {
     static let shared = CookieLockStore()
     private let key = "locked_cookie_domains_v2"
@@ -932,7 +922,6 @@ final class CookieLockStore {
         return UserDefaults.standard.stringArray(forKey: key) ?? []
     }
 
-    /// 严格精确匹配：针对 UI 显示与单个域名的独立锁定状态，绝不隐式强制连带其他域名
     func isLocked(domain: String) -> Bool {
         let clean = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         guard !clean.isEmpty else { return false }
@@ -940,7 +929,6 @@ final class CookieLockStore {
         return locked.contains(clean)
     }
 
-    /// 登录凭据保护判定：用于清理时识别该 Cookie 是否属于用户锁定的网站认证范围
     func isCookieProtected(cookieDomain: String) -> Bool {
         let locked = getLockedDomains().map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
         if locked.isEmpty { return false }
@@ -948,23 +936,17 @@ final class CookieLockStore {
         guard !cleanCookie.isEmpty else { return false }
 
         for l in locked {
-            // 1. 完全精确匹配
             if cleanCookie == l { return true }
-            // 2. Cookie 属于锁定站点的父域或主域（例如锁定 accounts.google.com，保护 .google.com 的核心认证 Cookie）
             if l.hasSuffix("." + cleanCookie) { return true }
-            // 3. Cookie 属于锁定站点的子域（例如锁定 google.com，保护 accounts.google.com 的 Cookie）
             if cleanCookie.hasSuffix("." + l) { return true }
-            // 4. 同一主根域保护（例如锁定 google.com，保护 accounts.google.com 的 Cookie）
             let r1 = DomainRelationEngine.rootDomain(of: cleanCookie)
             let r2 = DomainRelationEngine.rootDomain(of: l)
             if !r1.isEmpty && r1 == r2 { return true }
-            // 5. 伴随认证关联（如 gstatic.com / google.com）
             if DomainRelationEngine.areDomainsAssociated(cleanCookie, l) { return true }
         }
         return false
     }
 
-    /// 登录记录保护判定：用于清理 WKWebsiteDataRecord 时识别是否包含受保护登录数据
     func isRecordLoginProtected(recordDisplayName: String) -> Bool {
         let cleanName = recordDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         guard !cleanName.isEmpty else { return false }
@@ -1108,6 +1090,10 @@ final class BrowserHistoryStore {
 
     func clearHistory() {
         UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    func saveAllHistory(_ items: [BrowserHistoryItem]) {
+        saveHistory(items)
     }
 
     private func saveHistory(_ items: [BrowserHistoryItem]) {
@@ -1333,8 +1319,6 @@ final class ScriptDataStore {
     }
 }
 
-// MARK: - 严密网站数据清理引擎 (网页缓存彻底清空，登录凭据受锁定保护)
-
 final class WebsiteCleaner {
     static let shared = WebsiteCleaner()
     private init() {}
@@ -1358,13 +1342,11 @@ final class WebsiteCleaner {
         loginAndData: Bool,
         completion: (() -> Void)? = nil
     ) {
-        // 1. 系统 URL 缓存彻底清理
         URLCache.shared.removeAllCachedResponses()
 
         let store = WKWebsiteDataStore.default()
         let group = DispatchGroup()
 
-        // 2. 勾选了网页缓存：所有网站（无论是否锁定）的网页缓存、图片临时文件全部无差别彻底清空！
         if cache {
             group.enter()
             store.removeData(ofTypes: Self.cacheDataTypes, modifiedSince: .distantPast) {
@@ -1372,11 +1354,9 @@ final class WebsiteCleaner {
             }
         }
 
-        // 3. 勾选了登录与本地数据：严格识别锁定名单，锁定的网站保留其登录 Cookies 和本地数据库，未锁定的予以清除
         if loginAndData {
             group.enter()
 
-            // 清理系统 HTTPCookieStorage（排除锁定的 Cookie）
             if let sharedCookies = HTTPCookieStorage.shared.cookies {
                 for c in sharedCookies {
                     if !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) {
@@ -1385,7 +1365,6 @@ final class WebsiteCleaner {
                 }
             }
 
-            // 获取 WebKit 记录并按锁定状态精准过滤（绝对不将 WKWebsiteDataTypeCookies 传给 removeData，避免 WebKit 底层级联清空 Cookie Jar）
             store.fetchDataRecords(ofTypes: Self.nonCookieLoginDataTypes) { records in
                 let unprotectedRecords = records.filter { record in
                     !CookieLockStore.shared.isRecordLoginProtected(recordDisplayName: record.displayName)
@@ -1400,7 +1379,6 @@ final class WebsiteCleaner {
                     }
                 }
 
-                // 逐个匹配清理 CookieStore，受保护登录凭据完整留存
                 subGroup.enter()
                 store.httpCookieStore.getAllCookies { cookies in
                     let cookieGroup = DispatchGroup()
@@ -1465,8 +1443,6 @@ final class WebsiteCleaner {
         }
     }
 }
-
-// MARK: - 高画质网站图标引擎 (原生 Apple Touch Icon、高可用多源并发竞速与双向缓存)
 
 final class FaviconLoader {
     static let shared = FaviconLoader()
@@ -1589,13 +1565,11 @@ final class FaviconLoader {
             candidateURLs.append("https://\(root)/apple-touch-icon.png")
             candidateURLs.append("https://\(root)/favicon.ico")
         }
-        // 高速国内免翻墙 CDN 聚合源（优先极速返回高质量图标）
         candidateURLs.append("https://api.iowen.cn/favicon/\(cleanDomain).png")
         candidateURLs.append("https://favicon.im/\(cleanDomain)?larger=true")
         if root != cleanDomain && !root.isEmpty {
             candidateURLs.append("https://api.iowen.cn/favicon/\(root).png")
         }
-        // 国际备用源
         candidateURLs.append("https://www.google.com/s2/favicons?sz=128&domain=\(cleanDomain)")
 
         performConcurrentFetch(cleanDomain: cleanDomain, urls: candidateURLs)
@@ -1684,7 +1658,44 @@ final class FaviconLoader {
     }
 }
 
-// MARK: - 完整浏览器数据备份与恢复引擎
+struct BackupCookieItem: Codable {
+    var name: String
+    var value: String
+    var domain: String
+    var path: String
+    var expiresDate: Date?
+    var isSecure: Bool
+    var isHTTPOnly: Bool
+
+    init(from cookie: HTTPCookie) {
+        self.name = cookie.name
+        self.value = cookie.value
+        self.domain = cookie.domain
+        self.path = cookie.path
+        self.expiresDate = cookie.expiresDate
+        self.isSecure = cookie.isSecure
+        self.isHTTPOnly = cookie.isHTTPOnly
+    }
+
+    func toHTTPCookie() -> HTTPCookie? {
+        var props: [HTTPCookiePropertyKey: Any] = [
+            .name: name,
+            .value: value,
+            .domain: domain,
+            .path: path
+        ]
+        if let exp = expiresDate {
+            props[.expires] = exp
+        }
+        if isSecure {
+            props[.secure] = "TRUE"
+        }
+        if isHTTPOnly {
+            props[HTTPCookiePropertyKey(rawValue: "HttpOnly")] = "TRUE"
+        }
+        return HTTPCookie(properties: props)
+    }
+}
 
 struct BrowserBackupPackage: Codable {
     var version: Int
@@ -1692,6 +1703,8 @@ struct BrowserBackupPackage: Codable {
     var appName: String
     var bookmarks: [BookmarkItem]
     var homeShortcuts: [HomeShortcutItem]
+    var history: [BrowserHistoryItem]?
+    var cookies: [BackupCookieItem]?
     var userScripts: [UserScript]
     var scriptData: [String: String]
     var customUserAgents: [UserAgentItem]
@@ -1705,9 +1718,10 @@ final class BackupManager {
     static let shared = BackupManager()
     private init() {}
 
-    func createBackupPackage() -> BrowserBackupPackage {
+    func createBackupPackage(completion: @escaping (BrowserBackupPackage) -> Void) {
         let bookmarks = BookmarkStore.shared.loadAllNodes()
         let shortcuts = HomeShortcutStore.shared.loadShortcuts()
+        let history = BrowserHistoryStore.shared.loadHistory()
         let scripts = UserScriptStore.shared.loadScripts()
 
         var scriptDataMap: [String: String] = [:]
@@ -1724,79 +1738,126 @@ final class BackupManager {
         let lockedDomains = CookieLockStore.shared.getLockedDomains()
         let searchEngine = SearchEngineStore.shared.currentEngine.rawValue
 
-        return BrowserBackupPackage(
-            version: 1,
-            exportedAt: Date(),
-            appName: "SimpleBrowser",
-            bookmarks: bookmarks,
-            homeShortcuts: shortcuts,
-            userScripts: scripts,
-            scriptData: scriptDataMap,
-            customUserAgents: customUAs,
-            adBlockSubscriptions: subscriptions,
-            customAdBlockRules: customRules,
-            lockedCookieDomains: lockedDomains,
-            searchEngine: searchEngine
-        )
+        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+            var cookieMap: [String: BackupCookieItem] = [:]
+            for c in cookies {
+                let key = "\(c.domain)_\(c.path)_\(c.name)"
+                cookieMap[key] = BackupCookieItem(from: c)
+            }
+            if let sharedCookies = HTTPCookieStorage.shared.cookies {
+                for c in sharedCookies {
+                    let key = "\(c.domain)_\(c.path)_\(c.name)"
+                    if cookieMap[key] == nil {
+                        cookieMap[key] = BackupCookieItem(from: c)
+                    }
+                }
+            }
+            let backupCookies = Array(cookieMap.values)
+
+            let package = BrowserBackupPackage(
+                version: 2,
+                exportedAt: Date(),
+                appName: "SimpleBrowser",
+                bookmarks: bookmarks,
+                homeShortcuts: shortcuts,
+                history: history,
+                cookies: backupCookies,
+                userScripts: scripts,
+                scriptData: scriptDataMap,
+                customUserAgents: customUAs,
+                adBlockSubscriptions: subscriptions,
+                customAdBlockRules: customRules,
+                lockedCookieDomains: lockedDomains,
+                searchEngine: searchEngine
+            )
+            completion(package)
+        }
     }
 
-    func exportBackupFile() throws -> URL {
-        let package = createBackupPackage()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(package)
+    func exportBackupFile(completion: @escaping (Result<URL, Error>) -> Void) {
+        createBackupPackage { package in
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(package)
 
-        let df = DateFormatter()
-        df.dateFormat = "yyyyMMdd_HHmmss"
-        let timestamp = df.string(from: Date())
-        let filename = "SimpleBrowser_Backup_\(timestamp).json"
+                let df = DateFormatter()
+                df.dateFormat = "yyyyMMdd_HHmmss"
+                let timestamp = df.string(from: Date())
+                let filename = "SimpleBrowser_Backup_\(timestamp).json"
 
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-        try data.write(to: tempURL, options: .atomic)
-        return tempURL
-    }
-
-    func restore(from fileURL: URL) throws {
-        let data = try Data(contentsOf: fileURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let package = try decoder.decode(BrowserBackupPackage.self, from: data)
-
-        // 1. 恢复书签
-        BookmarkStore.shared.saveAllNodes(package.bookmarks)
-
-        // 2. 恢复主页快捷方式（含自定义图标）
-        HomeShortcutStore.shared.saveAllShortcuts(package.homeShortcuts)
-
-        // 3. 恢复用户脚本
-        UserScriptStore.shared.saveScripts(package.userScripts)
-
-        // 4. 恢复脚本数据
-        for (scriptId, jsonStr) in package.scriptData {
-            if let data = jsonStr.data(using: .utf8),
-               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                for (k, v) in dict {
-                    ScriptDataStore.shared.setValue(scriptId: scriptId, name: k, value: v)
+                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                try data.write(to: tempURL, options: .atomic)
+                DispatchQueue.main.async {
+                    completion(.success(tempURL))
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
                 }
             }
         }
+    }
 
-        // 5. 恢复自定义 UA
-        if let dataUA = try? JSONEncoder().encode(package.customUserAgents) {
-            UserDefaults.standard.set(dataUA, forKey: "browser_ua_custom_items_v5")
-        }
+    func restore(from fileURL: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let data = try Data(contentsOf: fileURL)
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                let package = try decoder.decode(BrowserBackupPackage.self, from: data)
 
-        // 6. 恢复广告拦截规则订阅与自定义规则
-        AdBlockManager.shared.saveSubscriptions(package.adBlockSubscriptions)
-        UserDefaults.standard.set(package.customAdBlockRules, forKey: "adblock_custom_rules_v2")
+                BookmarkStore.shared.saveAllNodes(package.bookmarks)
+                HomeShortcutStore.shared.saveAllShortcuts(package.homeShortcuts)
 
-        // 7. 恢复锁定域名
-        UserDefaults.standard.set(package.lockedCookieDomains, forKey: "locked_cookie_domains_v2")
+                if let hist = package.history {
+                    BrowserHistoryStore.shared.saveAllHistory(hist)
+                }
 
-        // 8. 恢复搜索引擎
-        if let engine = SearchEngine(rawValue: package.searchEngine) {
-            SearchEngineStore.shared.currentEngine = engine
+                UserScriptStore.shared.saveScripts(package.userScripts)
+
+                for (scriptId, jsonStr) in package.scriptData {
+                    if let data = jsonStr.data(using: .utf8),
+                       let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        for (k, v) in dict {
+                            ScriptDataStore.shared.setValue(scriptId: scriptId, name: k, value: v)
+                        }
+                    }
+                }
+
+                if let dataUA = try? JSONEncoder().encode(package.customUserAgents) {
+                    UserDefaults.standard.set(dataUA, forKey: "browser_ua_custom_items_v5")
+                }
+
+                AdBlockManager.shared.saveSubscriptions(package.adBlockSubscriptions)
+                UserDefaults.standard.set(package.customAdBlockRules, forKey: "adblock_custom_rules_v2")
+                UserDefaults.standard.set(package.lockedCookieDomains, forKey: "locked_cookie_domains_v2")
+
+                if let engine = SearchEngine(rawValue: package.searchEngine) {
+                    SearchEngineStore.shared.currentEngine = engine
+                }
+
+                let cookiesToRestore = package.cookies?.compactMap { $0.toHTTPCookie() } ?? []
+                let cookieStore = WKWebsiteDataStore.default().httpCookieStore
+                let group = DispatchGroup()
+
+                for cookie in cookiesToRestore {
+                    group.enter()
+                    cookieStore.setCookie(cookie) {
+                        group.leave()
+                    }
+                    HTTPCookieStorage.shared.setCookie(cookie)
+                }
+
+                group.notify(queue: .main) {
+                    completion(.success(()))
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
         }
     }
 }
