@@ -1897,6 +1897,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    private func createNewTabInBackground(loadURL url: URL, sourceID: UUID? = nil) {
+        let tab = TabItem()
+        tab.sourceTabID = sourceID
+        tab.delegate = self
+        tab.url = url
+        tab.title = url.host ?? url.absoluteString
+        tab.webView.load(URLRequest(url: url))
+        let insertIndex = min(activeTabIndex + 1, tabs.count)
+        tabs.insert(tab, at: insertIndex)
+        persistCurrentSession()
+        showToastNotice("已在后台标签打开")
+    }
+
     private func switchTab(to index: Int) {
         guard tabs.indices.contains(index) else {
             return
@@ -2218,8 +2231,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
-    func tabRequestNewTab(url: URL) {
-        createNewTab(loadURL: url, sourceID: activeTab.id)
+    func tabRequestNewTab(url: URL, inBackground: Bool) {
+        if inBackground {
+            createNewTabInBackground(loadURL: url, sourceID: activeTab.id)
+        } else {
+            createNewTab(loadURL: url, sourceID: activeTab.id)
+        }
+    }
+
+    func tabRequestShowToast(_ message: String) {
+        showToastNotice(message)
     }
 
     func tabRequestGoBack(_ tab: TabItem) {
