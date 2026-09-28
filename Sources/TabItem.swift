@@ -174,6 +174,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var hasInjectedScriptsForCurrentPage = false
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
+    private var longPressRecognizer: UILongPressGestureRecognizer?
     weak var delegate: TabItemDelegate?
 
     override init() {
@@ -194,7 +195,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         let disableCalloutSource = """
         (function() {
-            var css = '* { -webkit-touch-callout: none !important; } a, img, a *, video { -webkit-touch-callout: none !important; -webkit-user-select: none !important; } html { overflow-anchor: auto !important; }';
+            var css = '* { -webkit-touch-callout: none !important; } a, img, video, canvas, [role="link"] { -webkit-touch-callout: none !important; } html { overflow-anchor: auto !important; }';
             var head = document.head || document.documentElement;
             var style = document.createElement('style');
             style.type = 'text/css';
@@ -207,9 +208,24 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             } catch(e) {}
 
-            var userScrolled = false;
-            window.addEventListener('touchstart', function() {
-                userScrolled = true;
+            var userDidScroll = false;
+            window.addEventListener('touchstart', function(e) {
+                if (e.touches && e.touches.length > 0) {
+                    var t = e.touches[0];
+                    window.__simple_last_touch__ = {
+                        x: t.clientX,
+                        y: t.clientY,
+                        time: Date.now()
+                    };
+                }
+            }, { passive: true, capture: true });
+
+            window.addEventListener('touchmove', function() {
+                userDidScroll = true;
+            }, { passive: true, capture: true });
+
+            window.addEventListener('wheel', function() {
+                userDidScroll = true;
             }, { passive: true, capture: true });
 
             var origFocus = HTMLElement.prototype.focus;
@@ -225,19 +241,45 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             var origScrollTo = window.scrollTo;
             window.scrollTo = function() {
-                if (userScrolled && document.readyState !== 'complete') {
+                if (userDidScroll) {
                     var x = arguments[0];
                     var y = arguments[1];
                     if (typeof x === 'object' && x !== null) {
                         y = x.top;
                         x = x.left;
                     }
-                    if ((x === 0 || x === undefined) && (y === 0 || y === 1)) {
+                    if ((x === 0 || x === undefined) && (y === 0 || y === 1 || y < 10)) {
                         return;
                     }
                 }
                 return origScrollTo.apply(this, arguments);
             };
+
+            var origScroll = window.scroll;
+            window.scroll = function() {
+                if (userDidScroll) {
+                    var x = arguments[0];
+                    var y = arguments[1];
+                    if (typeof x === 'object' && x !== null) {
+                        y = x.top;
+                        x = x.left;
+                    }
+                    if ((x === 0 || x === undefined) && (y === 0 || y === 1 || y < 10)) {
+                        return;
+                    }
+                }
+                return origScroll.apply(this, arguments);
+            };
+
+            if (Element.prototype.scrollIntoView) {
+                var origScrollIntoView = Element.prototype.scrollIntoView;
+                Element.prototype.scrollIntoView = function() {
+                    if (userDidScroll && document.readyState !== 'complete') {
+                        return;
+                    }
+                    return origScrollIntoView.apply(this, arguments);
+                };
+            }
         })();
         """
         let disableCalloutScript = WKUserScript(
@@ -348,10 +390,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.isOpaque = true
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleWebLongPress(_:)))
-        longPress.minimumPressDuration = 0.35
+        longPress.minimumPressDuration = 0.28
+        longPress.allowableMovement = 14
         longPress.cancelsTouchesInView = true
         longPress.delegate = self
         webView.addGestureRecognizer(longPress)
+        self.longPressRecognizer = longPress
 
         purgeContextMenuInteractions()
     }
@@ -416,7 +460,28 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
+        if otherGestureRecognizer is UIPanGestureRecognizer {
+            return true
+        }
+        return false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        if let pan = otherGestureRecognizer as? UIPanGestureRecognizer, pan.state == .began || pan.state == .changed {
+            return true
+        }
+        return false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        if otherGestureRecognizer is UILongPressGestureRecognizer && otherGestureRecognizer != gestureRecognizer {
+            return true
+        }
+        let typeName = String(describing: type(of: otherGestureRecognizer))
+        if typeName.contains("Selection") || typeName.contains("Highlight") || typeName.contains("ContextMenu") || typeName.contains("TouchAction") {
+            return true
+        }
+        return false
     }
 
     @objc private func handleWebLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -509,67 +574,40 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 return '';
             }
 
-            function scanAt(px, py) {
-                var els = [];
-                if (document.elementsFromPoint) {
-                    els = document.elementsFromPoint(px, py) || [];
-                } else {
-                    var single = document.elementFromPoint(px, py);
-                    if (single) els = [single];
-                }
-
-                var img = '';
-                var link = '';
-
-                for (var i = 0; i < els.length; i++) {
-                    var n = els[i];
-                    if (!n || n === document.body || n === document.documentElement) continue;
-
-                    if (!link) {
-                        var a = n.closest ? n.closest('a') : null;
-                        if (a && a.href) link = cleanURL(a.href);
-                    }
-
-                    if (!img) {
-                        img = getElementImage(n);
-                        if (!img && n.querySelector) {
-                            var qImg = n.querySelector('img, picture, video, canvas');
-                            if (qImg) img = getElementImage(qImg);
-                        }
-                    }
-
-                    if (img && link) break;
-                }
-
-                return { img: img, link: link };
+            var els = [];
+            if (document.elementsFromPoint) {
+                els = document.elementsFromPoint(x, y) || [];
+            } else {
+                var single = document.elementFromPoint(x, y);
+                if (single) els = [single];
             }
 
-            var points = [
-                [x, y],
-                [x, y - 10],
-                [x, y + 10],
-                [x - 10, y],
-                [x + 10, y],
-                [x, y - 25],
-                [x, y + 25],
-                [x - 20, y],
-                [x + 20, y]
-            ];
+            var img = '';
+            var link = '';
 
-            var finalImg = '';
-            var finalLink = '';
+            for (var i = 0; i < els.length; i++) {
+                var n = els[i];
+                if (!n || n === document.body || n === document.documentElement) continue;
 
-            for (var p = 0; p < points.length; p++) {
-                var pt = points[p];
-                var res = scanAt(pt[0], pt[1]);
-                if (!finalLink && res.link) finalLink = res.link;
-                if (!finalImg && res.img) finalImg = res.img;
-                if (finalImg && finalLink) break;
+                if (!link) {
+                    var a = n.closest ? n.closest('a') : null;
+                    if (a && a.href) link = cleanURL(a.href);
+                }
+
+                if (!img) {
+                    img = getElementImage(n);
+                    if (!img && n.querySelector) {
+                        var qImg = n.querySelector('img, picture, video, canvas');
+                        if (qImg) img = getElementImage(qImg);
+                    }
+                }
+
+                if (img && link) break;
             }
 
             return {
-                imgSrc: finalImg,
-                linkHref: finalLink
+                imgSrc: img,
+                linkHref: link
             };
         })(\(x), \(y));
         """
@@ -642,6 +680,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     UIPasteboard.general.string = imgURL.absoluteString
                     self?.delegate?.tabRequestShowToast("已拷贝图片链接")
                 })
+            } else {
+                alert.addAction(UIAlertAction(title: "共享链接", style: .default) { [weak self] _ in
+                    self?.share(items: [linkURL])
+                })
             }
         } else if let imgURL = imageURL {
             alert.addAction(UIAlertAction(title: "保存图片", style: .default) { [weak self] _ in
@@ -663,6 +705,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         presenter.present(alert, animated: true)
+    }
+
+    private func share(items: [Any]) {
+        guard let presenter = topViewController() else { return }
+        let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = webView
+            popover.sourceRect = CGRect(x: webView.bounds.midX, y: webView.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+        presenter.present(activity, animated: true)
     }
 
     private func topViewController() -> UIViewController? {
@@ -1145,18 +1198,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         completionHandler(nil)
     }
 
-    func webView(
-        _ webView: WKWebView,
-        contextMenuWillPresentForElement elementInfo: WKContextMenuElementInfo
-    ) {
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        contextMenuDidEndForElement elementInfo: WKContextMenuElementInfo
-    ) {
-    }
-
     private func saveImageToPhotos(from url: URL) {
         let rawURLStr = url.absoluteString
         if rawURLStr.hasPrefix("data:") {
@@ -1323,7 +1364,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             injectAndRunUserScripts()
         }
         extractHighResFaviconIfNeeded()
-        updateSnapshot()
         delegate?.tabDidUpdate(self)
     }
 
