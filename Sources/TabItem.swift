@@ -843,6 +843,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             var touchTarget = touch ? touch.target : null;
             var fallbackLink = "\(escapedLink)";
 
+            function cleanURL(u) {
+                if (!u) return '';
+                if (u.startsWith('data:') || u.startsWith('blob:')) return u;
+                try {
+                    return new URL(u, window.location.href).href;
+                } catch(e) {
+                    return u;
+                }
+            }
+
             function getSrc(el) {
                 if (!el) return '';
                 if (el.tagName === 'IMG') {
@@ -899,7 +909,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             function findImage(el) {
                 if (!el) return '';
                 var d = getSrc(el);
-                if (d) return d;
+                if (d) return cleanURL(d);
                 if (el.tagName === 'svg' || el.tagName === 'SVG') {
                     return svgToPng(el);
                 }
@@ -908,11 +918,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     return svgToPng(pSvg);
                 }
                 var b = getBg(el);
-                if (b) return b;
+                if (b) return cleanURL(b);
                 if (el.querySelector) {
                     var i = el.querySelector('img');
                     var is = getSrc(i);
-                    if (is) return is;
+                    if (is) return cleanURL(is);
                     var sv = el.querySelector('svg');
                     if (sv) return svgToPng(sv);
                     var c = el.querySelector('canvas');
@@ -923,7 +933,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
 
             var resolvedImg = '';
-            var resolvedLink = fallbackLink;
+            var resolvedLink = fallbackLink ? cleanURL(fallbackLink) : '';
 
             if (touchTarget) {
                 resolvedImg = findImage(touchTarget);
@@ -931,7 +941,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 var depth = 0;
                 while (cur && depth < 8 && cur !== document.body && cur !== document.documentElement) {
                     if (!resolvedLink && cur.tagName === 'A') {
-                        resolvedLink = cur.href || cur.getAttribute('href') || '';
+                        resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
                     }
                     if (!resolvedImg) {
                         resolvedImg = findImage(cur);
@@ -955,7 +965,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     if (!resolvedLink) {
                         var a = item.closest ? item.closest('a') : null;
                         if (a) {
-                            resolvedLink = a.href || a.getAttribute('href') || '';
+                            resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
                         }
                     }
                     if (!resolvedImg) {
@@ -965,15 +975,15 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
             }
 
-            if (resolvedImg && !resolvedImg.startsWith('data:') && !resolvedImg.startsWith('blob:')) {
-                try {
-                    resolvedImg = new URL(resolvedImg, window.location.href).href;
-                } catch(e) {}
-            }
-            if (resolvedLink && !resolvedLink.startsWith('http') && !resolvedLink.startsWith('data:') && !resolvedLink.startsWith('blob:')) {
-                try {
-                    resolvedLink = new URL(resolvedLink, window.location.href).href;
-                } catch(e) {}
+            if (!resolvedImg && fallbackLink) {
+                var allAnchors = document.querySelectorAll('a');
+                for (var k = 0; k < allAnchors.length; k++) {
+                    var anc = allAnchors[k];
+                    if (cleanURL(anc.href) === resolvedLink || (anc.getAttribute('href') && cleanURL(anc.getAttribute('href')) === resolvedLink)) {
+                        resolvedImg = findImage(anc);
+                        if (resolvedImg) break;
+                    }
+                }
             }
 
             return {
@@ -1010,7 +1020,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: fallbackWork)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: fallbackWork)
 
         webView.evaluateJavaScript(inspectJS) { [weak self] result, _ in
             guard !isHandled else { return }
@@ -1120,20 +1130,22 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     private func saveImageToPhotos(from url: URL) {
-        if url.scheme == "data" {
-            let urlString = url.absoluteString
-            if urlString.contains("image/svg+xml") {
-                convertSvgDataToPngAndSave(urlString: urlString)
+        let rawURLStr = url.absoluteString
+        if rawURLStr.hasPrefix("data:") {
+            if rawURLStr.contains("image/svg+xml") {
+                convertSvgDataToPngAndSave(urlString: rawURLStr)
                 return
             }
-            guard let commaIndex = urlString.firstIndex(of: ",") else {
-                delegate?.tabRequestShowToast("保存图片失败")
+            guard let commaIndex = rawURLStr.firstIndex(of: ",") else {
+                fallbackSaveImageViaJS(url: url)
                 return
             }
-            let base64 = String(urlString[urlString.index(after: commaIndex)...])
+            var base64 = String(rawURLStr[rawURLStr.index(after: commaIndex)...])
+            base64 = base64.removingPercentEncoding ?? base64
+            base64 = base64.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespaces)
             guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
                   let image = UIImage(data: data) else {
-                delegate?.tabRequestShowToast("保存图片失败")
+                fallbackSaveImageViaJS(url: url)
                 return
             }
             UIImageWriteToSavedPhotosAlbum(image, self, #selector(image(_:didFinishSavingWithError:contextInfo:)), nil)
@@ -1189,30 +1201,31 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     return
                 }
             }
-            self.delegate?.tabRequestShowToast("保存图片失败")
+            self.fallbackSaveImageViaJS(url: URL(string: urlString) ?? self.webView.url!)
         }
     }
 
     private func fallbackSaveImageViaJS(url: URL) {
+        let escapedURL = url.absoluteString.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let js = """
         (function() {
-            var url = "\(url.absoluteString)";
+            var url = "\(escapedURL)";
             return new Promise(function(resolve, reject) {
                 var img = new Image();
                 img.crossOrigin = 'Anonymous';
                 img.onload = function() {
                     try {
                         var canvas = document.createElement('canvas');
-                        canvas.width = img.naturalWidth || img.width;
-                        canvas.height = img.naturalHeight || img.height;
+                        canvas.width = img.naturalWidth || img.width || 300;
+                        canvas.height = img.naturalHeight || img.height || 300;
                         var ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0);
                         resolve(canvas.toDataURL('image/png'));
                     } catch(e) {
-                        reject(e.toString());
+                        resolve('');
                     }
                 };
-                img.onerror = function() { reject('load error'); };
+                img.onerror = function() { resolve(''); };
                 img.src = url;
             });
         })();
