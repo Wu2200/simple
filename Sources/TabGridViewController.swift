@@ -3,7 +3,7 @@ import UIKit
 final class TabGridViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
     private var tabs: [TabItem]
     private var activeIndex: Int
-    private var collectionView: UICollectionView!
+    private var collectionView: UICollectionView?
     private let addButton = TouchButton()
     private let flowLayout = UICollectionViewFlowLayout()
     private var hasScrolledToBottomInitially = false
@@ -33,14 +33,15 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
         flowLayout.minimumLineSpacing = 16
         flowLayout.sectionInset = UIEdgeInsets(top: 16, left: 16, bottom: 88, right: 16)
 
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: flowLayout)
-        collectionView.translatesAutoresizingMaskIntoConstraints = false
-        collectionView.backgroundColor = .clear
-        collectionView.dataSource = self
-        collectionView.delegate = self
-        collectionView.alwaysBounceVertical = true
-        collectionView.showsVerticalScrollIndicator = false
-        collectionView.register(TabGridCell.self, forCellWithReuseIdentifier: "TabGridCell")
+        let cv = UICollectionView(frame: .zero, collectionViewLayout: flowLayout)
+        cv.translatesAutoresizingMaskIntoConstraints = false
+        cv.backgroundColor = .clear
+        cv.dataSource = self
+        cv.delegate = self
+        cv.alwaysBounceVertical = true
+        cv.showsVerticalScrollIndicator = false
+        cv.register(TabGridCell.self, forCellReuseIdentifier: "TabGridCell")
+        self.collectionView = cv
 
         addButton.translatesAutoresizingMaskIntoConstraints = false
 
@@ -60,14 +61,14 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
         addButton.layer.shadowOffset = CGSize(width: 0, height: 3)
         addButton.addTarget(self, action: #selector(handleNewTab), for: .touchUpInside)
 
-        view.addSubview(collectionView)
+        view.addSubview(cv)
         view.addSubview(addButton)
 
         NSLayoutConstraint.activate([
-            collectionView.topAnchor.constraint(equalTo: view.topAnchor),
-            collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            cv.topAnchor.constraint(equalTo: view.topAnchor),
+            cv.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            cv.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            cv.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             addButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             addButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
@@ -91,29 +92,32 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        guard isViewLoaded, let cv = collectionView else { return }
         updateLayoutInsets()
 
         if !hasScrolledToBottomInitially && !tabs.isEmpty {
             hasScrolledToBottomInitially = true
             DispatchQueue.main.async { [weak self] in
-                guard let self = self, !self.tabs.isEmpty else { return }
-                let maxOffsetY = self.collectionView.contentSize.height - self.collectionView.bounds.height + self.collectionView.adjustedContentInset.bottom
+                guard let self = self, self.isViewLoaded, let collectionView = self.collectionView, !self.tabs.isEmpty else { return }
+                let maxOffsetY = collectionView.contentSize.height - collectionView.bounds.height + collectionView.adjustedContentInset.bottom
                 if maxOffsetY > 0 {
-                    self.collectionView.setContentOffset(CGPoint(x: 0, y: maxOffsetY), animated: false)
-                } else if self.tabs.indices.contains(self.activeIndex) {
-                    self.collectionView.scrollToItem(at: IndexPath(item: self.activeIndex, section: 0), at: .bottom, animated: false)
+                    collectionView.setContentOffset(CGPoint(x: 0, y: maxOffsetY), animated: false)
+                } else if self.tabs.indices.contains(self.activeIndex),
+                          collectionView.numberOfSections > 0,
+                          collectionView.numberOfItems(inSection: 0) > self.activeIndex {
+                    collectionView.scrollToItem(at: IndexPath(item: self.activeIndex, section: 0), at: .bottom, animated: false)
                 }
             }
         }
     }
 
     private func updateLayoutInsets() {
-        guard let layout = collectionView.collectionViewLayout as? UICollectionViewFlowLayout else { return }
+        guard isViewLoaded, let cv = collectionView, let layout = cv.collectionViewLayout as? UICollectionViewFlowLayout else { return }
 
         let columns: CGFloat = 2
         let padding: CGFloat = 16
         let spacing: CGFloat = 16
-        let totalWidth = collectionView.bounds.width
+        let totalWidth = cv.bounds.width
         guard totalWidth > 0 else { return }
 
         let itemWidth = floor((totalWidth - padding * 2 - spacing * (columns - 1)) / columns)
@@ -144,7 +148,8 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
     }
 
     func reloadGrid() {
-        collectionView.reloadData()
+        guard isViewLoaded, let cv = collectionView else { return }
+        cv.reloadData()
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -160,6 +165,7 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
             for: indexPath
         ) as! TabGridCell
 
+        guard indexPath.item < tabs.count else { return cell }
         let tab = tabs[indexPath.item]
         cell.configure(tab: tab, isActive: indexPath.item == activeIndex)
 
@@ -171,6 +177,7 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard indexPath.item < tabs.count else { return }
         onSelectTab?(indexPath.item)
         dismiss(animated: true)
     }
@@ -198,7 +205,7 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
         }
 
         updateLayoutInsets()
-        collectionView.reloadData()
+        reloadGrid()
         onCloseTab?(index)
 
         if tabs.isEmpty {
