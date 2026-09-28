@@ -176,9 +176,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var navigationActionURL: URL?
     weak var delegate: TabItemDelegate?
 
-    private var cachedTouchLinkURL: URL?
-    private var cachedTouchImageURL: URL?
-
     override init() {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -355,7 +352,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 try {
                     var bg = window.getComputedStyle(el).backgroundImage;
                     if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
-                        var m = bg.match(/url\\(['"]?(.*?)['\"]?\\)/i);
+                        var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
                         if (m && m[1]) return cleanURL(m[1]);
                     }
                 } catch(e) {}
@@ -419,19 +416,83 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 };
             }
 
+            var activeTouch = null;
+            var holdTimer = null;
+            var holdDelay = 420;
+            var moveTolerance = 12;
+
+            function cancelHold() {
+                if (holdTimer !== null) {
+                    clearTimeout(holdTimer);
+                    holdTimer = null;
+                }
+                activeTouch = null;
+            }
+
+            function disableTargetCallout(target) {
+                if (!target || !target.style) return;
+                target.style.setProperty('-webkit-touch-callout', 'none', 'important');
+            }
+
             function onTouchStart(e) {
-                if (e.touches && e.touches.length > 0) {
-                    var t = e.touches[0];
-                    var res = inspect(e.target, t.clientX, t.clientY);
+                if (!e.touches || e.touches.length !== 1) {
+                    cancelHold();
+                    return;
+                }
+
+                var touch = e.touches[0];
+                var result = inspect(e.target, touch.clientX, touch.clientY);
+                if (!result.link && !result.image) {
+                    cancelHold();
+                    return;
+                }
+
+                cancelHold();
+                disableTargetCallout(e.target);
+                activeTouch = {
+                    x: touch.clientX,
+                    y: touch.clientY,
+                    link: result.link,
+                    image: result.image
+                };
+
+                holdTimer = setTimeout(function() {
+                    if (!activeTouch) return;
+                    var target = activeTouch;
+                    activeTouch = null;
+                    holdTimer = null;
                     try {
                         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ContextMenuTarget) {
-                            window.webkit.messageHandlers.ContextMenuTarget.postMessage(res);
+                            window.webkit.messageHandlers.ContextMenuTarget.postMessage({
+                                link: target.link,
+                                image: target.image,
+                                x: target.x,
+                                y: target.y
+                            });
                         }
                     } catch(err) {}
+                }, holdDelay);
+            }
+
+            function onTouchMove(e) {
+                if (!activeTouch || !e.touches || e.touches.length !== 1) {
+                    cancelHold();
+                    return;
                 }
+                var touch = e.touches[0];
+                var dx = touch.clientX - activeTouch.x;
+                var dy = touch.clientY - activeTouch.y;
+                if (Math.sqrt(dx * dx + dy * dy) > moveTolerance) cancelHold();
             }
 
             window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+            window.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
+            window.addEventListener('touchend', cancelHold, { capture: true, passive: true });
+            window.addEventListener('touchcancel', cancelHold, { capture: true, passive: true });
+
+            var calloutStyle = document.createElement('style');
+            calloutStyle.textContent = 'img, picture, canvas, video, a[href], [role="img"] { -webkit-touch-callout: none !important; }';
+            (document.documentElement || document.head).appendChild(calloutStyle);
         })();
         """
         let touchScript = WKUserScript(
@@ -453,7 +514,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.allowsLinkPreview = true
+        webView.allowsLinkPreview = false
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.keyboardDismissMode = .onDrag
         webView.scrollView.contentInsetAdjustmentBehavior = .automatic
@@ -524,10 +585,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "ContextMenuTarget", let dict = message.body as? [String: Any] {
-            let linkStr = dict["link"] as? String ?? ""
-            let imgStr = dict["image"] as? String ?? ""
-            cachedTouchLinkURL = linkStr.isEmpty ? nil : URL(string: linkStr)
-            cachedTouchImageURL = imgStr.isEmpty ? nil : URL(string: imgStr)
+            let linkString = dict["link"] as? String ?? ""
+            let imageString = dict["image"] as? String ?? ""
+            let linkURL = linkString.hasPrefix("http://") || linkString.hasPrefix("https://") ? URL(string: linkString) : nil
+            let imageURL = imageString.isEmpty ? nil : URL(string: imageString)
+            guard linkURL != nil || imageURL != nil else { return }
+            let x = (dict["x"] as? NSNumber)?.doubleValue ?? Double(webView.bounds.midX)
+            let y = (dict["y"] as? NSNumber)?.doubleValue ?? Double(webView.bounds.midY)
+            DispatchQueue.main.async { [weak self] in
+                self?.presentContextMenu(link: linkURL, image: imageURL, point: CGPoint(x: x, y: y))
+            }
             return
         }
 
@@ -589,6 +656,48 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
             task.resume()
         }
+    }
+
+    private func presentContextMenu(link: URL?, image: URL?, point: CGPoint) {
+        guard link != nil || image != nil, let presenter = topViewController() else { return }
+        guard presenter.presentedViewController == nil else { return }
+
+        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+
+        if let link = link {
+            sheet.addAction(UIAlertAction(title: "新标签打开", style: .default) { [weak self] _ in
+                self?.delegate?.tabRequestNewTab(url: link, inBackground: false)
+            })
+            sheet.addAction(UIAlertAction(title: "后台打开", style: .default) { [weak self] _ in
+                self?.delegate?.tabRequestNewTab(url: link, inBackground: true)
+            })
+            sheet.addAction(UIAlertAction(title: "拷贝链接", style: .default) { [weak self] _ in
+                UIPasteboard.general.string = link.absoluteString
+                self?.delegate?.tabRequestShowToast("已拷贝链接")
+            })
+        }
+
+        if let image = image {
+            sheet.addAction(UIAlertAction(title: "保存图片", style: .default) { [weak self] _ in
+                self?.saveImageToPhotos(from: image)
+            })
+            sheet.addAction(UIAlertAction(title: "拷贝图片链接", style: .default) { [weak self] _ in
+                UIPasteboard.general.string = image.absoluteString
+                self?.delegate?.tabRequestShowToast("已拷贝图片链接")
+            })
+        }
+
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+
+        if let popover = sheet.popoverPresentationController {
+            popover.sourceView = webView
+            let x = min(max(point.x, 0), webView.bounds.width)
+            let y = min(max(point.y, 0), webView.bounds.height)
+            popover.sourceRect = CGRect(x: x, y: y, width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+
+        presenter.present(sheet, animated: true)
     }
 
     private func handleBlobDataURL(_ dataUrlString: String, filename: String) {
@@ -994,93 +1103,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
         completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
     ) {
-        let linkURL = elementInfo.linkURL ?? cachedTouchLinkURL
-        let imageURL = cachedTouchImageURL
-
-        guard linkURL != nil || imageURL != nil else {
-            completionHandler(nil)
-            return
-        }
-
-        let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-            guard let self = self else { return nil }
-            var actions: [UIMenuElement] = []
-
-            if let link = linkURL {
-                let openNewTab = UIAction(
-                    title: "新标签打开",
-                    image: UIImage(systemName: "safari")
-                ) { [weak self] _ in
-                    self?.delegate?.tabRequestNewTab(url: link, inBackground: false)
-                }
-                actions.append(openNewTab)
-
-                let openBackground = UIAction(
-                    title: "后台打开",
-                    image: UIImage(systemName: "square.badge.plus")
-                ) { [weak self] _ in
-                    self?.delegate?.tabRequestNewTab(url: link, inBackground: true)
-                }
-                actions.append(openBackground)
-
-                let copyLink = UIAction(
-                    title: "拷贝链接",
-                    image: UIImage(systemName: "doc.on.doc")
-                ) { [weak self] _ in
-                    UIPasteboard.general.string = link.absoluteString
-                    self?.delegate?.tabRequestShowToast("已拷贝链接")
-                }
-                actions.append(copyLink)
-
-                if let img = imageURL {
-                    let saveImage = UIAction(
-                        title: "保存图片",
-                        image: UIImage(systemName: "square.and.arrow.down")
-                    ) { [weak self] _ in
-                        self?.saveImageToPhotos(from: img)
-                    }
-                    actions.append(saveImage)
-
-                    let copyImageURL = UIAction(
-                        title: "拷贝图片链接",
-                        image: UIImage(systemName: "link")
-                    ) { [weak self] _ in
-                        UIPasteboard.general.string = img.absoluteString
-                        self?.delegate?.tabRequestShowToast("已拷贝图片链接")
-                    }
-                    actions.append(copyImageURL)
-                } else {
-                    let shareLink = UIAction(
-                        title: "共享链接",
-                        image: UIImage(systemName: "square.and.arrow.up")
-                    ) { [weak self] _ in
-                        self?.share(items: [link])
-                    }
-                    actions.append(shareLink)
-                }
-            } else if let img = imageURL {
-                let saveImage = UIAction(
-                    title: "保存图片",
-                    image: UIImage(systemName: "square.and.arrow.down")
-                ) { [weak self] _ in
-                    self?.saveImageToPhotos(from: img)
-                }
-                actions.append(saveImage)
-
-                let copyImageURL = UIAction(
-                    title: "拷贝图片链接",
-                    image: UIImage(systemName: "link")
-                ) { [weak self] _ in
-                    UIPasteboard.general.string = img.absoluteString
-                    self?.delegate?.tabRequestShowToast("已拷贝图片链接")
-                }
-                actions.append(copyImageURL)
-            }
-
-            return UIMenu(title: "", children: actions)
-        }
-
-        completionHandler(config)
+        completionHandler(nil)
     }
 
     func webView(
@@ -1205,17 +1228,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
-    @objc private func share(items: [Any]) {
-        guard let presenter = topViewController() else { return }
-        let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
-        if let popover = activity.popoverPresentationController {
-            popover.sourceView = webView
-            popover.sourceRect = CGRect(x: webView.bounds.midX, y: webView.bounds.midY, width: 0, height: 0)
-            popover.permittedArrowDirections = []
-        }
-        presenter.present(activity, animated: true)
-    }
-
     private func topViewController() -> UIViewController? {
         let keyWindow = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
@@ -1244,8 +1256,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
         hasInjectedScriptsForCurrentPage = false
         registeredCommands.removeAll()
-        cachedTouchLinkURL = nil
-        cachedTouchImageURL = nil
         delegate?.tabDidUpdate(self)
     }
 
