@@ -4284,7 +4284,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             tf.clearButtonMode = .whileEditing
         }
         alert.addTextField { tf in
-            tf.placeholder = "网站地址 (http:// 或 https://)"
+            tf.placeholder = "网站地址"
             tf.text = item.urlString
             tf.keyboardType = .URL
             tf.clearButtonMode = .whileEditing
@@ -5985,8 +5985,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         var items: [CustomBottomSheetItem] = []
 
-        // Page 1: 8 Items (4 columns x 2 rows)
-        // 1. 书签/历史
         items.append(CustomBottomSheetItem(
             title: "书签/历史",
             iconName: "star",
@@ -5996,7 +5994,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 2. 电脑版 (与下载管理互换位置，长按进入标识设置)
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
             title: isDesktop ? "移动版" : "电脑版",
@@ -6022,7 +6019,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 3. 下载管理 (与电脑版互换位置)
         items.append(CustomBottomSheetItem(
             title: "下载管理",
             iconName: "arrow.down.circle",
@@ -6032,7 +6028,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 4. 夜间模式
         let isEyeOn = EyeProtectionManager.shared.isEnabled
         items.append(CustomBottomSheetItem(
             title: "夜间模式",
@@ -6047,7 +6042,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 5. 添加 (添加到书签 / 添加到主页)
         items.append(CustomBottomSheetItem(
             title: "添加",
             customImage: getAddBookmarkIcon(),
@@ -6057,7 +6051,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 6. 全屏浏览
         items.append(CustomBottomSheetItem(
             title: isFullscreen ? "退出全屏" : "全屏浏览",
             iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
@@ -6068,7 +6061,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 7. 广告过滤
         let isAdBlockOn = AdBlockManager.shared.isEnabled
         items.append(CustomBottomSheetItem(
             title: "广告过滤",
@@ -6086,7 +6078,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 8. 清除数据
         items.append(CustomBottomSheetItem(
             title: "清除数据",
             iconName: "trash",
@@ -6096,8 +6087,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // Page 2: Secondary items
-        // 9. 扩展脚本 (由第一页移入第二页)
         items.append(CustomBottomSheetItem(
             title: "扩展脚本",
             iconName: "puzzlepiece.extension",
@@ -6107,7 +6096,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 10. 标识设置
         items.append(CustomBottomSheetItem(
             title: "标识设置",
             iconName: "slider.horizontal.3",
@@ -6117,7 +6105,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 11. 搜索引擎
         let currentEngine = SearchEngineStore.shared.currentEngine
         items.append(CustomBottomSheetItem(
             title: currentEngine.name,
@@ -6128,7 +6115,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 12. 提取正文
         items.append(CustomBottomSheetItem(
             title: "提取正文",
             iconName: "doc.text.magnifyingglass",
@@ -6138,7 +6124,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             }
         ))
 
-        // 13. 数据备份 (新增备份功能)
         items.append(CustomBottomSheetItem(
             title: "数据备份",
             iconName: "externaldrive",
@@ -6167,8 +6152,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     private func showBackupActionSheet() {
         let sheet = UIAlertController(
-            title: "浏览器数据备份与恢复",
-            message: "可将书签、主页站点(含自定义Logo)、油猴脚本及数据、广告拦截规则等打包导出，或使用备份文件覆盖恢复。",
+            title: "数据备份与恢复",
+            message: "可将书签、主页站点、浏览记录、网站登录信息、脚本与拦截规则等打包导出，或使用备份文件进行恢复。",
             preferredStyle: .actionSheet
         )
 
@@ -6176,7 +6161,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             self?.performExportBackup()
         })
 
-        sheet.addAction(UIAlertAction(title: "从备份文件恢复 (覆盖)", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: "从备份文件恢复", style: .default) { [weak self] _ in
             self?.presentDocumentPickerForRestore()
         })
 
@@ -6185,17 +6170,20 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func performExportBackup() {
-        do {
-            let fileURL = try BackupManager.shared.exportBackupFile()
-            let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-            if let popover = activityVC.popoverPresentationController {
-                popover.sourceView = view
-                popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
-                popover.permittedArrowDirections = []
+        BackupManager.shared.exportBackupFile { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let fileURL):
+                let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                if let popover = activityVC.popoverPresentationController {
+                    popover.sourceView = self.view
+                    popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+                    popover.permittedArrowDirections = []
+                }
+                self.present(activityVC, animated: true)
+            case .failure(let error):
+                self.showToastNotice("导出备份失败: \(error.localizedDescription)")
             }
-            present(activityVC, animated: true)
-        } catch {
-            showToastNotice("导出备份失败: \(error.localizedDescription)")
         }
     }
 
@@ -6222,26 +6210,29 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         let alert = UIAlertController(
             title: "恢复备份确认",
-            message: "确定要从选择的备份文件恢复吗？\n当前的书签、主页站点(含Logo)、油猴脚本及规则将被该文件覆盖。",
+            message: "确定要从选择的备份文件恢复吗？\n当前的所有数据将被该备份文件恢复替换。",
             preferredStyle: .alert
         )
 
-        alert.addAction(UIAlertAction(title: "确认覆盖恢复", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "确认恢复", style: .destructive) { [weak self] _ in
             guard let self = self else { return }
-            do {
-                try BackupManager.shared.restore(from: selectedURL)
-                self.reloadHomeShortcuts()
-                self.activeTab.reloadUserScripts()
-                AdBlockManager.shared.applyRules(to: self.activeTab.webView)
-                self.showToastNotice("数据覆盖恢复成功！")
-            } catch {
-                let errAlert = UIAlertController(
-                    title: "恢复失败",
-                    message: "备份文件解析错误或格式无效：\(error.localizedDescription)",
-                    preferredStyle: .alert
-                )
-                errAlert.addAction(UIAlertAction(title: "确定", style: .default))
-                self.present(errAlert, animated: true)
+            BackupManager.shared.restore(from: selectedURL) { [weak self] result in
+                guard let self = self else { return }
+                switch result {
+                case .success:
+                    self.reloadHomeShortcuts()
+                    self.activeTab.reloadUserScripts()
+                    AdBlockManager.shared.applyRules(to: self.activeTab.webView)
+                    self.showToastNotice("数据恢复成功")
+                case .failure(let error):
+                    let errAlert = UIAlertController(
+                        title: "恢复失败",
+                        message: "备份文件解析错误或格式无效：\(error.localizedDescription)",
+                        preferredStyle: .alert
+                    )
+                    errAlert.addAction(UIAlertAction(title: "确定", style: .default))
+                    self.present(errAlert, animated: true)
+                }
             }
         })
 
