@@ -187,8 +187,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     private lazy var longPressGesture: UILongPressGestureRecognizer = {
         let gesture = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-        gesture.minimumPressDuration = 0.38
-        gesture.allowableMovement = 25.0
+        gesture.minimumPressDuration = 0.35
+        gesture.allowableMovement = 20.0
         gesture.delegate = self
         return gesture
     }()
@@ -310,9 +310,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 if (!s || typeof s !== 'string') return false;
                 var trimmed = s.trim();
                 if (!trimmed) return false;
+                if (trimmed.startsWith('blob:')) return true;
                 if (trimmed.startsWith('data:image/svg+xml')) return false;
                 if (trimmed.startsWith('data:image/') && trimmed.length < 256) return false;
-                if (trimmed.indexOf('blank.gif') !== -1 || trimmed.indexOf('blank.png') !== -1 || trimmed.indexOf('pixel.gif') !== -1 || trimmed.indexOf('spacer.gif') !== -1 || trimmed.indexOf('loading.gif') !== -1) return false;
+                var lower = trimmed.toLowerCase();
+                if (lower.indexOf('blank.gif') !== -1 || lower.indexOf('blank.png') !== -1 || lower.indexOf('pixel.gif') !== -1 || lower.indexOf('spacer.gif') !== -1 || lower.indexOf('loading.gif') !== -1) return false;
                 return true;
             }
 
@@ -396,7 +398,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 return '';
             }
 
-            function inspect(target, clientX, clientY) {
+            window.__simple_inspect_point__ = function(clientX, clientY, target) {
                 var resolvedImg = '';
                 var resolvedLink = '';
                 var isTextElement = false;
@@ -431,42 +433,23 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
 
                 if (!resolvedLink && target) {
-                    var cur = target;
-                    var depth = 0;
-                    while (cur && depth < 8 && cur !== document.body && cur !== document.documentElement) {
-                        if (cur.tagName === 'A' && (cur.href || cur.getAttribute('href'))) {
-                            resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
-                            if (!resolvedImg && cur.querySelector) {
-                                var inA = cur.querySelector('img, picture, canvas');
-                                if (inA) resolvedImg = getSrc(inA);
-                            }
-                            break;
+                    var a = target.tagName === 'A' ? target : (target.closest ? target.closest('a') : null);
+                    if (a && (a.href || a.getAttribute('href'))) {
+                        resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
+                        if (!resolvedImg && a.querySelector) {
+                            var inA = a.querySelector('img, picture, canvas');
+                            if (inA) resolvedImg = getSrc(inA);
                         }
-                        cur = cur.parentElement;
-                        depth++;
                     }
                 }
 
                 if (!resolvedImg && target) {
                     resolvedImg = getSrc(target);
-                    if (!resolvedImg && target.closest) {
-                        var cardContainer = target.closest('[role="article"], .g, [data-ved], .card, li, .item, article');
-                        if (cardContainer && cardContainer.querySelector) {
-                            var cImg = cardContainer.querySelector('img, picture, canvas');
-                            if (cImg) resolvedImg = getSrc(cImg);
-                            if (!resolvedLink) {
-                                var cLink = cardContainer.querySelector('a');
-                                if (cLink && (cLink.href || cLink.getAttribute('href'))) {
-                                    resolvedLink = cleanURL(cLink.href || cLink.getAttribute('href') || '');
-                                }
-                            }
-                        }
-                    }
                 }
 
                 if (!resolvedLink && !resolvedImg && target) {
                     var tag = target.tagName;
-                    if (tag === 'P' || tag === 'SPAN' || tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4' || tag === 'H5' || tag === 'H6' || tag === 'B' || tag === 'STRONG' || tag === 'EM' || tag === 'I' || tag === 'ARTICLE' || tag === 'SECTION') {
+                    if (tag === 'P' || tag === 'SPAN' || tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4' || tag === 'H5' || tag === 'H6' || tag === 'B' || tag === 'STRONG' || tag === 'EM' || tag === 'I' || tag === 'ARTICLE' || tag === 'SECTION' || tag === 'BLOCKQUOTE') {
                         isTextElement = true;
                     } else if (target.childNodes && target.childNodes.length > 0) {
                         for (var c = 0; c < target.childNodes.length; c++) {
@@ -484,7 +467,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     isText: isTextElement,
                     hasTarget: !!(resolvedLink || resolvedImg)
                 };
-            }
+            };
 
             window.__simple_cancel_next_click__ = function() {
                 var preventClick = function(e) {
@@ -502,7 +485,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             function onTouchStart(e) {
                 if (!e.touches || e.touches.length !== 1) return;
                 var t = e.touches[0];
-                var res = inspect(e.target, t.clientX, t.clientY);
+                var res = window.__simple_inspect_point__(t.clientX, t.clientY, e.target);
                 try {
                     window.webkit.messageHandlers.TouchProbe.postMessage({
                         link: res.link || '',
@@ -583,14 +566,38 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
+        if otherGestureRecognizer is UIPanGestureRecognizer {
+            return true
+        }
+        return false
     }
 
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         let touchPoint = gesture.location(in: webView)
-        guard let target = currentProbeTarget, target.hasTarget, Date().timeIntervalSince(target.date) < 2.0 else { return }
-        presentActionSheet(for: target, at: touchPoint)
+
+        if let target = currentProbeTarget, target.hasTarget, Date().timeIntervalSince(target.date) < 2.0 {
+            let dist = hypot(touchPoint.x - target.point.x, touchPoint.y - target.point.y)
+            if dist < 40.0 {
+                presentActionSheet(for: target, at: touchPoint)
+                return
+            }
+        }
+
+        let js = "window.__simple_inspect_point__ && window.__simple_inspect_point__(\(touchPoint.x), \(touchPoint.y), document.elementFromPoint(\(touchPoint.x), \(touchPoint.y)))"
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self = self else { return }
+            guard let dict = result as? [String: Any] else { return }
+            let hasTarget = dict["hasTarget"] as? Bool ?? false
+            guard hasTarget else { return }
+            let linkStr = dict["link"] as? String ?? ""
+            let imgStr = dict["image"] as? String ?? ""
+            let isText = dict["isText"] as? Bool ?? false
+            let linkURL = (linkStr.hasPrefix("http://") || linkStr.hasPrefix("https://")) ? URL(string: linkStr) : nil
+            let imgURL = (imgStr.hasPrefix("http://") || imgStr.hasPrefix("https://") || imgStr.hasPrefix("data:") || imgStr.hasPrefix("blob:")) ? URL(string: imgStr) : nil
+            let freshTarget = ProbeTarget(link: linkURL, image: imgURL, hasTarget: hasTarget, isText: isText, date: Date(), point: touchPoint)
+            self.presentActionSheet(for: freshTarget, at: touchPoint)
+        }
     }
 
     private func presentActionSheet(for target: ProbeTarget, at touchPoint: CGPoint) {
@@ -680,14 +687,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             let x = dict["x"] as? CGFloat ?? 0
             let y = dict["y"] as? CGFloat ?? 0
             let linkURL = (linkStr.hasPrefix("http://") || linkStr.hasPrefix("https://")) ? URL(string: linkStr) : nil
-            let imgURL = (imgStr.hasPrefix("http://") || imgStr.hasPrefix("https://") || imgStr.hasPrefix("data:")) ? URL(string: imgStr) : nil
+            let imgURL = (imgStr.hasPrefix("http://") || imgStr.hasPrefix("https://") || imgStr.hasPrefix("data:") || imgStr.hasPrefix("blob:")) ? URL(string: imgStr) : nil
 
             currentProbeTarget = ProbeTarget(link: linkURL, image: imgURL, hasTarget: hasTarget, isText: isText, date: Date(), point: CGPoint(x: x, y: y))
-
-            if !hasTarget && isText {
-                longPressGesture.isEnabled = false
-                longPressGesture.isEnabled = true
-            }
             return
         }
 
@@ -1187,6 +1189,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             return
         }
 
+        if rawURLStr.hasPrefix("blob:") {
+            fallbackSaveImageViaJS(url: url)
+            return
+        }
+
         var request = URLRequest(url: url)
         request.setValue(webView.customUserAgent ?? UserAgentStore.shared.getSelectedUA(), forHTTPHeaderField: "User-Agent")
         if let currentURL = webView.url?.absoluteString {
@@ -1246,6 +1253,15 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         (function() {
             var url = "\(escapedURL)";
             return new Promise(function(resolve, reject) {
+                if (url.startsWith('blob:')) {
+                    fetch(url).then(function(r){ return r.blob(); }).then(function(b){
+                        var reader = new FileReader();
+                        reader.onloadend = function(){ resolve(reader.result || ''); };
+                        reader.onerror = function(){ resolve(''); };
+                        reader.readAsDataURL(b);
+                    }).catch(function(){ resolve(''); });
+                    return;
+                }
                 var img = new Image();
                 img.crossOrigin = 'Anonymous';
                 img.onload = function() {
