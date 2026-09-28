@@ -174,7 +174,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var hasInjectedScriptsForCurrentPage = false
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
-    private var lastContextMenuTarget: (link: URL?, imageString: String?, date: Date)?
 
     weak var delegate: TabItemDelegate?
 
@@ -276,280 +275,23 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         let touchScriptSource = """
         (function() {
-            if (window.__simple_context_injected__) return;
-            window.__simple_context_injected__ = true;
+            if (window.__touch_tracker_injected__) return;
+            window.__touch_tracker_injected__ = true;
+            window.__lastTouchPos = null;
 
-            var lastTouch = null;
-            var lastContextMenuResult = null;
-
-            function cleanURL(u) {
-                if (!u || typeof u !== 'string') return '';
-                var trimmed = u.trim();
-                if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
-                try {
-                    return new URL(trimmed, window.location.href).href;
-                } catch(e) {
-                    return trimmed;
+            function onTouch(e) {
+                if (e.touches && e.touches.length > 0) {
+                    var t = e.touches[0];
+                    window.__lastTouchPos = {
+                        x: t.clientX,
+                        y: t.clientY,
+                        target: e.target
+                    };
                 }
             }
 
-            function isRealImageSrc(s) {
-                if (!s || typeof s !== 'string') return false;
-                var trimmed = s.trim();
-                if (!trimmed) return false;
-                if (trimmed.startsWith('data:image/svg+xml')) return true;
-                if (trimmed.startsWith('data:image/')) {
-                    if (trimmed.length < 120 && trimmed.indexOf('R0lGODlhAQAB') !== -1) return false;
-                    return true;
-                }
-                if (trimmed.startsWith('blob:') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-                    var lower = trimmed.toLowerCase();
-                    if (lower.indexOf('blank.gif') !== -1 || lower.indexOf('blank.png') !== -1 || lower.indexOf('pixel.gif') !== -1 || lower.indexOf('spacer.gif') !== -1) return false;
-                    return true;
-                }
-                return true;
-            }
-
-            function parseSrcset(val) {
-                if (!val) return '';
-                var parts = val.split(',');
-                var bestUrl = '';
-                var maxW = 0;
-                for (var i = 0; i < parts.length; i++) {
-                    var item = parts[i].trim().split(/\\s+/);
-                    if (item.length > 0 && item[0]) {
-                        var w = 0;
-                        if (item.length > 1) {
-                            var m = item[1].match(/(\\d+)/);
-                            if (m) w = parseInt(m[1], 10);
-                        }
-                        if (w >= maxW) {
-                            maxW = w;
-                            bestUrl = item[0];
-                        }
-                    }
-                }
-                return bestUrl;
-            }
-
-            function getElementImageSrc(el) {
-                if (!el) return '';
-                var tag = (el.tagName || '').toUpperCase();
-                if (tag === 'IMG' || tag === 'AMP-IMG') {
-                    var candidates = [
-                        el.getAttribute('data-original'),
-                        el.getAttribute('data-src'),
-                        el.getAttribute('data-actualsrc'),
-                        el.getAttribute('data-lazy-src'),
-                        el.getAttribute('data-url'),
-                        el.getAttribute('data-orig'),
-                        el.getAttribute('data-srcset'),
-                        el.getAttribute('data-echo'),
-                        el.getAttribute('data-cover'),
-                        el.getAttribute('srcset'),
-                        el.currentSrc,
-                        el.src
-                    ];
-                    for (var i = 0; i < candidates.length; i++) {
-                        var c = candidates[i];
-                        if (c) {
-                            var parsed = parseSrcset(c) || c;
-                            if (isRealImageSrc(parsed)) return cleanURL(parsed);
-                        }
-                    }
-                }
-                if (tag === 'PICTURE') {
-                    var sources = el.querySelectorAll('source');
-                    for (var s = 0; s < sources.length; s++) {
-                        var ss = sources[s].getAttribute('srcset') || sources[s].getAttribute('src');
-                        if (ss) {
-                            var p = parseSrcset(ss) || ss;
-                            if (isRealImageSrc(p)) return cleanURL(p);
-                        }
-                    }
-                    var inner = el.querySelector('img, amp-img');
-                    if (inner) {
-                        var fromInner = getElementImageSrc(inner);
-                        if (isRealImageSrc(fromInner)) return fromInner;
-                    }
-                }
-                if (tag === 'CANVAS') {
-                    try {
-                        return el.toDataURL('image/png');
-                    } catch(e) { return ''; }
-                }
-                if (tag === 'VIDEO' && el.poster && isRealImageSrc(el.poster)) {
-                    return cleanURL(el.poster);
-                }
-                try {
-                    var bg = window.getComputedStyle(el).backgroundImage;
-                    if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
-                        var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
-                        if (m && m[1] && isRealImageSrc(m[1])) return cleanURL(m[1]);
-                    }
-                } catch(e) {}
-                return '';
-            }
-
-            function getBestImageFromContainer(container) {
-                if (!container) return '';
-                var direct = getElementImageSrc(container);
-                if (direct) return direct;
-                if (!container.querySelectorAll) return '';
-
-                var imgs = Array.from(container.querySelectorAll('img, amp-img, picture, canvas, [style*="background-image"]'));
-                if (imgs.length === 0) return '';
-
-                var bestSrc = '';
-                var maxArea = -1;
-
-                for (var i = 0; i < imgs.length; i++) {
-                    var item = imgs[i];
-                    var src = getElementImageSrc(item);
-                    if (!src) continue;
-
-                    var w = item.offsetWidth || item.naturalWidth || item.clientWidth || 0;
-                    var h = item.offsetHeight || item.naturalHeight || item.clientHeight || 0;
-
-                    if (w > 0 && h > 0 && w <= 24 && h <= 24) {
-                        continue;
-                    }
-
-                    var area = w * h;
-                    if (area > maxArea) {
-                        maxArea = area;
-                        bestSrc = src;
-                    }
-                }
-
-                if (!bestSrc && imgs.length > 0) {
-                    for (var j = 0; j < imgs.length; j++) {
-                        var fallbackSrc = getElementImageSrc(imgs[j]);
-                        if (fallbackSrc) return fallbackSrc;
-                    }
-                }
-
-                return bestSrc;
-            }
-
-            function inspect(target, x, y) {
-                var resolvedImg = '';
-                var resolvedLink = '';
-
-                if (x >= 0 && y >= 0 && document.elementsFromPoint) {
-                    var els = document.elementsFromPoint(x, y) || [];
-                    for (var i = 0; i < els.length; i++) {
-                        var item = els[i];
-                        if (!item || item === document.body || item === document.documentElement) continue;
-
-                        if (!resolvedImg) {
-                            resolvedImg = getElementImageSrc(item);
-                            if (!resolvedImg) {
-                                resolvedImg = getBestImageFromContainer(item);
-                            }
-                        }
-
-                        if (!resolvedLink) {
-                            var a = item.tagName === 'A' ? item : (item.closest ? item.closest('a') : null);
-                            if (a && (a.href || a.getAttribute('href'))) {
-                                resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
-                                if (!resolvedImg) {
-                                    resolvedImg = getBestImageFromContainer(a);
-                                }
-                            }
-                        }
-
-                        if (resolvedImg && resolvedLink) break;
-                    }
-                }
-
-                if (!resolvedImg && target) {
-                    resolvedImg = getElementImageSrc(target);
-                    if (!resolvedImg) {
-                        resolvedImg = getBestImageFromContainer(target);
-                    }
-                }
-
-                if (!resolvedLink && target) {
-                    var curA = target.tagName === 'A' ? target : (target.closest ? target.closest('a') : null);
-                    if (curA && (curA.href || curA.getAttribute('href'))) {
-                        resolvedLink = cleanURL(curA.href || curA.getAttribute('href') || '');
-                        if (!resolvedImg) {
-                            resolvedImg = getBestImageFromContainer(curA);
-                        }
-                    }
-                }
-
-                if (!resolvedImg && target) {
-                    var p = target.parentElement;
-                    var depth = 0;
-                    while (p && depth < 6 && p !== document.body && p !== document.documentElement) {
-                        var pImg = getBestImageFromContainer(p);
-                        if (pImg) {
-                            resolvedImg = pImg;
-                            break;
-                        }
-                        p = p.parentElement;
-                        depth++;
-                    }
-                }
-
-                if (resolvedLink && !resolvedImg && target) {
-                    var card = target.closest ? target.closest('.g, .MjjYud, [data-ved], [data-hveid], article, li, .result, .c-container, .tF2Cxc') : null;
-                    if (card) {
-                        resolvedImg = getBestImageFromContainer(card);
-                    }
-                }
-
-                return {
-                    link: resolvedLink,
-                    image: resolvedImg
-                };
-            }
-
-            function onTouchStart(e) {
-                if (!e.touches || e.touches.length !== 1) return;
-                var t = e.touches[0];
-                lastTouch = { x: t.clientX, y: t.clientY, target: e.target, time: Date.now() };
-                var res = inspect(e.target, t.clientX, t.clientY);
-                lastContextMenuResult = res;
-                try {
-                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ContextMenuTarget) {
-                        window.webkit.messageHandlers.ContextMenuTarget.postMessage({
-                            link: res.link || '',
-                            image: res.image || ''
-                        });
-                    }
-                } catch(err) {}
-            }
-
-            window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
-
-            window.addEventListener('contextmenu', function(e) {
-                var x = e.clientX >= 0 ? e.clientX : (lastTouch ? lastTouch.x : -1);
-                var y = e.clientY >= 0 ? e.clientY : (lastTouch ? lastTouch.y : -1);
-                var target = e.target || (lastTouch ? lastTouch.target : null);
-                var res = inspect(target, x, y);
-                lastContextMenuResult = res;
-                try {
-                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ContextMenuTarget) {
-                        window.webkit.messageHandlers.ContextMenuTarget.postMessage({
-                            link: res.link || '',
-                            image: res.image || ''
-                        });
-                    }
-                } catch(err) {}
-            }, true);
-
-            window.__simple_get_context_target__ = function() {
-                if (lastContextMenuResult && (lastContextMenuResult.link || lastContextMenuResult.image)) {
-                    return lastContextMenuResult;
-                }
-                if (lastTouch) {
-                    return inspect(lastTouch.target, lastTouch.x, lastTouch.y);
-                }
-                return { link: '', image: '' };
-            };
+            window.addEventListener('touchstart', onTouch, { capture: true, passive: true });
+            window.addEventListener('touchmove', onTouch, { capture: true, passive: true });
         })();
         """
         let touchScript = WKUserScript(
@@ -567,7 +309,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         AdBlockManager.shared.attach(to: webView)
         userContentController.add(self, name: "GM")
         userContentController.add(self, name: "DownloadBridge")
-        userContentController.add(self, name: "ContextMenuTarget")
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -604,7 +345,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         """, completionHandler: nil)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "GM")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "ContextMenuTarget")
         webView.load(URLRequest(url: URL(string: "about:blank")!))
         webView.removeFromSuperview()
         snapshot = nil
@@ -641,15 +381,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "ContextMenuTarget", let dict = message.body as? [String: Any] {
-            let linkStr = (dict["link"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let imgStr = (dict["image"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let linkURL = (linkStr.hasPrefix("http://") || linkStr.hasPrefix("https://")) ? URL(string: linkStr) : nil
-            let finalImgStr = !imgStr.isEmpty ? imgStr : nil
-            lastContextMenuTarget = (link: linkURL, imageString: finalImgStr, date: Date())
-            return
-        }
-
         if message.name == "DownloadBridge",
            let body = message.body as? [String: Any],
            let dataUrl = body["dataUrl"] as? String {
@@ -1113,53 +844,229 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
         completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
     ) {
-        let elementLink = elementInfo.linkURL
+        let rawLink = elementInfo.linkURL?.absoluteString ?? ""
+        let escapedLink = rawLink.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
 
-        let getTargetJS = """
+        let inspectJS = """
         (function() {
-            if (window.__simple_get_context_target__) {
-                return window.__simple_get_context_target__();
+            var touch = window.__lastTouchPos;
+            var x = touch ? touch.x : -1;
+            var y = touch ? touch.y : -1;
+            var touchTarget = touch ? touch.target : null;
+            var fallbackLink = "\(escapedLink)";
+
+            function cleanURL(u) {
+                if (!u || typeof u !== 'string') return '';
+                var trimmed = u.trim();
+                if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
+                try {
+                    return new URL(trimmed, window.location.href).href;
+                } catch(e) {
+                    return trimmed;
+                }
             }
-            return null;
+
+            function isRealImg(s) {
+                if (!s || typeof s !== 'string') return false;
+                var trimmed = s.trim();
+                if (!trimmed) return false;
+                if (trimmed.startsWith('data:image/svg+xml')) return true;
+                if (trimmed.startsWith('data:image/')) {
+                    if (trimmed.length < 150 && trimmed.indexOf('R0lGODlhAQAB') !== -1) return false;
+                    return true;
+                }
+                var lower = trimmed.toLowerCase();
+                if (lower.indexOf('blank.gif') !== -1 || lower.indexOf('pixel.gif') !== -1 || lower.indexOf('spacer.gif') !== -1) return false;
+                return true;
+            }
+
+            function parseSrcset(val) {
+                if (!val) return '';
+                var parts = val.split(',');
+                var bestUrl = '';
+                var maxW = 0;
+                for (var i = 0; i < parts.length; i++) {
+                    var item = parts[i].trim().split(/\\s+/);
+                    if (item.length > 0 && item[0]) {
+                        var w = 0;
+                        if (item.length > 1) {
+                            var m = item[1].match(/(\\d+)/);
+                            if (m) w = parseInt(m[1], 10);
+                        }
+                        if (w >= maxW) {
+                            maxW = w;
+                            bestUrl = item[0];
+                        }
+                    }
+                }
+                return bestUrl;
+            }
+
+            function getSrc(el) {
+                if (!el) return '';
+                var tag = (el.tagName || '').toUpperCase();
+                if (tag === 'IMG' || tag === 'AMP-IMG') {
+                    var candidates = [
+                        el.getAttribute('data-original'),
+                        el.getAttribute('data-src'),
+                        el.getAttribute('data-actualsrc'),
+                        el.getAttribute('data-lazy-src'),
+                        el.getAttribute('data-url'),
+                        el.getAttribute('data-orig'),
+                        el.getAttribute('data-srcset'),
+                        el.getAttribute('data-echo'),
+                        el.getAttribute('data-cover'),
+                        el.getAttribute('srcset'),
+                        el.currentSrc,
+                        el.src
+                    ];
+                    for (var i = 0; i < candidates.length; i++) {
+                        var c = candidates[i];
+                        if (c) {
+                            var p = parseSrcset(c) || c;
+                            if (isRealImg(p)) return cleanURL(p);
+                        }
+                    }
+                }
+                if (tag === 'PICTURE') {
+                    var sources = el.querySelectorAll('source');
+                    for (var s = 0; s < sources.length; s++) {
+                        var ss = sources[s].getAttribute('srcset') || sources[s].getAttribute('src');
+                        if (ss) {
+                            var parsed = parseSrcset(ss) || ss;
+                            if (isRealImg(parsed)) return cleanURL(parsed);
+                        }
+                    }
+                    var inner = el.querySelector('img, amp-img');
+                    if (inner) {
+                        var fromInner = getSrc(inner);
+                        if (fromInner) return fromInner;
+                    }
+                }
+                if (tag === 'CANVAS') {
+                    try {
+                        return el.toDataURL('image/png');
+                    } catch(e) { return ''; }
+                }
+                if (tag === 'VIDEO' && el.poster && isRealImg(el.poster)) {
+                    return cleanURL(el.poster);
+                }
+                try {
+                    var bg = window.getComputedStyle(el).backgroundImage;
+                    if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
+                        var m = bg.match(/url\\(['"]?(.*?)['"]?\\)/i);
+                        if (m && m[1] && isRealImg(m[1])) return cleanURL(m[1]);
+                    }
+                } catch(e) {}
+                return '';
+            }
+
+            function extractImageFromNode(node) {
+                if (!node) return '';
+                var direct = getSrc(node);
+                if (direct) return direct;
+                if (node.querySelectorAll) {
+                    var imgs = node.querySelectorAll('img, amp-img, picture, canvas');
+                    for (var i = 0; i < imgs.length; i++) {
+                        var found = getSrc(imgs[i]);
+                        if (found) return found;
+                    }
+                }
+                return '';
+            }
+
+            var resolvedImg = '';
+            var resolvedLink = fallbackLink ? cleanURL(fallbackLink) : '';
+
+            if (touchTarget) {
+                resolvedImg = extractImageFromNode(touchTarget);
+                var cur = touchTarget;
+                var depth = 0;
+                while (cur && depth < 8 && cur !== document.body && cur !== document.documentElement) {
+                    if (!resolvedLink && cur.tagName === 'A') {
+                        resolvedLink = cleanURL(cur.href || cur.getAttribute('href') || '');
+                    }
+                    if (!resolvedImg) {
+                        resolvedImg = extractImageFromNode(cur);
+                    }
+                    cur = cur.parentElement;
+                    depth++;
+                }
+            }
+
+            if ((!resolvedImg || !resolvedLink) && x >= 0 && y >= 0) {
+                var els = [];
+                if (document.elementsFromPoint) {
+                    els = document.elementsFromPoint(x, y) || [];
+                } else if (document.elementFromPoint) {
+                    var se = document.elementFromPoint(x, y);
+                    if (se) els = [se];
+                }
+                for (var j = 0; j < els.length; j++) {
+                    var item = els[j];
+                    if (!item || item === document.body || item === document.documentElement) continue;
+                    if (!resolvedLink) {
+                        var a = item.tagName === 'A' ? item : (item.closest ? item.closest('a') : null);
+                        if (a) {
+                            resolvedLink = cleanURL(a.href || a.getAttribute('href') || '');
+                        }
+                    }
+                    if (!resolvedImg) {
+                        resolvedImg = extractImageFromNode(item);
+                    }
+                    if (resolvedImg && resolvedLink) break;
+                }
+            }
+
+            if (!resolvedImg && fallbackLink) {
+                var allAnchors = document.querySelectorAll('a');
+                for (var k = 0; k < allAnchors.length; k++) {
+                    var anc = allAnchors[k];
+                    var aHref = cleanURL(anc.href || anc.getAttribute('href') || '');
+                    if (aHref && aHref === resolvedLink) {
+                        resolvedImg = extractImageFromNode(anc);
+                        if (!resolvedImg) {
+                            var parentCard = anc.closest ? anc.closest('.g, .MjjYud, [data-ved], [data-hveid], article, li, .result, .c-container, .tF2Cxc, div') : null;
+                            if (parentCard) {
+                                resolvedImg = extractImageFromNode(parentCard);
+                            }
+                        }
+                        if (resolvedImg) break;
+                    }
+                }
+            }
+
+            return {
+                imgSrc: resolvedImg,
+                linkHref: resolvedLink
+            };
         })();
         """
 
-        webView.evaluateJavaScript(getTargetJS) { [weak self] result, _ in
+        webView.evaluateJavaScript(inspectJS) { [weak self] result, _ in
             guard let self = self else {
                 completionHandler(nil)
                 return
             }
 
-            var detectedLink = elementLink
+            var detectedLinkURL = elementInfo.linkURL
             var detectedImageString: String? = nil
 
             if let dict = result as? [String: Any] {
-                let linkStr = (dict["link"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                let imgStr = (dict["image"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-
-                if detectedLink == nil, !linkStr.isEmpty {
-                    detectedLink = URL(string: linkStr)
+                if detectedLinkURL == nil, let linkHref = dict["linkHref"] as? String, !linkHref.isEmpty {
+                    detectedLinkURL = URL(string: linkHref)
                 }
-                if !imgStr.isEmpty {
-                    detectedImageString = imgStr
+                if let imgSrc = dict["imgSrc"] as? String, !imgSrc.isEmpty {
+                    detectedImageString = imgSrc
                 }
             }
 
-            if detectedImageString == nil, let cached = self.lastContextMenuTarget, Date().timeIntervalSince(cached.date) < 3.0 {
-                if detectedLink == nil {
-                    detectedLink = cached.link
-                }
-                if let cachedImg = cached.imageString, !cachedImg.isEmpty {
-                    detectedImageString = cachedImg
-                }
-            }
-
-            guard detectedLink != nil || detectedImageString != nil else {
+            guard detectedLinkURL != nil || (detectedImageString != nil && !detectedImageString!.isEmpty) else {
                 completionHandler(nil)
                 return
             }
 
-            let finalLink = detectedLink
+            let finalLink = detectedLinkURL
             let finalImageString = detectedImageString
 
             let config = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
@@ -1180,12 +1087,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     actions.append(contentsOf: [openAction, backgroundAction, copyLinkAction])
                 }
 
-                if let imageString = finalImageString, !imageString.isEmpty {
+                if let imageStr = finalImageString, !imageStr.isEmpty {
                     let saveImageAction = UIAction(title: "保存图片", image: UIImage(systemName: "arrow.down.to.line")) { [weak self] _ in
-                        self?.saveImageToPhotos(from: imageString)
+                        self?.saveImageToPhotos(from: imageStr)
                     }
                     let copyImageLinkAction = UIAction(title: "拷贝图片链接", image: UIImage(systemName: "link")) { [weak self] _ in
-                        UIPasteboard.general.string = imageString
+                        UIPasteboard.general.string = imageStr
                         self?.delegate?.tabRequestShowToast("已拷贝图片链接")
                     }
                     actions.append(contentsOf: [saveImageAction, copyImageLinkAction])
@@ -1354,7 +1261,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
         hasInjectedScriptsForCurrentPage = false
         registeredCommands.removeAll()
-        lastContextMenuTarget = nil
         delegate?.tabDidUpdate(self)
     }
 
@@ -1388,6 +1294,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             injectAndRunUserScripts()
         }
         extractHighResFaviconIfNeeded()
+        updateSnapshot()
         delegate?.tabDidUpdate(self)
     }
 
