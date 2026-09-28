@@ -421,11 +421,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     private let shortcutsStack = UIStackView()
 
     private let failureOverlayView = UIView()
+    private let failureIconView = UIImageView()
     private let failureTitleLabel = UILabel()
     private let failureReasonLabel = UILabel()
     private let failureURLLabel = UILabel()
     private let failureBackButton = TouchButton()
     private let failureReloadButton = TouchButton()
+    private let failureContinueButton = TouchButton()
 
     private let editingDimmingView = UIView()
 
@@ -637,7 +639,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             preferredStyle: .alert
         )
 
-        alert.addAction(UIAlertAction(title: "导出 / 共享文件", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "共享文件", style: .default) { [weak self] _ in
             guard let self = self else { return }
             let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
             if let popover = activity.popoverPresentationController {
@@ -1180,7 +1182,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         iconContainer.layer.cornerRadius = 26
         iconContainer.layer.cornerCurve = .continuous
 
-        let failureIconView = UIImageView()
         failureIconView.translatesAutoresizingMaskIntoConstraints = false
         failureIconView.image = UIImage(
             systemName: "wifi.exclamationmark",
@@ -1214,6 +1215,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         backConfig.title = "返回"
         backConfig.cornerStyle = .capsule
         backConfig.baseForegroundColor = .label
+        backConfig.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = UIFont.systemFont(ofSize: 13.5, weight: .medium)
+            return outgoing
+        }
         failureBackButton.configuration = backConfig
         failureBackButton.addTarget(self, action: #selector(goBack), for: .touchUpInside)
 
@@ -1223,10 +1229,30 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         reloadConfig.cornerStyle = .capsule
         reloadConfig.baseBackgroundColor = .systemBlue
         reloadConfig.baseForegroundColor = .white
+        reloadConfig.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = UIFont.systemFont(ofSize: 13.5, weight: .medium)
+            return outgoing
+        }
         failureReloadButton.configuration = reloadConfig
         failureReloadButton.addTarget(self, action: #selector(handleFailureReload), for: .touchUpInside)
 
-        let failureButtons = UIStackView(arrangedSubviews: [failureBackButton, failureReloadButton])
+        failureContinueButton.translatesAutoresizingMaskIntoConstraints = false
+        var continueConfig = UIButton.Configuration.tinted()
+        continueConfig.title = "继续访问"
+        continueConfig.cornerStyle = .capsule
+        continueConfig.baseBackgroundColor = .systemRed
+        continueConfig.baseForegroundColor = .systemRed
+        continueConfig.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = UIFont.systemFont(ofSize: 13.5, weight: .medium)
+            return outgoing
+        }
+        failureContinueButton.configuration = continueConfig
+        failureContinueButton.addTarget(self, action: #selector(handleFailureContinue), for: .touchUpInside)
+        failureContinueButton.isHidden = true
+
+        let failureButtons = UIStackView(arrangedSubviews: [failureBackButton, failureReloadButton, failureContinueButton])
         failureButtons.translatesAutoresizingMaskIntoConstraints = false
         failureButtons.axis = .horizontal
         failureButtons.spacing = 10
@@ -2059,14 +2085,50 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
+    private func isCertificateError(_ error: Error?) -> Bool {
+        guard let nsError = error as NSError? else { return false }
+        if nsError.domain == NSURLErrorDomain {
+            switch nsError.code {
+            case NSURLErrorServerCertificateUntrusted,
+                 NSURLErrorServerCertificateHasBadDate,
+                 NSURLErrorServerCertificateNotYetValid,
+                 NSURLErrorServerCertificateHasUnknownRoot,
+                 NSURLErrorClientCertificateRejected,
+                 NSURLErrorClientCertificateRequired,
+                 NSURLErrorSecureConnectionFailed,
+                 -1200, -1201, -1202, -1203, -1204, -1205, -1206:
+                return true
+            default:
+                break
+            }
+        }
+        let desc = nsError.localizedDescription.lowercased()
+        return desc.contains("certificate") || desc.contains("证书") || desc.contains("ssl") || desc.contains("tls")
+    }
+
     private func showFailureUI(for tab: TabItem) {
         homeView.alpha = 0
         webContainer.alpha = 1
         failureOverlayView.isHidden = false
         let targetURL = tab.failedURL ?? tab.url
         failureURLLabel.text = targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? ""
-        if let err = tab.failureError as NSError? {
+        let isCertErr = isCertificateError(tab.failureError)
+        if isCertErr {
+            failureTitleLabel.text = "非私人连接"
+            failureIconView.image = UIImage(
+                systemName: "lock.trianglebadge.exclamationmark",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .semibold)
+            )
+            failureContinueButton.isHidden = false
+        } else {
             failureTitleLabel.text = "无法打开网页"
+            failureIconView.image = UIImage(
+                systemName: "wifi.exclamationmark",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .semibold)
+            )
+            failureContinueButton.isHidden = true
+        }
+        if let err = tab.failureError as NSError? {
             failureReasonLabel.text = err.localizedDescription
         }
         let rawStr = targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? ""
@@ -2451,6 +2513,29 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
+    @objc private func handleFailureContinue() {
+        guard let targetURL = activeTab.failedURL ?? activeTab.url,
+              let host = targetURL.host else {
+            return
+        }
+        let alert = UIAlertController(
+            title: "访问非私人连接",
+            message: "该网站的证书不受信任，继续访问可能存在安全风险。是否确定继续访问？",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "继续访问", style: .destructive) { [weak self] _ in
+            guard let self = self else { return }
+            CertificateTrustStore.shared.trustHost(host)
+            self.activeTab.isDisplayingFailurePage = false
+            self.failureOverlayView.isHidden = true
+            self.activeTab.webView.load(URLRequest(url: targetURL))
+            self.updateUIState()
+            self.updateAddressRightButtons()
+        })
+        present(alert, animated: true)
+    }
+
     @objc private func goBack() {
         if activeTab.isDisplayingFailurePage {
             let originURL = activeTab.failureOriginURL
@@ -2503,12 +2588,18 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if addressField.isFirstResponder {
             addressField.resignFirstResponder()
         }
-        guard let host = activeTab.url?.host else { return }
+        guard let host = (activeTab.url?.host ?? activeTab.failedURL?.host) else { return }
 
         let settingsVC = DomainSettingsViewController(domain: host) { [weak self] in
             guard let self = self else { return }
             self.activeTab.reloadUserScripts()
             AdBlockManager.shared.applyRules(to: self.activeTab.webView)
+            let targetURL = self.activeTab.failedURL ?? self.activeTab.url ?? self.activeTab.webView.url
+            if let targetURL = targetURL, targetURL.absoluteString != "about:blank" {
+                self.activeTab.isDisplayingFailurePage = false
+                self.failureOverlayView.isHidden = true
+                self.activeTab.webView.load(URLRequest(url: targetURL))
+            }
         }
         settingsVC.onExtractText = { [weak self] in
             self?.extractPageText()
@@ -2830,9 +2921,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                     self.showToastNotice("已保存到书签根目录")
                 })
                 for folder in folders {
-                    folderAlert.addAction(UIAlertAction(title: "📁 \(folder.title)", style: .default) { _ in
+                    folderAlert.addAction(UIAlertAction(title: folder.title, style: .default) { _ in
                         BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString, parentId: folder.id)
-                        self.showToastNotice("已保存到「\(folder.title)」")
+                        self.showToastNotice("已保存到该文件夹")
                     })
                 }
                 folderAlert.addAction(UIAlertAction(title: "取消", style: .cancel))
