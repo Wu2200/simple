@@ -1,406 +1,66 @@
 import UIKit
 import WebKit
 
-@main
-final class AppDelegate: UIResponder, UIApplicationDelegate {
-    var window: UIWindow?
-
-    func application(
-        _ application: UIApplication,
-        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-    ) -> Bool {
-        let window = UIWindow(frame: UIScreen.main.bounds)
-        window.rootViewController = BrowserViewController()
-        window.makeKeyAndVisible()
-        self.window = window
-        return true
-    }
+struct BrowserTabSessionItem: Codable {
+    var urlString: String?
+    var title: String
 }
 
-class TouchButton: UIButton {
-    private let hapticGenerator = UIImpactFeedbackGenerator(style: .medium)
-    var hitTestInsets: UIEdgeInsets = .zero
-
-    convenience init() {
-        self.init(frame: .zero)
-    }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        setupFeedback()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setupFeedback()
-    }
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        if hitTestInsets == .zero {
-            return super.point(inside: point, with: event)
-        }
-        let enlargedBounds = bounds.inset(by: hitTestInsets)
-        return enlargedBounds.contains(point)
-    }
-
-    private func setupFeedback() {
-        addTarget(self, action: #selector(handleTouchDown), for: .touchDown)
-        addTarget(self, action: #selector(handleTouchUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
-    }
-
-    @objc private func handleTouchDown() {
-        hapticGenerator.impactOccurred()
-        UIView.animate(withDuration: 0.08) {
-            self.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
-        }
-    }
-
-    @objc private func handleTouchUp() {
-        UIView.animate(withDuration: 0.12) {
-            self.transform = .identity
-        }
-    }
+struct BrowserSession: Codable {
+    var tabs: [BrowserTabSessionItem]
+    var activeIndex: Int
 }
 
-final class AddressTextField: UITextField {
-    var onLongPressAction: (() -> Void)?
+final class BrowserSessionStore {
+    static let shared = BrowserSessionStore()
 
-    override var canBecomeFirstResponder: Bool {
-        true
-    }
+    private let key = "browser_tab_session_v1"
+    private let maximumTabCount = 30
 
-    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(customCopyAction) ||
-           action == #selector(customPasteAction) ||
-           action == #selector(customEditAction) ||
-           action == #selector(customPasteAndGoAction) {
-            return true
+    private init() {}
+
+    func loadSession() -> BrowserSession? {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let session = try? JSONDecoder().decode(BrowserSession.self, from: data),
+              !session.tabs.isEmpty else {
+            return nil
         }
-        if action == #selector(copy(_:)) ||
-           action == #selector(paste(_:)) ||
-           action == #selector(selectAll(_:)) ||
-           action == #selector(select(_:)) ||
-           action == #selector(cut(_:)) {
-            return true
-        }
-        return false
+        return session
     }
 
-    @objc func customCopyAction() {
-        if let text = text, !text.isEmpty {
-            UIPasteboard.general.string = text
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        }
-    }
-
-    @objc func customPasteAction() {
-        if let paste = UIPasteboard.general.string {
-            text = paste
-            sendActions(for: .editingChanged)
-        }
-    }
-
-    @objc func customEditAction() {
-        becomeFirstResponder()
-        selectAll(nil)
-    }
-
-    @objc func customPasteAndGoAction() {
-        if let paste = UIPasteboard.general.string {
-            text = paste
-            _ = delegate?.textFieldShouldReturn?(self)
-        }
-    }
-}
-
-final class CalloutMenuButton: UIButton {
-    override var isHighlighted: Bool {
-        didSet {
-            let isDark = traitCollection.userInterfaceStyle == .dark
-            backgroundColor = isHighlighted ?
-                (isDark ? UIColor(white: 1.0, alpha: 0.12) : UIColor(white: 0.0, alpha: 0.08)) :
-                .clear
-        }
-    }
-}
-
-final class CalloutBubbleBackgroundView: UIView {
-    enum ArrowDirection {
-        case up
-        case down
-    }
-
-    var arrowDirection: ArrowDirection = .down {
-        didSet { setNeedsLayout() }
-    }
-
-    var arrowOffset: CGFloat = 136 {
-        didSet { setNeedsLayout() }
-    }
-
-    private let shapeLayer = CAShapeLayer()
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        setupLayer()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setupLayer()
-    }
-
-    private func setupLayer() {
-        backgroundColor = .clear
-        layer.addSublayer(shapeLayer)
-        updateColors()
-    }
-
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-        updateColors()
-    }
-
-    private func updateColors() {
-        let isDark = traitCollection.userInterfaceStyle == .dark
-        shapeLayer.fillColor = isDark ?
-            UIColor(red: 0.20, green: 0.20, blue: 0.22, alpha: 0.98).cgColor :
-            UIColor(white: 1.0, alpha: 0.98).cgColor
-        shapeLayer.strokeColor = isDark ?
-            UIColor(white: 1.0, alpha: 0.12).cgColor :
-            UIColor(white: 0.0, alpha: 0.06).cgColor
-        shapeLayer.lineWidth = 0.5
-
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = isDark ? 0.35 : 0.12
-        layer.shadowRadius = 10
-        layer.shadowOffset = CGSize(width: 0, height: 3)
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        shapeLayer.frame = bounds
-
-        let path = UIBezierPath()
-        let cornerRadius: CGFloat = 12
-        let arrowWidth: CGFloat = 14
-        let arrowHeight: CGFloat = 7
-        let halfArrow = arrowWidth / 2
-
-        let minOffset = cornerRadius + halfArrow + 2
-        let maxOffset = bounds.width - cornerRadius - halfArrow - 2
-        let clampedOffset = min(max(minOffset, arrowOffset), maxOffset)
-
-        if arrowDirection == .down {
-            let bodyHeight = bounds.height - arrowHeight
-
-            path.move(to: CGPoint(x: cornerRadius, y: 0))
-            path.addLine(to: CGPoint(x: bounds.width - cornerRadius, y: 0))
-            path.addArc(
-                withCenter: CGPoint(x: bounds.width - cornerRadius, y: cornerRadius),
-                radius: cornerRadius,
-                startAngle: -CGFloat.pi / 2,
-                endAngle: 0,
-                clockwise: true
-            )
-            path.addLine(to: CGPoint(x: bounds.width, y: bodyHeight - cornerRadius))
-            path.addArc(
-                withCenter: CGPoint(x: bounds.width - cornerRadius, y: bodyHeight - cornerRadius),
-                radius: cornerRadius,
-                startAngle: 0,
-                endAngle: CGFloat.pi / 2,
-                clockwise: true
-            )
-
-            path.addLine(to: CGPoint(x: clampedOffset + halfArrow, y: bodyHeight))
-            path.addLine(to: CGPoint(x: clampedOffset, y: bounds.height))
-            path.addLine(to: CGPoint(x: clampedOffset - halfArrow, y: bodyHeight))
-
-            path.addLine(to: CGPoint(x: cornerRadius, y: bodyHeight))
-            path.addArc(
-                withCenter: CGPoint(x: cornerRadius, y: bodyHeight - cornerRadius),
-                radius: cornerRadius,
-                startAngle: CGFloat.pi / 2,
-                endAngle: CGFloat.pi,
-                clockwise: true
-            )
-            path.addLine(to: CGPoint(x: 0, y: cornerRadius))
-            path.addArc(
-                withCenter: CGPoint(x: cornerRadius, y: cornerRadius),
-                radius: cornerRadius,
-                startAngle: CGFloat.pi,
-                endAngle: -CGFloat.pi / 2,
-                clockwise: true
-            )
-            path.close()
-        } else {
-            let bodyTop = arrowHeight
-
-            path.move(to: CGPoint(x: clampedOffset - halfArrow, y: bodyTop))
-            path.addLine(to: CGPoint(x: clampedOffset, y: 0))
-            path.addLine(to: CGPoint(x: clampedOffset + halfArrow, y: bodyTop))
-
-            path.addLine(to: CGPoint(x: bounds.width - cornerRadius, y: bodyTop))
-            path.addArc(
-                withCenter: CGPoint(x: bounds.width - cornerRadius, y: bodyTop + cornerRadius),
-                radius: cornerRadius,
-                startAngle: -CGFloat.pi / 2,
-                endAngle: 0,
-                clockwise: true
-            )
-            path.addLine(to: CGPoint(x: bounds.width, y: bounds.height - cornerRadius))
-            path.addArc(
-                withCenter: CGPoint(x: bounds.width - cornerRadius, y: bounds.height - cornerRadius),
-                radius: cornerRadius,
-                startAngle: 0,
-                endAngle: CGFloat.pi / 2,
-                clockwise: true
-            )
-
-            path.addLine(to: CGPoint(x: cornerRadius, y: bounds.height))
-            path.addArc(
-                withCenter: CGPoint(x: cornerRadius, y: bounds.height - cornerRadius),
-                radius: cornerRadius,
-                startAngle: CGFloat.pi / 2,
-                endAngle: CGFloat.pi,
-                clockwise: true
-            )
-            path.addLine(to: CGPoint(x: 0, y: bodyTop + cornerRadius))
-            path.addArc(
-                withCenter: CGPoint(x: cornerRadius, y: bodyTop + cornerRadius),
-                radius: cornerRadius,
-                startAngle: CGFloat.pi,
-                endAngle: -CGFloat.pi / 2,
-                clockwise: true
-            )
-            path.close()
+    func saveSession(tabs: [BrowserTabSessionItem], activeIndex: Int) {
+        let limitedTabs = Array(tabs.prefix(maximumTabCount))
+        guard !limitedTabs.isEmpty else {
+            clearSession()
+            return
         }
 
-        shapeLayer.path = path.cgPath
-        layer.shadowPath = path.cgPath
-    }
-}
+        let safeIndex = min(max(0, activeIndex), limitedTabs.count - 1)
+        let session = BrowserSession(tabs: limitedTabs, activeIndex: safeIndex)
 
-final class AddressCalloutMenuView: UIView {
-    var onCopy: (() -> Void)?
-    var onPaste: (() -> Void)?
-    var onEdit: (() -> Void)?
-    var onPasteAndGo: (() -> Void)?
-
-    private let backgroundView = CalloutBubbleBackgroundView()
-    private let contentView = UIView()
-    private let stackView = UIStackView()
-
-    init(arrowDirection: CalloutBubbleBackgroundView.ArrowDirection, arrowOffset: CGFloat) {
-        super.init(frame: .zero)
-        backgroundView.arrowDirection = arrowDirection
-        backgroundView.arrowOffset = arrowOffset
-        setupUI()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setupUI()
-    }
-
-    private func setupUI() {
-        backgroundColor = .clear
-        addSubview(backgroundView)
-        addSubview(contentView)
-
-        contentView.layer.cornerRadius = 12
-        contentView.clipsToBounds = true
-
-        stackView.axis = .horizontal
-        stackView.alignment = .fill
-        stackView.distribution = .fill
-        stackView.spacing = 0
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stackView)
-
-        NSLayoutConstraint.activate([
-            stackView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            stackView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            stackView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-        ])
-
-        let btnCopy = createItemButton(title: "拷贝", action: #selector(handleCopyTapped), width: 56)
-        let btnPaste = createItemButton(title: "粘贴", action: #selector(handlePasteTapped), width: 56)
-        let btnEdit = createItemButton(title: "编辑", action: #selector(handleEditTapped), width: 56)
-        let btnPasteAndGo = createItemButton(title: "粘贴并前往", action: #selector(handlePasteAndGoTapped), width: 94)
-
-        stackView.addArrangedSubview(btnCopy)
-        stackView.addArrangedSubview(makeSeparator())
-        stackView.addArrangedSubview(btnPaste)
-        stackView.addArrangedSubview(makeSeparator())
-        stackView.addArrangedSubview(btnEdit)
-        stackView.addArrangedSubview(makeSeparator())
-        stackView.addArrangedSubview(btnPasteAndGo)
-    }
-
-    private func createItemButton(title: String, action: Selector, width: CGFloat) -> CalloutMenuButton {
-        let btn = CalloutMenuButton(type: .custom)
-        btn.setTitle(title, for: .normal)
-        btn.titleLabel?.font = .systemFont(ofSize: 14.5, weight: .regular)
-        btn.setTitleColor(UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.96, alpha: 1.0) : UIColor(red: 0.12, green: 0.12, blue: 0.14, alpha: 1.0)
-        }, for: .normal)
-        btn.addTarget(self, action: action, for: .touchUpInside)
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.widthAnchor.constraint(equalToConstant: width).isActive = true
-        return btn
-    }
-
-    private func makeSeparator() -> UIView {
-        let sep = UIView()
-        sep.translatesAutoresizingMaskIntoConstraints = false
-        sep.backgroundColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 1.0, alpha: 0.15) : UIColor(white: 0.0, alpha: 0.12)
+        guard let data = try? JSONEncoder().encode(session) else {
+            return
         }
-        sep.widthAnchor.constraint(equalToConstant: 0.5).isActive = true
-        return sep
+
+        UserDefaults.standard.set(data, forKey: key)
     }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        backgroundView.frame = bounds
-        let arrowHeight: CGFloat = 7
-        if backgroundView.arrowDirection == .down {
-            contentView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height - arrowHeight)
-        } else {
-            contentView.frame = CGRect(x: 0, y: arrowHeight, width: bounds.width, height: bounds.height - arrowHeight)
-        }
-    }
-
-    @objc private func handleCopyTapped() {
-        onCopy?()
-    }
-
-    @objc private func handlePasteTapped() {
-        onPaste?()
-    }
-
-    @objc private func handleEditTapped() {
-        onEdit?()
-    }
-
-    @objc private func handlePasteAndGoTapped() {
-        onPasteAndGo?()
+    func clearSession() {
+        UserDefaults.standard.removeObject(forKey: key)
     }
 }
 
 final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate, UIGestureRecognizerDelegate, UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
-    private var tabs: [TabItem] = []
-    private var activeTabIndex = 0
-    private var isFullscreen = false
-    private var progressObservation: NSKeyValueObservation?
-    private var isCompletingProgress = false
+    var tabs: [TabItem] = []
+    var activeTabIndex = 0
+    var isFullscreen = false
+    var progressObservation: NSKeyValueObservation?
+    var isCompletingProgress = false
 
-    private var editingShortcutIdForCustomIcon: String?
-    private var cachedAddBookmarkIcon: UIImage?
+    var editingShortcutIdForCustomIcon: String?
+    var cachedAddBookmarkIcon: UIImage?
 
-    private var activeTab: TabItem {
+    var activeTab: TabItem {
         if tabs.indices.contains(activeTabIndex) {
             return tabs[activeTabIndex]
         }
@@ -414,52 +74,52 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         return fallback
     }
 
-    private let webContainer = UIView()
-    private let homeView = UIView()
-    private let homeScrollView = UIScrollView()
-    private let homeSearchContainer = UIView()
-    private let homeSearchField = AddressTextField()
-    private let shortcutsStack = UIStackView()
+    let webContainer = UIView()
+    let homeView = UIView()
+    let homeScrollView = UIScrollView()
+    let homeSearchContainer = UIView()
+    let homeSearchField = AddressTextField()
+    let shortcutsStack = UIStackView()
 
-    private let failureOverlayView = UIView()
-    private let failureIconView = UIImageView()
-    private let failureTitleLabel = UILabel()
-    private let failureReasonLabel = UILabel()
-    private let failureURLLabel = UILabel()
-    private let failureBackButton = TouchButton()
-    private let failureReloadButton = TouchButton()
-    private let failureContinueButton = TouchButton()
+    let failureOverlayView = UIView()
+    let failureIconView = UIImageView()
+    let failureTitleLabel = UILabel()
+    let failureReasonLabel = UILabel()
+    let failureURLLabel = UILabel()
+    let failureBackButton = TouchButton()
+    let failureReloadButton = TouchButton()
+    let failureContinueButton = TouchButton()
 
-    private let editingDimmingView = UIView()
+    let editingDimmingView = UIView()
 
-    private let bottomPanel = UIView()
-    private let addressContainer = UIView()
-    private let addressContentView = UIView()
-    private let lockButton = TouchButton()
-    private let addressField = AddressTextField()
-    private let expandButton = TouchButton()
-    private let clearButton = TouchButton()
-    private let reloadButton = TouchButton()
-    private let progressView = UIProgressView(progressViewStyle: .default)
+    let bottomPanel = UIView()
+    let addressContainer = UIView()
+    let addressContentView = UIView()
+    let lockButton = TouchButton()
+    let addressField = AddressTextField()
+    let expandButton = TouchButton()
+    let clearButton = TouchButton()
+    let reloadButton = TouchButton()
+    let progressView = UIProgressView(progressViewStyle: .default)
 
-    private let navigationStack = UIStackView()
-    private let backButton = TouchButton()
-    private let forwardButton = TouchButton()
-    private let pluginButton = TouchButton()
-    private let tabsButton = TouchButton()
-    private let moreButton = TouchButton()
+    let navigationStack = UIStackView()
+    let backButton = TouchButton()
+    let forwardButton = TouchButton()
+    let pluginButton = TouchButton()
+    let tabsButton = TouchButton()
+    let moreButton = TouchButton()
 
-    private var bottomPanelBottomConstraint: NSLayoutConstraint?
-    private var webTopSafeConstraint: NSLayoutConstraint?
-    private var webTopFullscreenConstraint: NSLayoutConstraint?
-    private var webBottomPanelConstraint: NSLayoutConstraint?
-    private var webBottomFullscreenConstraint: NSLayoutConstraint?
+    var bottomPanelBottomConstraint: NSLayoutConstraint?
+    var webTopSafeConstraint: NSLayoutConstraint?
+    var webTopFullscreenConstraint: NSLayoutConstraint?
+    var webBottomPanelConstraint: NSLayoutConstraint?
+    var webBottomFullscreenConstraint: NSLayoutConstraint?
 
-    private var isShowingLongPressMenu = false
-    private weak var activeCalloutOverlay: UIView?
-    private weak var currentToastView: UIView?
+    var isShowingLongPressMenu = false
+    weak var activeCalloutOverlay: UIView?
+    weak var currentToastView: UIView?
 
-    private var gentleToolbarIconColor: UIColor {
+    var gentleToolbarIconColor: UIColor {
         UIColor { trait in
             trait.userInterfaceStyle == .dark ? UIColor(white: 0.86, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
         }
@@ -512,14 +172,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         progressObservation?.invalidate()
     }
 
-    private func resetProgress() {
+    func resetProgress() {
         isCompletingProgress = false
         progressView.layer.removeAllAnimations()
         progressView.alpha = 0
         progressView.setProgress(0, animated: false)
     }
 
-    private func completeProgress() {
+    func completeProgress() {
         guard !isCompletingProgress else { return }
         isCompletingProgress = true
         progressView.setProgress(1.0, animated: true)
@@ -533,22 +193,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         })
     }
 
-    private func configureFaviconObserver() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleFaviconUpdatedNotification(_:)),
-            name: NSNotification.Name("FaviconUpdatedNotification"),
-            object: nil
-        )
-    }
-
-    @objc private func handleFaviconUpdatedNotification(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            self?.reloadHomeShortcuts()
-        }
-    }
-
-    private func configureInstallerObserver() {
+    func configureInstallerObserver() {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleInstallUserScriptNotification(_:)),
@@ -557,7 +202,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         )
     }
 
-    private func configureSessionObservers() {
+    func configureSessionObservers() {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleSessionPersistenceNotification),
@@ -573,136 +218,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         )
     }
 
-    private func configureDownloadObservers() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handlePromptDownloadNotification(_:)),
-            name: NSNotification.Name("PromptDownloadNotification"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handlePromptBlobExportNotification(_:)),
-            name: NSNotification.Name("PromptBlobExportNotification"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDownloadNotification(_:)),
-            name: NSNotification.Name("DownloadStartedNotification"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDownloadNotification(_:)),
-            name: NSNotification.Name("DownloadFinishedNotification"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDownloadNotification(_:)),
-            name: NSNotification.Name("DownloadFailedNotification"),
-            object: nil
-        )
-    }
-
-    @objc private func handlePromptDownloadNotification(_ notification: Notification) {
-        let url = notification.object as? URL
-        let filename = (notification.userInfo?["filename"] as? String) ?? url?.lastPathComponent ?? "文件"
-        let displayName = filename.isEmpty ? "文件" : filename
-        let onConfirm = notification.userInfo?["onConfirm"] as? ((Bool) -> Void)
-
-        let alert = UIAlertController(
-            title: "下载文件",
-            message: "\(displayName)\n\n来源: \(url?.host ?? url?.absoluteString ?? "未知来源")",
-            preferredStyle: .alert
-        )
-
-        alert.addAction(UIAlertAction(title: "下载文件", style: .default) { _ in
-            if let onConfirm = onConfirm {
-                onConfirm(true)
-            } else if let url = url {
-                DownloadCoordinator.shared.startDownload(url: url, filename: displayName)
-            }
-        })
-
-        alert.addAction(UIAlertAction(title: "复制下载链接", style: .default) { [weak self] _ in
-            if let url = url {
-                UIPasteboard.general.string = url.absoluteString
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                self?.showToastNotice("已复制下载链接")
-            }
-            onConfirm?(false)
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-
-        present(alert, animated: true)
-    }
-
-    @objc private func handlePromptBlobExportNotification(_ notification: Notification) {
-        guard let fileURL = notification.object as? URL else { return }
-        let filename = (notification.userInfo?["filename"] as? String) ?? fileURL.lastPathComponent
-        let fileSize = (notification.userInfo?["fileSize"] as? Int) ?? 0
-        let sizeString = ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file)
-
-        let alert = UIAlertController(
-            title: "网页文件已准备就绪",
-            message: "\(filename) (\(sizeString))\n\n该文件已在网页中生成完毕，您可以直接导出或保存至下载管理。",
-            preferredStyle: .alert
-        )
-
-        alert.addAction(UIAlertAction(title: "共享文件", style: .default) { [weak self] _ in
-            guard let self = self else { return }
-            let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-            if let popover = activity.popoverPresentationController {
-                popover.sourceView = self.view
-                popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
-                popover.permittedArrowDirections = []
-            }
-            self.present(activity, animated: true)
-        })
-
-        alert.addAction(UIAlertAction(title: "存入下载管理", style: .default) { [weak self] _ in
-            self?.showToastNotice("已存入下载管理: \(filename)")
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
-            try? FileManager.default.removeItem(at: fileURL)
-        })
-
-        present(alert, animated: true)
-    }
-
-    @objc private func handleDownloadNotification(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            if notification.name == NSNotification.Name("DownloadStartedNotification") {
-                if let filename = notification.object as? String {
-                    self?.showToastNotice("开始下载: \(filename)")
-                } else {
-                    self?.showToastNotice("已开始下载任务")
-                }
-            } else if notification.name == NSNotification.Name("DownloadFinishedNotification") {
-                self?.showToastNotice("下载完成，已存入下载管理")
-            } else if notification.name == NSNotification.Name("DownloadFailedNotification") {
-                if let err = notification.object as? String {
-                    self?.showToastNotice("下载失败: \(err)")
-                } else {
-                    self?.showToastNotice("下载失败")
-                }
-            }
-        }
-    }
-
-    @objc private func handleSessionPersistenceNotification() {
+    @objc func handleSessionPersistenceNotification() {
         persistCurrentSession()
     }
 
-    private func restorePreviousSession() {
+    func restorePreviousSession() {
         guard let session = BrowserSessionStore.shared.loadSession() else {
             createNewTab(loadURL: nil)
             return
@@ -728,7 +248,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         switchTab(to: activeTabIndex)
     }
 
-    private func persistCurrentSession() {
+    func persistCurrentSession() {
         guard !tabs.isEmpty else {
             BrowserSessionStore.shared.clearSession()
             return
@@ -747,7 +267,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         )
     }
 
-    @objc private func handleInstallUserScriptNotification(_ notification: Notification) {
+    @objc func handleInstallUserScriptNotification(_ notification: Notification) {
         guard let scriptURL = notification.object as? URL else { return }
 
         let task = URLSession.shared.dataTask(with: scriptURL) { [weak self] data, response, error in
@@ -782,7 +302,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         task.resume()
     }
 
-    private func makeSpacedThreeLinesIcon() -> UIImage {
+    func makeSpacedThreeLinesIcon() -> UIImage {
         let size = CGSize(width: 20, height: 18)
         let renderer = UIGraphicsImageRenderer(size: size)
         let strokeColor = gentleToolbarIconColor.resolvedColor(with: traitCollection)
@@ -802,382 +322,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         return img.withRenderingMode(.alwaysTemplate)
     }
 
-    private func makeAddBookmarkIcon() -> UIImage {
-        let size = CGSize(width: 24, height: 24)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let strokeColor = gentleToolbarIconColor.resolvedColor(with: traitCollection)
-        let img = renderer.image { ctx in
-            let cg = ctx.cgContext
-            cg.setStrokeColor(strokeColor.cgColor)
-            cg.setFillColor(strokeColor.cgColor)
-
-            if let star = UIImage(systemName: "star", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)) {
-                star.draw(in: CGRect(x: 0.5, y: 0.5, width: 19, height: 19))
-            }
-
-            cg.setBlendMode(.clear)
-            cg.fillEllipse(in: CGRect(x: 12, y: 12, width: 12, height: 12))
-
-            cg.setBlendMode(.normal)
-            cg.setLineWidth(1.4)
-            cg.strokeEllipse(in: CGRect(x: 13, y: 13, width: 10, height: 10))
-
-            cg.setLineWidth(1.3)
-            cg.setLineCap(.round)
-            cg.move(to: CGPoint(x: 15.5, y: 18))
-            cg.addLine(to: CGPoint(x: 20.5, y: 18))
-            cg.move(to: CGPoint(x: 18, y: 15.5))
-            cg.addLine(to: CGPoint(x: 18, y: 20.5))
-            cg.strokePath()
-        }
-        return img.withRenderingMode(.alwaysTemplate)
-    }
-
-    private func getAddBookmarkIcon() -> UIImage {
-        if let icon = cachedAddBookmarkIcon {
-            return icon
-        }
-        let icon = makeAddBookmarkIcon()
-        cachedAddBookmarkIcon = icon
-        return icon
-    }
-
-    private func configureHomeView() {
-        homeScrollView.translatesAutoresizingMaskIntoConstraints = false
-        homeScrollView.alwaysBounceVertical = true
-        homeScrollView.showsVerticalScrollIndicator = false
-        homeView.addSubview(homeScrollView)
-
-        NSLayoutConstraint.activate([
-            homeScrollView.topAnchor.constraint(equalTo: homeView.topAnchor),
-            homeScrollView.leadingAnchor.constraint(equalTo: homeView.leadingAnchor),
-            homeScrollView.trailingAnchor.constraint(equalTo: homeView.trailingAnchor),
-            homeScrollView.bottomAnchor.constraint(equalTo: homeView.bottomAnchor)
-        ])
-
-        let contentContainer = UIView()
-        contentContainer.translatesAutoresizingMaskIntoConstraints = false
-        homeScrollView.addSubview(contentContainer)
-
-        NSLayoutConstraint.activate([
-            contentContainer.topAnchor.constraint(equalTo: homeScrollView.contentLayoutGuide.topAnchor),
-            contentContainer.leadingAnchor.constraint(equalTo: homeScrollView.contentLayoutGuide.leadingAnchor),
-            contentContainer.trailingAnchor.constraint(equalTo: homeScrollView.contentLayoutGuide.trailingAnchor),
-            contentContainer.bottomAnchor.constraint(equalTo: homeScrollView.contentLayoutGuide.bottomAnchor),
-            contentContainer.widthAnchor.constraint(equalTo: homeScrollView.frameLayoutGuide.widthAnchor)
-        ])
-
-        homeSearchContainer.translatesAutoresizingMaskIntoConstraints = false
-        homeSearchContainer.backgroundColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
-        }
-        homeSearchContainer.layer.cornerRadius = 24
-        homeSearchContainer.layer.cornerCurve = .continuous
-        homeSearchContainer.layer.shadowColor = UIColor.black.cgColor
-        homeSearchContainer.layer.shadowOpacity = 0.04
-        homeSearchContainer.layer.shadowRadius = 8
-        homeSearchContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
-
-        let searchMagnifier = UIImageView()
-        searchMagnifier.translatesAutoresizingMaskIntoConstraints = false
-        searchMagnifier.image = UIImage(
-            systemName: "magnifyingglass",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-        )
-        searchMagnifier.tintColor = UIColor(red: 0.50, green: 0.50, blue: 0.53, alpha: 1.0)
-        searchMagnifier.isUserInteractionEnabled = false
-
-        homeSearchField.translatesAutoresizingMaskIntoConstraints = false
-        homeSearchField.placeholder = "搜索或输入网址"
-        homeSearchField.font = .systemFont(ofSize: 15, weight: .regular)
-        homeSearchField.textColor = .label
-        homeSearchField.delegate = self
-        homeSearchField.keyboardType = .webSearch
-        homeSearchField.returnKeyType = .go
-        homeSearchField.autocapitalizationType = .none
-        homeSearchField.autocorrectionType = .no
-        homeSearchField.clearButtonMode = .whileEditing
-
-        homeSearchContainer.addSubview(searchMagnifier)
-        homeSearchContainer.addSubview(homeSearchField)
-
-        NSLayoutConstraint.activate([
-            homeSearchContainer.heightAnchor.constraint(equalToConstant: 48),
-
-            searchMagnifier.leadingAnchor.constraint(equalTo: homeSearchContainer.leadingAnchor, constant: 16),
-            searchMagnifier.centerYAnchor.constraint(equalTo: homeSearchContainer.centerYAnchor),
-            searchMagnifier.widthAnchor.constraint(equalToConstant: 18),
-            searchMagnifier.heightAnchor.constraint(equalToConstant: 18),
-
-            homeSearchField.leadingAnchor.constraint(equalTo: searchMagnifier.trailingAnchor, constant: 10),
-            homeSearchField.trailingAnchor.constraint(equalTo: homeSearchContainer.trailingAnchor, constant: -16),
-            homeSearchField.topAnchor.constraint(equalTo: homeSearchContainer.topAnchor),
-            homeSearchField.bottomAnchor.constraint(equalTo: homeSearchContainer.bottomAnchor)
-        ])
-
-        let shortcutsHeader = UILabel()
-        shortcutsHeader.translatesAutoresizingMaskIntoConstraints = false
-        shortcutsHeader.text = "常用站点"
-        shortcutsHeader.font = .systemFont(ofSize: 13, weight: .semibold)
-        shortcutsHeader.textColor = UIColor(red: 0.48, green: 0.48, blue: 0.51, alpha: 1.0)
-
-        shortcutsStack.translatesAutoresizingMaskIntoConstraints = false
-        shortcutsStack.axis = .vertical
-        shortcutsStack.spacing = 14
-
-        contentContainer.addSubview(homeSearchContainer)
-        contentContainer.addSubview(shortcutsHeader)
-        contentContainer.addSubview(shortcutsStack)
-
-        NSLayoutConstraint.activate([
-            homeSearchContainer.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 50),
-            homeSearchContainer.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 20),
-            homeSearchContainer.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -20),
-
-            shortcutsHeader.topAnchor.constraint(equalTo: homeSearchContainer.bottomAnchor, constant: 32),
-            shortcutsHeader.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 24),
-
-            shortcutsStack.topAnchor.constraint(equalTo: shortcutsHeader.bottomAnchor, constant: 14),
-            shortcutsStack.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 16),
-            shortcutsStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -16),
-            shortcutsStack.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -40)
-        ])
-
-        reloadHomeShortcuts()
-    }
-
-    private func reloadHomeShortcuts() {
-        for sub in shortcutsStack.arrangedSubviews {
-            shortcutsStack.removeArrangedSubview(sub)
-            sub.removeFromSuperview()
-        }
-
-        let shortcuts = HomeShortcutStore.shared.loadShortcuts()
-        let itemsPerRow = 4
-        var currentRow: UIStackView?
-
-        for (idx, item) in shortcuts.enumerated() {
-            if idx % itemsPerRow == 0 {
-                let row = UIStackView()
-                row.axis = .horizontal
-                row.distribution = .fillEqually
-                row.spacing = 10
-                shortcutsStack.addArrangedSubview(row)
-                currentRow = row
-            }
-            let btn = createShortcutButton(shortcut: item, index: idx)
-            currentRow?.addArrangedSubview(btn)
-        }
-
-        if let lastRow = currentRow {
-            let remainder = shortcuts.count % itemsPerRow
-            if remainder != 0 {
-                let fillersNeeded = itemsPerRow - remainder
-                for _ in 0..<fillersNeeded {
-                    let filler = UIView()
-                    filler.translatesAutoresizingMaskIntoConstraints = false
-                    lastRow.addArrangedSubview(filler)
-                }
-            }
-        }
-    }
-
-    private func createShortcutButton(shortcut: HomeShortcutItem, index: Int) -> TouchButton {
-        let button = TouchButton()
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.tag = index
-        button.addTarget(self, action: #selector(handleShortcutTap(_:)), for: .touchUpInside)
-
-        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleShortcutLongPress(_:)))
-        button.addGestureRecognizer(longPress)
-
-        let iconContainer = UIView()
-        iconContainer.translatesAutoresizingMaskIntoConstraints = false
-        iconContainer.backgroundColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
-        }
-        iconContainer.layer.cornerRadius = 16
-        iconContainer.layer.cornerCurve = .continuous
-        iconContainer.layer.shadowColor = UIColor.black.cgColor
-        iconContainer.layer.shadowOpacity = 0.04
-        iconContainer.layer.shadowRadius = 5
-        iconContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
-        iconContainer.isUserInteractionEnabled = false
-
-        let iconImageView = UIImageView()
-        iconImageView.translatesAutoresizingMaskIntoConstraints = false
-        iconImageView.contentMode = .scaleAspectFit
-        iconImageView.layer.cornerRadius = 6
-        iconImageView.clipsToBounds = true
-        iconImageView.isUserInteractionEnabled = false
-
-        if let customData = shortcut.customIconData, let customImg = UIImage(data: customData) {
-            iconImageView.image = customImg
-        } else if let url = URL(string: shortcut.urlString), let host = url.host {
-            if let cached = FaviconLoader.shared.cachedFavicon(for: host) {
-                iconImageView.image = cached
-            } else {
-                iconImageView.image = UIImage(
-                    systemName: "globe",
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)
-                )
-                iconImageView.tintColor = .systemBlue
-                FaviconLoader.shared.loadFavicon(for: host) { [weak iconImageView] img in
-                    if let img = img {
-                        DispatchQueue.main.async {
-                            iconImageView?.image = img
-                        }
-                    }
-                }
-            }
-        } else {
-            iconImageView.image = UIImage(systemName: "globe")
-            iconImageView.tintColor = .systemBlue
-        }
-        iconContainer.addSubview(iconImageView)
-
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = shortcut.title
-        label.font = .systemFont(ofSize: 11.5, weight: .regular)
-        label.textColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.88, alpha: 1.0) : UIColor(red: 0.28, green: 0.28, blue: 0.31, alpha: 1.0)
-        }
-        label.textAlignment = .center
-        label.isUserInteractionEnabled = false
-
-        button.addSubview(iconContainer)
-        button.addSubview(label)
-
-        NSLayoutConstraint.activate([
-            button.heightAnchor.constraint(equalToConstant: 78),
-
-            iconContainer.topAnchor.constraint(equalTo: button.topAnchor),
-            iconContainer.centerXAnchor.constraint(equalTo: button.centerXAnchor),
-            iconContainer.widthAnchor.constraint(equalToConstant: 52),
-            iconContainer.heightAnchor.constraint(equalToConstant: 52),
-
-            iconImageView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
-            iconImageView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 32),
-            iconImageView.heightAnchor.constraint(equalToConstant: 32),
-
-            label.topAnchor.constraint(equalTo: iconContainer.bottomAnchor, constant: 6),
-            label.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-            label.trailingAnchor.constraint(equalTo: button.trailingAnchor),
-            label.bottomAnchor.constraint(lessThanOrEqualTo: button.bottomAnchor)
-        ])
-
-        return button
-    }
-
-    @objc private func handleShortcutTap(_ sender: UIButton) {
-        let shortcuts = HomeShortcutStore.shared.loadShortcuts()
-        guard shortcuts.indices.contains(sender.tag),
-              let url = URL(string: shortcuts[sender.tag].urlString) else { return }
-        load(url: url)
-    }
-
-    @objc private func handleShortcutLongPress(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began, let btn = gesture.view as? UIButton else { return }
-        let shortcuts = HomeShortcutStore.shared.loadShortcuts()
-        guard shortcuts.indices.contains(btn.tag) else { return }
-        let item = shortcuts[btn.tag]
-
-        let alert = UIAlertController(title: "管理站点", message: item.title, preferredStyle: .actionSheet)
-
-        alert.addAction(UIAlertAction(title: "编辑站点名称与网址", style: .default) { [weak self] _ in
-            self?.showEditShortcutAlert(item: item)
-        })
-
-        alert.addAction(UIAlertAction(title: "自定义上传图片Logo", style: .default) { [weak self] _ in
-            self?.promptChooseCustomIcon(for: item.id)
-        })
-
-        if item.customIconData != nil {
-            alert.addAction(UIAlertAction(title: "恢复默认网页Logo", style: .default) { [weak self] _ in
-                HomeShortcutStore.shared.updateShortcutIcon(id: item.id, customIconData: nil)
-                self?.reloadHomeShortcuts()
-                self?.showToastNotice("已恢复默认图标")
-            })
-        }
-
-        alert.addAction(UIAlertAction(title: "删除该快捷方式", style: .destructive) { [weak self] _ in
-            HomeShortcutStore.shared.deleteShortcut(id: item.id)
-            self?.reloadHomeShortcuts()
-            self?.showToastNotice("已从主页移除")
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    private func promptChooseCustomIcon(for shortcutId: String) {
-        self.editingShortcutIdForCustomIcon = shortcutId
-        let picker = UIImagePickerController()
-        picker.delegate = self
-        picker.sourceType = .photoLibrary
-        picker.allowsEditing = true
-        present(picker, animated: true)
-    }
-
-    func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-        picker.dismiss(animated: true)
-        guard let shortcutId = editingShortcutIdForCustomIcon else { return }
-        editingShortcutIdForCustomIcon = nil
-
-        let selectedImage = (info[.editedImage] as? UIImage) ?? (info[.originalImage] as? UIImage)
-        guard let image = selectedImage else { return }
-
-        let targetSize = CGSize(width: 160, height: 160)
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        let resizedImage = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
-        }
-
-        guard let iconData = resizedImage.pngData() ?? resizedImage.jpegData(compressionQuality: 0.85) else {
-            return
-        }
-
-        HomeShortcutStore.shared.updateShortcutIcon(id: shortcutId, customIconData: iconData)
-        reloadHomeShortcuts()
-        showToastNotice("Logo 图标已更新")
-    }
-
-    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-        editingShortcutIdForCustomIcon = nil
-        picker.dismiss(animated: true)
-    }
-
-    private func showEditShortcutAlert(item: HomeShortcutItem) {
-        let alert = UIAlertController(title: "编辑常用站点", message: nil, preferredStyle: .alert)
-        alert.addTextField { tf in
-            tf.placeholder = "网站名称"
-            tf.text = item.title
-            tf.clearButtonMode = .whileEditing
-        }
-        alert.addTextField { tf in
-            tf.placeholder = "网站地址"
-            tf.text = item.urlString
-            tf.keyboardType = .URL
-            tf.clearButtonMode = .whileEditing
-        }
-
-        alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self, weak alert] _ in
-            guard let name = alert?.textFields?[0].text,
-                  let urlStr = alert?.textFields?[1].text,
-                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !urlStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            HomeShortcutStore.shared.updateShortcut(id: item.id, title: name, urlString: urlStr)
-            self?.reloadHomeShortcuts()
-            self?.showToastNotice("已更新常用站点")
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    private func configureFailureView() {
+    func configureFailureView() {
         failureOverlayView.translatesAutoresizingMaskIntoConstraints = false
         failureOverlayView.backgroundColor = .systemBackground
         failureOverlayView.isHidden = true
@@ -1313,7 +458,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         ])
     }
 
-    private func configureInterface() {
+    func configureInterface() {
         let pageBackground = UIColor.systemBackground
 
         view.backgroundColor = pageBackground
@@ -1689,13 +834,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         ])
     }
 
-    private func configureAddressLongPressMenu() {
+    func configureAddressLongPressMenu() {
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleAddressLongPress(_:)))
         longPress.minimumPressDuration = 0.42
         addressContentView.addGestureRecognizer(longPress)
     }
 
-    @objc private func handleAddressLongPress(_ gesture: UILongPressGestureRecognizer) {
+    @objc func handleAddressLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
@@ -1760,7 +905,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    @objc private func dismissCalloutMenu() {
+    @objc func dismissCalloutMenu() {
         guard let overlay = activeCalloutOverlay else { return }
         if let menu = overlay.subviews.first(where: { $0 is AddressCalloutMenuView }) {
             dismissCalloutMenuAnimated(menu, overlay: overlay, completion: nil)
@@ -1770,7 +915,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func dismissCalloutMenuAnimated(_ menu: UIView, overlay: UIView, completion: (() -> Void)?) {
+    func dismissCalloutMenuAnimated(_ menu: UIView, overlay: UIView, completion: (() -> Void)?) {
         UIView.animate(withDuration: 0.14, animations: {
             menu.alpha = 0
             menu.transform = CGAffineTransform(scaleX: 0.88, y: 0.88)
@@ -1781,7 +926,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func handleCalloutCopy() {
+    func handleCalloutCopy() {
         let currentText: String
         if let url = activeTab.url {
             let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
@@ -1795,7 +940,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func handleCalloutPaste() {
+    func handleCalloutPaste() {
         if let paste = UIPasteboard.general.string, !paste.isEmpty {
             addressField.text = paste
             addressField.becomeFirstResponder()
@@ -1803,7 +948,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func handleCalloutEdit() {
+    func handleCalloutEdit() {
         if let url = activeTab.url {
             let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
             addressField.text = (raw == "about:blank") ? "" : raw
@@ -1813,7 +958,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressEditingAppearance()
     }
 
-    private func handleCalloutPasteAndGo() {
+    func handleCalloutPasteAndGo() {
         guard let paste = UIPasteboard.general.string,
               let url = destinationURL(from: paste) else {
             return
@@ -1821,13 +966,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         load(url: url)
     }
 
-    @objc private func handleMoreButtonLongPress(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began else { return }
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        showCleanDataMenu()
-    }
-
-    private func showToastNotice(_ text: String) {
+    func showToastNotice(_ text: String) {
         currentToastView?.layer.removeAllAnimations()
         currentToastView?.removeFromSuperview()
 
@@ -1874,7 +1013,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func configureToolbarButton(_ button: TouchButton, imageName: String, pointSize: CGFloat = 18, action: Selector?) {
+    func configureToolbarButton(_ button: TouchButton, imageName: String, pointSize: CGFloat = 18, action: Selector?) {
         var configuration = UIButton.Configuration.plain()
         if imageName == "line.3.horizontal" {
             configuration.image = makeSpacedThreeLinesIcon()
@@ -1895,7 +1034,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func configureKeyboardObservers() {
+    func configureKeyboardObservers() {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(keyboardWillChangeFrame(_:)),
@@ -1911,14 +1050,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         )
     }
 
-    private func configureKeyboardDismissal() {
+    func configureKeyboardDismissal() {
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
         tapGesture.cancelsTouchesInView = false
         tapGesture.delegate = self
         view.addGestureRecognizer(tapGesture)
     }
 
-    private func configureFullscreenExitGesture() {
+    func configureFullscreenExitGesture() {
         let gesture = UILongPressGestureRecognizer(target: self, action: #selector(handleFullscreenExitGesture(_:)))
         gesture.minimumPressDuration = 1.0
         gesture.numberOfTouchesRequired = 2
@@ -1926,7 +1065,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         view.addGestureRecognizer(gesture)
     }
 
-    private func createNewTab(loadURL url: URL?, sourceID: UUID? = nil) {
+    func createNewTab(loadURL url: URL?, sourceID: UUID? = nil) {
         let tab = TabItem()
         tab.sourceTabID = sourceID
         tab.delegate = self
@@ -1940,7 +1079,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func createNewTabInBackground(loadURL url: URL, sourceID: UUID? = nil) {
+    func createNewTabInBackground(loadURL url: URL, sourceID: UUID? = nil) {
         let tab = TabItem()
         tab.sourceTabID = sourceID
         tab.delegate = self
@@ -1953,7 +1092,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         showToastNotice("已在后台标签打开")
     }
 
-    private func switchTab(to index: Int) {
+    func switchTab(to index: Int) {
         guard tabs.indices.contains(index) else {
             return
         }
@@ -2001,7 +1140,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
-    private func closeTab(at index: Int) {
+    func closeTab(at index: Int) {
         guard tabs.indices.contains(index) else { return }
         resetProgress()
 
@@ -2029,7 +1168,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func closeAllTabs() {
+    func closeAllTabs() {
         resetProgress()
         for tab in tabs {
             tab.destroy()
@@ -2039,7 +1178,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         createNewTab(loadURL: nil)
     }
 
-    private func bindProgressObservation(to webView: WKWebView) {
+    func bindProgressObservation(to webView: WKWebView) {
         progressObservation?.invalidate()
 
         progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] observedWebView, _ in
@@ -2081,7 +1220,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func load(url: URL) {
+    func load(url: URL) {
         showBrowserUI()
 
         activeTab.url = url
@@ -2104,7 +1243,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
-    private func showHomeUI() {
+    func showHomeUI() {
         homeView.alpha = 1
         webContainer.alpha = 0
         failureOverlayView.isHidden = true
@@ -2117,7 +1256,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
-    private func showBrowserUI() {
+    func showBrowserUI() {
         homeView.alpha = 0
         webContainer.alpha = 1
         failureOverlayView.isHidden = true
@@ -2126,7 +1265,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
-    private func isCertificateError(_ error: Error?) -> Bool {
+    func isCertificateError(_ error: Error?) -> Bool {
         guard let nsError = error as NSError? else { return false }
         if nsError.domain == NSURLErrorDomain {
             switch nsError.code {
@@ -2147,7 +1286,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         return desc.contains("certificate") || desc.contains("证书") || desc.contains("ssl") || desc.contains("tls")
     }
 
-    private func showFailureUI(for tab: TabItem) {
+    func showFailureUI(for tab: TabItem) {
         homeView.alpha = 0
         webContainer.alpha = 1
         failureOverlayView.isHidden = false
@@ -2180,7 +1319,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
-    private func updateUIState() {
+    func updateUIState() {
         guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex) else {
             return
         }
@@ -2193,7 +1332,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         moreButton.isEnabled = true
     }
 
-    private func updateAddressRightButtons() {
+    func updateAddressRightButtons() {
         guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex) else {
             reloadButton.isHidden = true
             reloadButton.alpha = 0
@@ -2239,7 +1378,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    @objc private func handleExpandAddress() {
+    @objc func handleExpandAddress() {
         dismissKeyboard()
         let currentText = activeTab.url?.absoluteString ?? addressField.text ?? ""
         let editor = ExpandedURLEditorViewController(initialURL: currentText) { [weak self] newURLString in
@@ -2263,7 +1402,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(nav, animated: true)
     }
 
-    @objc private func handleAddressReload() {
+    @objc func handleAddressReload() {
         if activeTab.isDisplayingFailurePage {
             handleFailureReload()
         } else if activeTab.isLoading {
@@ -2275,7 +1414,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    private func destinationURL(from input: String) -> URL? {
+    func destinationURL(from input: String) -> URL? {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
 
@@ -2306,7 +1445,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         return SearchEngineStore.shared.currentEngine.searchURL(query: value)
     }
 
-    private func setFullscreen(_ enabled: Bool) {
+    func setFullscreen(_ enabled: Bool) {
         guard isFullscreen != enabled else {
             return
         }
@@ -2330,7 +1469,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateUIState()
     }
 
-    private func updateAddressEditingAppearance() {
+    func updateAddressEditingAppearance() {
         updateAddressRightButtons()
     }
 
@@ -2473,21 +1612,21 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         return true
     }
 
-    @objc private func addressFieldDidChange() {
+    @objc func addressFieldDidChange() {
         updateAddressEditingAppearance()
     }
 
-    @objc private func clearAddressInput() {
+    @objc func clearAddressInput() {
         addressField.text = ""
         addressField.becomeFirstResponder()
         updateAddressEditingAppearance()
     }
 
-    @objc private func dismissKeyboard() {
+    @objc func dismissKeyboard() {
         view.endEditing(true)
     }
 
-    @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+    @objc func keyboardWillChangeFrame(_ notification: Notification) {
         if isShowingLongPressMenu {
             return
         }
@@ -2519,7 +1658,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    @objc private func keyboardWillHide(_ notification: Notification) {
+    @objc func keyboardWillHide(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
               let duration = userInfo[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval else {
             bottomPanelBottomConstraint?.constant = 0
@@ -2537,7 +1676,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    @objc private func handleFullscreenExitGesture(_ gesture: UILongPressGestureRecognizer) {
+    @objc func handleFullscreenExitGesture(_ gesture: UILongPressGestureRecognizer) {
         guard isFullscreen, gesture.state == .began else {
             return
         }
@@ -2545,7 +1684,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         setFullscreen(false)
     }
 
-    @objc private func handleFailureReload() {
+    @objc func handleFailureReload() {
         guard let targetURL = activeTab.failedURL else { return }
         activeTab.isDisplayingFailurePage = false
         failureOverlayView.isHidden = true
@@ -2554,7 +1693,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
-    @objc private func handleFailureContinue() {
+    @objc func handleFailureContinue() {
         guard let targetURL = activeTab.failedURL ?? activeTab.url,
               let host = targetURL.host else {
             return
@@ -2577,7 +1716,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         present(alert, animated: true)
     }
 
-    @objc private func goBack() {
+    @objc func goBack() {
         if activeTab.isDisplayingFailurePage {
             let originURL = activeTab.failureOriginURL
             let sourceID = activeTab.sourceTabID
@@ -2621,11 +1760,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    @objc private func goForward() {
+    @objc func goForward() {
         activeTab.webView.goForward()
     }
 
-    @objc private func showSiteDomainSettings() {
+    @objc func showSiteDomainSettings() {
         if addressField.isFirstResponder {
             addressField.resignFirstResponder()
         }
@@ -2649,919 +1788,5 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let nav = UINavigationController(rootViewController: settingsVC)
         nav.modalPresentationStyle = .pageSheet
         present(nav, animated: true)
-    }
-
-    private func extractPageText() {
-        activeTab.webView.evaluateJavaScript("document.body.innerText") { [weak self] result, error in
-            guard let self = self else { return }
-            guard let text = result as? String, !text.isEmpty else {
-                return
-            }
-            let vc = UIViewController()
-            vc.title = "网页正文内容"
-            vc.view.backgroundColor = .systemBackground
-
-            let textView = UITextView()
-            textView.translatesAutoresizingMaskIntoConstraints = false
-            textView.font = .systemFont(ofSize: 15)
-            textView.isEditable = false
-            textView.text = text
-
-            vc.view.addSubview(textView)
-            NSLayoutConstraint.activate([
-                textView.topAnchor.constraint(equalTo: vc.view.topAnchor),
-                textView.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor),
-                textView.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor),
-                textView.bottomAnchor.constraint(equalTo: vc.view.bottomAnchor)
-            ])
-
-            vc.navigationItem.rightBarButtonItem = UIBarButtonItem(
-                title: "完成",
-                style: .done,
-                target: self,
-                action: #selector(self.dismissModalVC)
-            )
-
-            let copyAction = UIAction { _ in
-                UIPasteboard.general.string = text
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            }
-            vc.navigationItem.leftBarButtonItem = UIBarButtonItem(title: "复制", primaryAction: copyAction)
-
-            let nav = UINavigationController(rootViewController: vc)
-            self.present(nav, animated: true)
-        }
-    }
-
-    @objc private func dismissModalVC() {
-        dismiss(animated: true)
-    }
-
-    @objc private func showPluginPanel() {
-        if addressField.isFirstResponder {
-            addressField.resignFirstResponder()
-        }
-        let currentUrlStr = activeTab.url?.absoluteString ?? ""
-        let currentHost = activeTab.url?.host ?? ""
-        let matchingScripts = UserScriptStore.shared.loadScripts().filter {
-            UserScriptStore.shared.isScriptMatching(script: $0, urlString: currentUrlStr)
-        }
-
-        var items: [CustomBottomSheetItem] = []
-
-        if matchingScripts.isEmpty {
-            items.append(CustomBottomSheetItem(
-                title: "未匹配到脚本",
-                iconName: "exclamationmark.triangle",
-                handler: nil
-            ))
-        } else {
-            for script in matchingScripts {
-                items.append(CustomBottomSheetItem(
-                    title: script.name,
-                    iconName: "puzzlepiece.extension",
-                    handler: { [weak self] in
-                        self?.showScriptSubMenu(for: script)
-                    }
-                ))
-            }
-        }
-
-        items.append(CustomBottomSheetItem(
-            title: "搜索适合当前网站的脚本",
-            iconName: "arrow.down.circle",
-            handler: { [weak self] in
-                let searchUrlStr = "https://greasyfork.org/zh-CN/scripts?q=\(currentHost)"
-                if let searchUrl = URL(string: searchUrlStr) {
-                    self?.load(url: searchUrl)
-                }
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "用户脚本管理",
-            iconName: "gearshape",
-            handler: { [weak self] in
-                self?.showPluginManager()
-            }
-        ))
-
-        let panel = CustomBottomSheetViewController(title: "", items: items, layout: .list)
-        if #available(iOS 16.0, *) {
-            if let presentation = panel.sheetPresentationController {
-                let cardHeight: CGFloat = 56
-                let spacing: CGFloat = 10
-                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + CGFloat(max(0, items.count - 1)) * spacing + 48
-                presentation.detents = [.custom { _ in min(totalHeight, 420) }]
-                presentation.prefersGrabberVisible = false
-                presentation.preferredCornerRadius = 24
-            }
-        } else if #available(iOS 15.0, *) {
-            if let presentation = panel.sheetPresentationController {
-                presentation.detents = [.medium()]
-                presentation.prefersGrabberVisible = false
-                presentation.preferredCornerRadius = 24
-            }
-        }
-        present(panel, animated: true)
-    }
-
-    private func showScriptSubMenu(for script: UserScript) {
-        var items: [CustomBottomSheetItem] = []
-
-        let scriptCmds = activeTab.registeredCommands.filter { $0.scriptId == script.id }
-        for cmd in scriptCmds {
-            items.append(CustomBottomSheetItem(
-                title: cmd.caption,
-                iconName: "play.circle",
-                handler: { [weak self] in
-                    self?.activeTab.webView.evaluateJavaScript("window.__gm_invokeMenuCommand(\(cmd.cmdId))", completionHandler: nil)
-                }
-            ))
-        }
-
-        items.append(CustomBottomSheetItem(
-            title: script.isEnabled ? "禁用该脚本" : "启用该脚本",
-            iconName: "power",
-            handler: { [weak self] in
-                var scripts = UserScriptStore.shared.loadScripts()
-                if let idx = scripts.firstIndex(where: { $0.id == script.id }) {
-                    scripts[idx].isEnabled = !script.isEnabled
-                    UserScriptStore.shared.saveScripts(scripts)
-                    self?.activeTab.reloadUserScripts()
-                }
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "清除脚本缓存数据",
-            iconName: "trash",
-            isDestructive: false,
-            handler: {
-                ScriptDataStore.shared.clearDataForScript(scriptId: script.id)
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "编辑脚本代码",
-            iconName: "curlybraces",
-            handler: { [weak self] in
-                let editor = UserScriptEditorViewController(script: script)
-                editor.onSave = { updatedScript in
-                    var scripts = UserScriptStore.shared.loadScripts()
-                    if let idx = scripts.firstIndex(where: { $0.id == updatedScript.id }) {
-                        scripts[idx] = updatedScript
-                        UserScriptStore.shared.saveScripts(scripts)
-                        self?.activeTab.reloadUserScripts()
-                    }
-                }
-                let nav = UINavigationController(rootViewController: editor)
-                self?.present(nav, animated: true)
-            }
-        ))
-
-        let panel = CustomBottomSheetViewController(title: script.name, items: items, layout: .list)
-        if #available(iOS 16.0, *) {
-            if let presentation = panel.sheetPresentationController {
-                let cardHeight: CGFloat = 56
-                let spacing: CGFloat = 10
-                let totalHeight: CGFloat = CGFloat(items.count) * cardHeight + CGFloat(max(0, items.count - 1)) * spacing + 88
-                presentation.detents = [.custom { _ in min(totalHeight, 460) }]
-                presentation.prefersGrabberVisible = false
-                presentation.preferredCornerRadius = 24
-            }
-        } else if #available(iOS 15.0, *) {
-            if let presentation = panel.sheetPresentationController {
-                presentation.detents = [.medium(), .large()]
-                presentation.prefersGrabberVisible = false
-                presentation.preferredCornerRadius = 24
-            }
-        }
-        present(panel, animated: true)
-    }
-
-    @objc private func showPluginManager() {
-        if addressField.isFirstResponder {
-            addressField.resignFirstResponder()
-        }
-        let manager = UserScriptManagerViewController()
-        manager.onScriptsUpdated = { [weak self] in
-            self?.activeTab.reloadUserScripts()
-        }
-        let nav = UINavigationController(rootViewController: manager)
-        nav.modalPresentationStyle = .pageSheet
-        present(nav, animated: true)
-    }
-
-    @objc private func showTabsManager() {
-        if addressField.isFirstResponder {
-            addressField.resignFirstResponder()
-        }
-
-        let manager = TabGridViewController(
-            tabs: self.tabs,
-            activeIndex: self.activeTabIndex
-        )
-
-        manager.onSelectTab = { [weak self] index in
-            self?.switchTab(to: index)
-        }
-
-        manager.onCloseTab = { [weak self] index in
-            self?.closeTab(at: index)
-        }
-
-        manager.onClearAllTabs = { [weak self] in
-            self?.closeAllTabs()
-        }
-
-        manager.onNewTab = { [weak self] in
-            self?.createNewTab(loadURL: nil)
-        }
-
-        let navigationController = UINavigationController(rootViewController: manager)
-        navigationController.modalPresentationStyle = .pageSheet
-        self.present(navigationController, animated: true)
-
-        let tabToSnapshot = activeTab
-        if !tabToSnapshot.isLoading {
-            tabToSnapshot.updateSnapshot { [weak manager] in
-                DispatchQueue.main.async {
-                    manager?.reloadGrid()
-                }
-            }
-        }
-    }
-
-    private func showEyeProtectionLevelPicker() {
-        let alert = UIAlertController(title: "护眼模式强度", message: nil, preferredStyle: .actionSheet)
-
-        for level in EyeProtectionManager.Level.allCases {
-            alert.addAction(UIAlertAction(title: level.title, style: .default) { [weak self] _ in
-                EyeProtectionManager.shared.setLevel(level, in: self?.view.window)
-            })
-        }
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    private func showSearchEnginePicker() {
-        let alert = UIAlertController(title: "选择默认搜索引擎", message: nil, preferredStyle: .actionSheet)
-        for engine in SearchEngine.allCases {
-            let isCurrent = engine == SearchEngineStore.shared.currentEngine
-            let title = isCurrent ? "\(engine.name) ✓" : engine.name
-            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
-                SearchEngineStore.shared.currentEngine = engine
-            })
-        }
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    private func showAdBlockerManager() {
-        let manager = AdBlockManagerViewController()
-        manager.onRulesChanged = { [weak self] in
-            self?.showToastNotice("规则已更新并重新应用")
-        }
-        let nav = UINavigationController(rootViewController: manager)
-        present(nav, animated: true)
-    }
-
-    private func showDownloadManager() {
-        if addressField.isFirstResponder {
-            addressField.resignFirstResponder()
-        }
-        let vc = DownloadManagerViewController()
-        let nav = UINavigationController(rootViewController: vc)
-        nav.modalPresentationStyle = .pageSheet
-        present(nav, animated: true)
-    }
-
-    private func handleAddAction() {
-        guard let url = activeTab.url else {
-            showToastNotice("主页无需添加")
-            return
-        }
-
-        let rawTitle = activeTab.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedTitle = rawTitle.isEmpty ? (url.host ?? url.absoluteString) : rawTitle
-
-        let alert = UIAlertController(title: "添加当前网页", message: resolvedTitle, preferredStyle: .actionSheet)
-
-        alert.addAction(UIAlertAction(title: "添加到书签", style: .default) { [weak self] _ in
-            guard let self = self else { return }
-            let folders = BookmarkStore.shared.getAllFolders()
-            if folders.isEmpty {
-                BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString, parentId: nil)
-                self.showToastNotice("已添加到书签")
-            } else {
-                let folderAlert = UIAlertController(title: "选择目标文件夹", message: nil, preferredStyle: .actionSheet)
-                folderAlert.addAction(UIAlertAction(title: "书签根目录", style: .default) { _ in
-                    BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString, parentId: nil)
-                    self.showToastNotice("已保存到书签根目录")
-                })
-                for folder in folders {
-                    folderAlert.addAction(UIAlertAction(title: folder.title, style: .default) { _ in
-                        BookmarkStore.shared.addBookmark(title: resolvedTitle, urlString: url.absoluteString, parentId: folder.id)
-                        self.showToastNotice("已保存到该文件夹")
-                    })
-                }
-                folderAlert.addAction(UIAlertAction(title: "取消", style: .cancel))
-                self.present(folderAlert, animated: true)
-            }
-        })
-
-        alert.addAction(UIAlertAction(title: "添加到主页", style: .default) { [weak self] _ in
-            guard let self = self else { return }
-            HomeShortcutStore.shared.addShortcut(title: resolvedTitle, urlString: url.absoluteString)
-            if let host = url.host {
-                FaviconLoader.shared.preloadFavicon(for: host)
-            }
-            self.reloadHomeShortcuts()
-            self.showToastNotice("已添加到主页，长按可自定义Logo")
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    @objc private func showMoreMenu() {
-        if addressField.isFirstResponder {
-            addressField.resignFirstResponder()
-        } else if homeSearchField.isFirstResponder {
-            homeSearchField.resignFirstResponder()
-        }
-
-        var items: [CustomBottomSheetItem] = []
-
-        items.append(CustomBottomSheetItem(
-            title: "书签/历史",
-            iconName: "star",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showBrowserBookmarksAndHistory()
-            }
-        ))
-
-        let isDesktop = UserAgentStore.shared.currentMode == .desktop
-        items.append(CustomBottomSheetItem(
-            title: isDesktop ? "移动版" : "电脑版",
-            iconName: "desktopcomputer",
-            isSwitchOn: isDesktop,
-            dismissOnTap: false,
-            handler: { [weak self] in
-                guard let self = self else { return }
-                let newMode: UserAgentCategory = (UserAgentStore.shared.currentMode == .desktop) ? .mobile : .desktop
-                UserAgentStore.shared.currentMode = newMode
-                let newUA = UserAgentStore.shared.getSelectedUA()
-                self.activeTab.webView.customUserAgent = newUA
-                self.activeTab.webView.configuration.defaultWebpagePreferences.preferredContentMode = (newMode == .desktop) ? .desktop : .mobile
-                let targetURL = self.activeTab.url ?? self.activeTab.webView.url
-                if let currentURL = targetURL, currentURL.absoluteString != "about:blank" {
-                    self.showBrowserUI()
-                    self.activeTab.url = currentURL
-                    self.activeTab.webView.load(URLRequest(url: currentURL))
-                }
-            },
-            longPressHandler: { [weak self] in
-                self?.showUserAgentManager()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "下载管理",
-            iconName: "arrow.down.circle",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showDownloadManager()
-            }
-        ))
-
-        let isEyeOn = EyeProtectionManager.shared.isEnabled
-        items.append(CustomBottomSheetItem(
-            title: "夜间模式",
-            iconName: "moon.stars",
-            isSwitchOn: isEyeOn,
-            dismissOnTap: false,
-            handler: { [weak self] in
-                EyeProtectionManager.shared.toggle(in: self?.view.window)
-            },
-            longPressHandler: { [weak self] in
-                self?.showEyeProtectionLevelPicker()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "添加",
-            customImage: getAddBookmarkIcon(),
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.handleAddAction()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: isFullscreen ? "退出全屏" : "全屏浏览",
-            iconName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                guard let self = self else { return }
-                self.setFullscreen(!self.isFullscreen)
-            }
-        ))
-
-        let isAdBlockOn = AdBlockManager.shared.isEnabled
-        items.append(CustomBottomSheetItem(
-            title: "广告过滤",
-            iconName: "shield.lefthalf.filled",
-            isSwitchOn: isAdBlockOn,
-            dismissOnTap: false,
-            handler: { [weak self] in
-                guard let self = self else { return }
-                let newState = !AdBlockManager.shared.isEnabled
-                AdBlockManager.shared.isEnabled = newState
-                AdBlockManager.shared.applyRules(to: self.activeTab.webView)
-            },
-            longPressHandler: { [weak self] in
-                self?.showAdBlockerManager()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "清除数据",
-            iconName: "trash",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showCleanDataMenu()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "扩展脚本",
-            iconName: "puzzlepiece.extension",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showPluginPanel()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "标识设置",
-            iconName: "slider.horizontal.3",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showUserAgentManager()
-            }
-        ))
-
-        let currentEngine = SearchEngineStore.shared.currentEngine
-        items.append(CustomBottomSheetItem(
-            title: currentEngine.name,
-            iconName: "magnifyingglass",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showSearchEnginePicker()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "提取正文",
-            iconName: "doc.text.magnifyingglass",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.extractPageText()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "数据备份",
-            iconName: "externaldrive",
-            dismissOnTap: true,
-            handler: { [weak self] in
-                self?.showBackupActionSheet()
-            }
-        ))
-
-        let panel = CustomBottomSheetViewController(title: "选项", items: items, layout: .grid)
-        if #available(iOS 16.0, *) {
-            if let presentation = panel.sheetPresentationController {
-                presentation.detents = [.custom { _ in 260 }]
-                presentation.prefersGrabberVisible = false
-                presentation.preferredCornerRadius = 24
-            }
-        } else if #available(iOS 15.0, *) {
-            if let presentation = panel.sheetPresentationController {
-                presentation.detents = [.medium()]
-                presentation.prefersGrabberVisible = false
-                presentation.preferredCornerRadius = 24
-            }
-        }
-        present(panel, animated: true)
-    }
-
-    private func showBackupActionSheet() {
-        let sheet = UIAlertController(
-            title: "数据备份与恢复",
-            message: "可将书签、主页站点、浏览记录、网站登录信息、脚本与拦截规则等打包导出，或使用备份文件进行恢复。",
-            preferredStyle: .actionSheet
-        )
-
-        sheet.addAction(UIAlertAction(title: "备份并导出文件", style: .default) { [weak self] _ in
-            self?.performExportBackup()
-        })
-
-        sheet.addAction(UIAlertAction(title: "从备份文件恢复", style: .default) { [weak self] _ in
-            self?.presentDocumentPickerForRestore()
-        })
-
-        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(sheet, animated: true)
-    }
-
-    private func performExportBackup() {
-        BackupManager.shared.exportBackupFile { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .success(let fileURL):
-                let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-                if let popover = activityVC.popoverPresentationController {
-                    popover.sourceView = self.view
-                    popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
-                    popover.permittedArrowDirections = []
-                }
-                self.present(activityVC, animated: true)
-            case .failure(let error):
-                self.showToastNotice("导出备份失败: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func presentDocumentPickerForRestore() {
-        let picker: UIDocumentPickerViewController
-        if #available(iOS 14.0, *) {
-            picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json, .data, .item], asCopy: true)
-        } else {
-            picker = UIDocumentPickerViewController(documentTypes: ["public.json", "public.item"], in: .import)
-        }
-        picker.delegate = self
-        picker.allowsMultipleSelection = false
-        present(picker, animated: true)
-    }
-
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let selectedURL = urls.first else { return }
-        let shouldAccess = selectedURL.startAccessingSecurityScopedResource()
-        defer {
-            if shouldAccess {
-                selectedURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        let alert = UIAlertController(
-            title: "恢复备份确认",
-            message: "确定要从选择的备份文件恢复吗？\n当前的所有数据将被该备份文件恢复替换。",
-            preferredStyle: .alert
-        )
-
-        alert.addAction(UIAlertAction(title: "确认恢复", style: .destructive) { [weak self] _ in
-            guard let self = self else { return }
-            BackupManager.shared.restore(from: selectedURL) { [weak self] result in
-                guard let self = self else { return }
-                switch result {
-                case .success:
-                    self.reloadHomeShortcuts()
-                    self.activeTab.reloadUserScripts()
-                    AdBlockManager.shared.applyRules(to: self.activeTab.webView)
-                    self.showToastNotice("数据恢复成功")
-                case .failure(let error):
-                    let errAlert = UIAlertController(
-                        title: "恢复失败",
-                        message: "备份文件解析错误或格式无效：\(error.localizedDescription)",
-                        preferredStyle: .alert
-                    )
-                    errAlert.addAction(UIAlertAction(title: "确定", style: .default))
-                    self.present(errAlert, animated: true)
-                }
-            }
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    private func showBrowserBookmarksAndHistory() {
-        if addressField.isFirstResponder {
-            addressField.resignFirstResponder()
-        }
-
-        let historyVC = BrowserHistoryViewController()
-
-        historyVC.onSelectURL = { [weak self] url in
-            self?.load(url: url)
-        }
-
-        let navigationController = UINavigationController(
-            rootViewController: historyVC
-        )
-
-        navigationController.modalPresentationStyle = .pageSheet
-        present(navigationController, animated: true)
-    }
-
-    private func showUserAgentManager() {
-        let manager = UserAgentManagerViewController()
-        manager.onUASelected = { [weak self] item in
-            guard let self = self else { return }
-            let isDesktop = UserAgentStore.shared.currentMode == .desktop
-            self.activeTab.webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
-            self.activeTab.webView.configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
-            let targetURL = self.activeTab.url ?? self.activeTab.webView.url
-            if let currentURL = targetURL, currentURL.absoluteString != "about:blank" {
-                self.showBrowserUI()
-                self.activeTab.url = currentURL
-                self.activeTab.webView.load(URLRequest(url: currentURL))
-            }
-        }
-        let nav = UINavigationController(rootViewController: manager)
-        present(nav, animated: true)
-    }
-
-    private func showCleanDataMenu() {
-        let cleanVC = CleanDataSelectionViewController()
-        cleanVC.onConfirmClean = { [weak self] options, completion in
-            guard let self = self else {
-                completion()
-                return
-            }
-            self.performCleanData(options: options, completion: completion)
-        }
-        cleanVC.onOpenWebsiteDataManager = { [weak cleanVC] in
-            let manager = WebsiteDataManagerViewController()
-            cleanVC?.navigationController?.pushViewController(manager, animated: true)
-        }
-        let nav = UINavigationController(rootViewController: cleanVC)
-        present(nav, animated: true)
-    }
-
-    private func performCleanData(options: Set<CleanOption>, completion: @escaping () -> Void) {
-        let cleanCache = options.contains(.cache)
-        let cleanLoginAndData = options.contains(.loginAndData)
-        let targetURL = activeTab.url ?? activeTab.webView.url
-
-        let group = DispatchGroup()
-
-        if cleanCache || cleanLoginAndData {
-            group.enter()
-            WebsiteCleaner.shared.clean(cache: cleanCache, loginAndData: cleanLoginAndData) {
-                group.leave()
-            }
-        }
-
-        if options.contains(.searchHistory) {
-            SearchHistoryStore.shared.clearHistory()
-            BrowserHistoryStore.shared.clearHistory()
-        }
-
-        if options.contains(.scriptData) {
-            ScriptDataStore.shared.clearAllScriptData()
-        }
-
-        group.notify(queue: .main) { [weak self] in
-            guard let self = self else {
-                completion()
-                return
-            }
-            completion()
-            if let url = targetURL, url.absoluteString != "about:blank" {
-                self.showBrowserUI()
-                self.activeTab.url = url
-                self.activeTab.webView.load(URLRequest(url: url))
-            }
-        }
-    }
-}
-
-final class DownloadManagerViewController: UITableViewController, UIDocumentInteractionControllerDelegate {
-    private struct DownloadedFile {
-        let name: String
-        let url: URL
-        let sizeString: String
-        let dateString: String
-    }
-
-    private var files: [DownloadedFile] = []
-    private var docController: UIDocumentInteractionController?
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "下载管理"
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "DownloadFileCell")
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleClose))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "清空", style: .plain, target: self, action: #selector(handleClearAll))
-        loadDownloadedFiles()
-    }
-
-    @objc private func handleClose() {
-        dismiss(animated: true)
-    }
-
-    private func getDownloadsDirectory() -> URL {
-        return DownloadCoordinator.getDownloadsDirectory()
-    }
-
-    private func loadDownloadedFiles() {
-        let fm = FileManager.default
-        var list: [DownloadedFile] = []
-        let dirs = [getDownloadsDirectory(), fm.urls(for: .documentDirectory, in: .userDomainMask)[0]]
-
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd HH:mm"
-
-        for dir in dirs {
-            if let urls = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey], options: .skipsHiddenFiles) {
-                for url in urls {
-                    let vals = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
-                    if vals?.isDirectory == true { continue }
-
-                    let size = vals?.fileSize ?? 0
-                    let date = vals?.contentModificationDate ?? Date()
-                    let sizeStr = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
-                    let dateStr = df.string(from: date)
-
-                    list.append(DownloadedFile(name: url.lastPathComponent, url: url, sizeString: sizeStr, dateString: dateStr))
-                }
-            }
-        }
-
-        self.files = list
-        tableView.reloadData()
-    }
-
-    @objc private func handleClearAll() {
-        guard !files.isEmpty else { return }
-        let alert = UIAlertController(title: "清空下载文件", message: "确定要删除所有已下载的文件吗？", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
-            guard let self = self else { return }
-            let fm = FileManager.default
-            for f in self.files {
-                try? fm.removeItem(at: f.url)
-            }
-            self.loadDownloadedFiles()
-        })
-        present(alert, animated: true)
-    }
-
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        files.count
-    }
-
-    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "DownloadFileCell", for: indexPath)
-        let item = files[indexPath.row]
-
-        var content = cell.defaultContentConfiguration()
-        content.text = item.name
-        content.secondaryText = "\(item.sizeString) • \(item.dateString)"
-        content.image = UIImage(systemName: "doc.fill")
-        content.imageProperties.tintColor = .systemBlue
-        content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
-        cell.contentConfiguration = content
-        cell.accessoryType = .disclosureIndicator
-        return cell
-    }
-
-    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        guard indexPath.row < files.count else { return }
-        let file = files[indexPath.row]
-
-        docController = UIDocumentInteractionController(url: file.url)
-        docController?.delegate = self
-        if !docController!.presentPreview(animated: true) {
-            docController?.presentOptionsMenu(from: view.bounds, in: view, animated: true)
-        }
-    }
-
-    func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
-        self
-    }
-
-    override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard indexPath.row < files.count else { return nil }
-        let file = files[indexPath.row]
-
-        let deleteAction = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
-            try? FileManager.default.removeItem(at: file.url)
-            self?.loadDownloadedFiles()
-            completion(true)
-        }
-
-        let shareAction = UIContextualAction(style: .normal, title: "共享") { [weak self] _, _, completion in
-            let activity = UIActivityViewController(activityItems: [file.url], applicationActivities: nil)
-            self?.present(activity, animated: true)
-            completion(true)
-        }
-        shareAction.backgroundColor = .systemBlue
-
-        return UISwipeActionsConfiguration(actions: [deleteAction, shareAction])
-    }
-}
-
-final class ExpandedURLEditorViewController: UIViewController, UITextViewDelegate {
-    private let initialURL: String
-    private let onConfirm: (String) -> Void
-    private let textView = UITextView()
-
-    init(initialURL: String, onConfirm: @escaping (String) -> Void) {
-        self.initialURL = initialURL
-        self.onConfirm = onConfirm
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "编辑网址"
-        view.backgroundColor = .systemBackground
-
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            title: "取消",
-            style: .plain,
-            target: self,
-            action: #selector(handleCancel)
-        )
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "前往",
-            style: .done,
-            target: self,
-            action: #selector(handleGo)
-        )
-
-        let container = UIView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.backgroundColor = UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1.0)
-        }
-        container.layer.cornerRadius = 14
-        container.layer.cornerCurve = .continuous
-        container.clipsToBounds = true
-
-        textView.translatesAutoresizingMaskIntoConstraints = false
-        textView.backgroundColor = .clear
-        textView.font = .systemFont(ofSize: 16, weight: .regular)
-        textView.textColor = .label
-        textView.autocapitalizationType = .none
-        textView.autocorrectionType = .no
-        textView.text = initialURL
-        textView.keyboardType = .webSearch
-        textView.returnKeyType = .go
-        textView.delegate = self
-        textView.textContainerInset = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
-
-        container.addSubview(textView)
-        view.addSubview(container)
-
-        NSLayoutConstraint.activate([
-            container.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            container.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            container.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            container.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -12),
-
-            textView.topAnchor.constraint(equalTo: container.topAnchor),
-            textView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            textView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            textView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        ])
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.textView.becomeFirstResponder()
-            if !self.textView.text.isEmpty {
-                self.textView.selectAll(nil)
-            }
-        }
-    }
-
-    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-        if text == "\n" {
-            handleGo()
-            return false
-        }
-        return true
-    }
-
-    @objc private func handleCancel() {
-        dismiss(animated: true)
-    }
-
-    @objc private func handleGo() {
-        let text = textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        dismiss(animated: true) { [weak self] in
-            if !text.isEmpty {
-                self?.onConfirm(text)
-            }
-        }
     }
 }
