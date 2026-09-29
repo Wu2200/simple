@@ -216,7 +216,8 @@ extension BrowserViewController {
             title: "搜索适合当前网站的脚本",
             iconName: "arrow.down.circle",
             handler: { [weak self] in
-                let searchUrlStr = "https://greasyfork.org/zh-CN/scripts?q=\(currentHost)"
+                let httpsScheme = "https:" + String(repeating: "/", count: 2)
+                let searchUrlStr = "\(httpsScheme)greasyfork.org/zh-CN/scripts?q=\(currentHost)"
                 if let searchUrl = URL(string: searchUrlStr) {
                     self?.load(url: searchUrl)
                 }
@@ -391,6 +392,32 @@ extension BrowserViewController {
         present(alert, animated: true)
     }
 
+    func showFullscreenModePicker() {
+        let alert = UIAlertController(title: "全屏浏览", message: nil, preferredStyle: .actionSheet)
+
+        alert.addAction(UIAlertAction(title: "完整全屏", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            self.fullscreenMode = .full
+            self.setFullscreen(true)
+        })
+
+        alert.addAction(UIAlertAction(title: "不完整全屏", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            self.fullscreenMode = .statusBarOnly
+            self.setFullscreen(true)
+        })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+
+        present(alert, animated: true)
+    }
+
     func showSearchEnginePicker() {
         let alert = UIAlertController(title: "选择默认搜索引擎", message: nil, preferredStyle: .actionSheet)
         for engine in SearchEngine.allCases {
@@ -543,6 +570,9 @@ extension BrowserViewController {
             handler: { [weak self] in
                 guard let self = self else { return }
                 self.setFullscreen(!self.isFullscreen)
+            },
+            longPressHandler: { [weak self] in
+                self?.showFullscreenModePicker()
             }
         ))
 
