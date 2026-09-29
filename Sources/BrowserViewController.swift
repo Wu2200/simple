@@ -1,6 +1,11 @@
 import UIKit
 import WebKit
 
+enum FullscreenMode: Int {
+    case full = 0
+    case statusBarOnly = 1
+}
+
 struct BrowserTabSessionItem: Codable {
     var urlString: String?
     var title: String
@@ -56,6 +61,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     var isFullscreen = false
     var progressObservation: NSKeyValueObservation?
     var isCompletingProgress = false
+
+    var fullscreenMode: FullscreenMode {
+        get {
+            FullscreenMode(rawValue: UserDefaults.standard.integer(forKey: "browser_fullscreen_mode_v1")) ?? .full
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "browser_fullscreen_mode_v1")
+        }
+    }
 
     var editingShortcutIdForCustomIcon: String?
     var cachedAddBookmarkIcon: UIImage?
@@ -132,7 +146,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     override var prefersStatusBarHidden: Bool {
-        isFullscreen
+        isFullscreen && fullscreenMode == .full
     }
 
     override var prefersHomeIndicatorAutoHidden: Bool {
@@ -1475,7 +1489,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         SearchHistoryStore.shared.addHistory(value)
 
-        if value.hasPrefix("http://") || value.hasPrefix("https://") {
+        let httpScheme = "http:" + String(repeating: "/", count: 2)
+        let httpsScheme = "https:" + String(repeating: "/", count: 2)
+
+        if value.hasPrefix(httpScheme) || value.hasPrefix(httpsScheme) {
             if let url = URL(string: value) {
                 return url
             }
@@ -1493,7 +1510,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let hasPort = value.contains(":") && !value.contains(" ")
 
         if isLocal || hasDot || hasPort {
-            let scheme = isLocal ? "http://" : "https://"
+            let scheme = isLocal ? httpScheme : httpsScheme
             let prefixed = scheme + value
             if let url = URL(string: prefixed) {
                 return url
@@ -1509,18 +1526,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func setFullscreen(_ enabled: Bool) {
-        guard isFullscreen != enabled else {
-            return
-        }
-
         dismissKeyboard()
 
         isFullscreen = enabled
         fullscreenExitGesture?.isEnabled = enabled
         bottomPanel.isHidden = enabled
 
-        webTopSafeConstraint?.isActive = !enabled
-        webTopFullscreenConstraint?.isActive = enabled
+        let hideStatusBar = enabled && (fullscreenMode == .full)
+        webTopSafeConstraint?.isActive = !hideStatusBar
+        webTopFullscreenConstraint?.isActive = hideStatusBar
         webBottomPanelConstraint?.isActive = !enabled
         webBottomFullscreenConstraint?.isActive = enabled
 
