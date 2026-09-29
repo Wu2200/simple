@@ -34,6 +34,24 @@ final class UserScriptStore {
         }
     }
 
+    func isHostExcluded(_ host: String, for script: UserScript) -> Bool {
+        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanHost.isEmpty else { return false }
+        let rawPatterns = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let excludePatterns = rawPatterns.filter { $0.hasPrefix("!") }.map {
+            String($0.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty }
+
+        for ex in excludePatterns {
+            if doesHost(cleanHost, matchPattern: ex) {
+                return true
+            }
+        }
+        return false
+    }
+
     func excludeHost(_ host: String, for script: inout UserScript) {
         let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !cleanHost.isEmpty else { return }
@@ -50,6 +68,45 @@ final class UserScriptStore {
         }
         updated.append(excludeToken)
         script.matchPattern = updated.joined(separator: ", ")
+    }
+
+    func removeExcludedHost(_ host: String, for script: inout UserScript) {
+        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanHost.isEmpty else { return }
+        let parts = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let updated = parts.filter { part in
+            guard part.hasPrefix("!") else { return true }
+            let ex = String(part.dropFirst()).trimmingCharacters(in: .whitespaces)
+            guard !ex.isEmpty else { return false }
+            return !doesHost(cleanHost, matchPattern: ex)
+        }
+        script.matchPattern = updated.isEmpty ? "*" : updated.joined(separator: ", ")
+    }
+
+    func isScriptApplicableForPanel(script: UserScript, urlString: String) -> Bool {
+        guard let url = URL(string: urlString), let rawHost = url.host, !rawHost.isEmpty else {
+            return false
+        }
+        let host = rawHost.lowercased()
+
+        let rawPatterns = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let includePatterns = rawPatterns.filter { !$0.hasPrefix("!") }
+        if includePatterns.isEmpty || includePatterns.contains("*") || includePatterns.contains("<all_urls>") {
+            return true
+        }
+
+        for pattern in includePatterns {
+            if doesHost(host, matchPattern: pattern) {
+                return true
+            }
+        }
+
+        return false
     }
 
     func parseMetadata(from code: String) -> (name: String, match: String) {

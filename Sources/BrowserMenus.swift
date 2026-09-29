@@ -189,7 +189,7 @@ extension BrowserViewController {
         let currentUrlStr = activeTab.url?.absoluteString ?? ""
         let currentHost = activeTab.url?.host ?? ""
         let matchingScripts = UserScriptStore.shared.loadScripts().filter {
-            UserScriptStore.shared.isScriptMatching(script: $0, urlString: currentUrlStr)
+            UserScriptStore.shared.isScriptApplicableForPanel(script: $0, urlString: currentUrlStr)
         }
 
         var items: [CustomBottomSheetItem] = []
@@ -253,9 +253,13 @@ extension BrowserViewController {
     }
 
     func showScriptSubMenu(for script: UserScript) {
+        let currentScript = UserScriptStore.shared.loadScripts().first(where: { $0.id == script.id }) ?? script
+        let currentHost = activeTab.url?.host ?? ""
+        let isHostExcluded = !currentHost.isEmpty && UserScriptStore.shared.isHostExcluded(currentHost, for: currentScript)
+
         var items: [CustomBottomSheetItem] = []
 
-        let scriptCmds = activeTab.registeredCommands.filter { $0.scriptId == script.id }
+        let scriptCmds = activeTab.registeredCommands.filter { $0.scriptId == currentScript.id }
         for cmd in scriptCmds {
             items.append(CustomBottomSheetItem(
                 title: cmd.caption,
@@ -267,12 +271,12 @@ extension BrowserViewController {
         }
 
         items.append(CustomBottomSheetItem(
-            title: script.isEnabled ? "禁用该脚本" : "启用该脚本",
+            title: currentScript.isEnabled ? "禁用该脚本" : "启用该脚本",
             iconName: "power",
             handler: { [weak self] in
                 var scripts = UserScriptStore.shared.loadScripts()
-                if let idx = scripts.firstIndex(where: { $0.id == script.id }) {
-                    scripts[idx].isEnabled = !script.isEnabled
+                if let idx = scripts.firstIndex(where: { $0.id == currentScript.id }) {
+                    scripts[idx].isEnabled = !currentScript.isEnabled
                     UserScriptStore.shared.saveScripts(scripts)
                     self?.activeTab.reloadUserScripts()
                 }
@@ -280,20 +284,27 @@ extension BrowserViewController {
         ))
 
         items.append(CustomBottomSheetItem(
-            title: "排除此网站",
-            iconName: "nosign",
+            title: isHostExcluded ? "恢复此网站" : "排除此网站",
+            iconName: isHostExcluded ? "checkmark.circle" : "nosign",
             handler: { [weak self] in
                 guard let self = self else { return }
                 guard let host = self.activeTab.url?.host, !host.isEmpty else {
-                    self.showToastNotice("当前页面无法排除")
+                    self.showToastNotice("当前页面无法操作")
                     return
                 }
                 var scripts = UserScriptStore.shared.loadScripts()
-                if let idx = scripts.firstIndex(where: { $0.id == script.id }) {
-                    UserScriptStore.shared.excludeHost(host, for: &scripts[idx])
-                    UserScriptStore.shared.saveScripts(scripts)
-                    self.activeTab.reloadUserScripts()
-                    self.showToastNotice("已排除此网站")
+                if let idx = scripts.firstIndex(where: { $0.id == currentScript.id }) {
+                    if isHostExcluded {
+                        UserScriptStore.shared.removeExcludedHost(host, for: &scripts[idx])
+                        UserScriptStore.shared.saveScripts(scripts)
+                        self.activeTab.reloadUserScripts()
+                        self.showToastNotice("已恢复此网站")
+                    } else {
+                        UserScriptStore.shared.excludeHost(host, for: &scripts[idx])
+                        UserScriptStore.shared.saveScripts(scripts)
+                        self.activeTab.reloadUserScripts()
+                        self.showToastNotice("已排除此网站")
+                    }
                 }
             }
         ))
@@ -303,7 +314,7 @@ extension BrowserViewController {
             iconName: "trash",
             isDestructive: false,
             handler: {
-                ScriptDataStore.shared.clearDataForScript(scriptId: script.id)
+                ScriptDataStore.shared.clearDataForScript(scriptId: currentScript.id)
             }
         ))
 
@@ -311,7 +322,7 @@ extension BrowserViewController {
             title: "编辑脚本代码",
             iconName: "curlybraces",
             handler: { [weak self] in
-                let editor = UserScriptEditorViewController(script: script)
+                let editor = UserScriptEditorViewController(script: currentScript)
                 editor.onSave = { updatedScript in
                     var scripts = UserScriptStore.shared.loadScripts()
                     if let idx = scripts.firstIndex(where: { $0.id == updatedScript.id }) {
@@ -325,7 +336,7 @@ extension BrowserViewController {
             }
         ))
 
-        let panel = CustomBottomSheetViewController(title: script.name, items: items, layout: .list)
+        let panel = CustomBottomSheetViewController(title: currentScript.name, items: items, layout: .list)
         if #available(iOS 16.0, *) {
             if let presentation = panel.sheetPresentationController {
                 let cardHeight: CGFloat = 56
