@@ -271,12 +271,12 @@ extension BrowserViewController {
         }
 
         items.append(CustomBottomSheetItem(
-            title: currentScript.isEnabled ? "禁用该脚本" : "启用该脚本",
+            title: "禁用该脚本",
             iconName: "power",
             handler: { [weak self] in
                 var scripts = UserScriptStore.shared.loadScripts()
                 if let idx = scripts.firstIndex(where: { $0.id == currentScript.id }) {
-                    scripts[idx].isEnabled = !currentScript.isEnabled
+                    scripts[idx].isEnabled = false
                     UserScriptStore.shared.saveScripts(scripts)
                     self?.activeTab.reloadUserScripts()
                 }

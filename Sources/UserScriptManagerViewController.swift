@@ -86,10 +86,15 @@ final class UserScriptStore {
     }
 
     func isScriptApplicableForPanel(script: UserScript, urlString: String) -> Bool {
+        guard script.isEnabled else { return false }
+
         guard let url = URL(string: urlString), let rawHost = url.host, !rawHost.isEmpty else {
             return false
         }
         let host = rawHost.lowercased()
+
+        let scriptEnabled = DomainSettingsStore.shared.getBool(domain: host, setting: "userScripts", defaultVal: true)
+        if !scriptEnabled { return false }
 
         let rawPatterns = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
