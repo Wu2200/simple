@@ -197,7 +197,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         image: info.imgSrc
                     });
                 } catch(err) {}
-            }, 480);
+            }, 980);
         }, { capture: true, passive: true });
 
         window.addEventListener('touchmove', function(e) {
@@ -223,6 +223,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         window.addEventListener('touchcancel', function(e) {
             clearTimer();
         }, { capture: true, passive: true });
+
+        window.addEventListener('blur', function() {
+            clearTimer();
+        }, true);
+
+        window.addEventListener('scroll', function() {
+            clearTimer();
+        }, true);
+
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                clearTimer();
+            }
+        }, true);
 
         window.addEventListener('click', function(e) {
             if (longPressed) {
@@ -943,7 +957,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 writeImageToAlbum(image)
             } else {
                 guard let decodedString = payload.removingPercentEncoding,
-                      let data = decodedString.data(using: .utf8) else {
+                      let _ = decodedString.data(using: .utf8) else {
                     delegate?.tabRequestShowToast("图片解析失败")
                     return
                 }
