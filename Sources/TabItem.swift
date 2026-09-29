@@ -36,6 +36,107 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     weak var delegate: TabItemDelegate?
 
+    private static let coreGMPolyfillScriptSource = """
+    (function() {
+        if (window.__gm_polyfilled__) return;
+        window.__gm_polyfilled__ = true;
+        window.unsafeWindow = window;
+        window.__gm_menu_commands__ = window.__gm_menu_commands__ || {};
+        window.__gm_xhr_callbacks__ = window.__gm_xhr_callbacks__ || {};
+
+        window.__gm_invokeMenuCommand = function(id) {
+            var fn = window.__gm_menu_commands__[id];
+            if (typeof fn === 'function') { fn(); }
+        };
+        window.GM_addStyle = function(css) {
+            var style = document.createElement('style');
+            style.type = 'text/css';
+            style.appendChild(document.createTextNode(css));
+            (document.head || document.documentElement).appendChild(style);
+            return style;
+        };
+        window.GM_log = function(msg) {};
+        window.GM_openInTab = function(url) {
+            window.open(url, '_blank');
+        };
+        window.GM_setClipboard = function(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(String(text || ''));
+            }
+        };
+        window.GM_notification = function() {};
+        window.GM_xmlhttpRequest = function(opts) {
+            var id = 'xhr_' + Math.random().toString(36).substr(2, 9);
+            window.__gm_xhr_callbacks__ = window.__gm_xhr_callbacks__ || {};
+            window.__gm_xhr_callbacks__[id] = opts;
+            try {
+                window.webkit.messageHandlers.GM.postMessage({
+                    action: 'xhr',
+                    id: id,
+                    method: opts.method || 'GET',
+                    url: opts.url,
+                    headers: opts.headers || {},
+                    data: opts.data || null,
+                    responseType: opts.responseType || '',
+                    timeout: opts.timeout || 0
+                });
+            } catch(e) {
+                if (opts.onerror) opts.onerror({ status: 0, responseText: e.toString() });
+            }
+        };
+        window.__gm_handleXhrResponse = function(id, status, text, headers, finalUrl, base64Data) {
+            var opts = window.__gm_xhr_callbacks__ && window.__gm_xhr_callbacks__[id];
+            if (!opts) return;
+            delete window.__gm_xhr_callbacks__[id];
+            var responseVal = text;
+            if (opts.responseType === 'json') {
+                try {
+                    responseVal = JSON.parse(text);
+                } catch(e) {
+                    responseVal = null;
+                }
+            } else if ((opts.responseType === 'arraybuffer' || opts.responseType === 'blob') && base64Data) {
+                try {
+                    var binStr = atob(base64Data);
+                    var len = binStr.length;
+                    var bytes = new Uint8Array(len);
+                    for (var i = 0; i < len; i++) {
+                        bytes[i] = binStr.charCodeAt(i);
+                    }
+                    responseVal = opts.responseType === 'blob' ? new Blob([bytes]) : bytes.buffer;
+                } catch(e) {}
+            }
+            var res = {
+                status: status,
+                statusText: (status >= 200 && status < 300) ? 'OK' : 'Error',
+                responseText: text,
+                response: responseVal,
+                responseHeaders: headers || '',
+                readyState: 4,
+                finalUrl: finalUrl || opts.url
+            };
+            if (opts.onreadystatechange) opts.onreadystatechange(res);
+            if (opts.onload) opts.onload(res);
+        };
+        window.__handleXhrResponse = window.__gm_handleXhrResponse;
+        window.__gm_handleXhrError = function(id, errorText) {
+            var opts = window.__gm_xhr_callbacks__ && window.__gm_xhr_callbacks__[id];
+            if (!opts) return;
+            delete window.__gm_xhr_callbacks__[id];
+            var res = {
+                status: 0,
+                statusText: errorText,
+                responseText: errorText,
+                response: null,
+                responseHeaders: '',
+                readyState: 4
+            };
+            if (opts.onerror) opts.onerror(res);
+        };
+        window.__handleXhrError = window.__gm_handleXhrError;
+    })();
+    """
+
     private static let coreDownloadScriptSource = """
     (function() {
         if (window.__simple_download_hooked__) return;
@@ -373,6 +474,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private func ensureCoreScripts() {
         let controller = webView.configuration.userContentController
 
+        let hasGMPolyfill = controller.userScripts.contains { $0.source.contains("__gm_polyfilled__") }
+        if !hasGMPolyfill {
+            let script = WKUserScript(
+                source: Self.coreGMPolyfillScriptSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(script)
+        }
+
         let hasDownload = controller.userScripts.contains { $0.source.contains("__simple_download_hooked__") }
         if !hasDownload {
             let script = WKUserScript(
@@ -489,13 +600,18 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             ScriptDataStore.shared.deleteValue(scriptId: scriptId, name: name)
         } else if action == "xhr", let reqId = body["id"] as? String, let urlString = body["url"] as? String, let targetURL = URL(string: urlString) {
             let method = (body["method"] as? String) ?? "GET"
+            let responseType = ((body["responseType"] as? String) ?? "").lowercased()
             var request = URLRequest(url: targetURL)
             request.httpMethod = method
 
-            if let headers = body["headers"] as? [String: String] {
+            if let headers = body["headers"] as? [String: Any] {
                 for (k, v) in headers {
-                    request.setValue(v, forHTTPHeaderField: k)
+                    request.setValue("\(v)", forHTTPHeaderField: k)
                 }
+            }
+
+            if request.value(forHTTPHeaderField: "User-Agent") == nil {
+                request.setValue(webView.customUserAgent ?? UserAgentStore.shared.getSelectedUA(), forHTTPHeaderField: "User-Agent")
             }
 
             if let dataString = body["data"] as? String {
@@ -505,20 +621,38 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
                 DispatchQueue.main.async {
                     if let error = error {
-                        let errData = (try? JSONSerialization.data(withJSONObject: [error.localizedDescription], options: [])) ?? Data()
-                        let errJSON = String(data: errData, encoding: .utf8) ?? "[\"\"]"
-                        let unwrappedErr = String(errJSON.dropFirst().dropLast())
-                        self?.webView.evaluateJavaScript("window.__gm_handleXhrError('\(reqId)', \(unwrappedErr))", completionHandler: nil)
+                        let errArgs: [Any] = [reqId, error.localizedDescription]
+                        let errData = (try? JSONSerialization.data(withJSONObject: errArgs, options: [])) ?? Data()
+                        let errJSON = String(data: errData, encoding: .utf8) ?? "[]"
+                        self?.webView.evaluateJavaScript("if (typeof window.__gm_handleXhrError === 'function') { window.__gm_handleXhrError.apply(null, \(errJSON)); }", completionHandler: nil)
                         return
                     }
 
-                    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
-                    let responseText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                    let jsonTextData = try? JSONSerialization.data(withJSONObject: [responseText], options: [])
-                    let jsonText = jsonTextData.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
-                    let unwrappedText = String(jsonText.dropFirst().dropLast())
+                    let httpResp = response as? HTTPURLResponse
+                    let statusCode = httpResp?.statusCode ?? 200
+                    let responseText: String
+                    if let data = data {
+                        responseText = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+                    } else {
+                        responseText = ""
+                    }
 
-                    self?.webView.evaluateJavaScript("window.__gm_handleXhrResponse('\(reqId)', \(statusCode), \(unwrappedText))", completionHandler: nil)
+                    var headerLines: [String] = []
+                    if let allHeaders = httpResp?.allHeaderFields {
+                        for (k, v) in allHeaders {
+                            headerLines.append("\(k): \(v)")
+                        }
+                    }
+                    let headersString = headerLines.joined(separator: "\r\n")
+                    let finalUrlString = response?.url?.absoluteString ?? urlString
+                    let needsBinary = (responseType == "arraybuffer" || responseType == "blob")
+                    let base64String = (needsBinary ? data?.base64EncodedString() : nil) ?? ""
+
+                    let callArgs: [Any] = [reqId, statusCode, responseText, headersString, finalUrlString, base64String]
+                    let argsData = (try? JSONSerialization.data(withJSONObject: callArgs, options: [])) ?? Data()
+                    let argsJSON = String(data: argsData, encoding: .utf8) ?? "[]"
+
+                    self?.webView.evaluateJavaScript("if (typeof window.__gm_handleXhrResponse === 'function') { window.__gm_handleXhrResponse.apply(null, \(argsJSON)); }", completionHandler: nil)
                 }
             }
             task.resume()
@@ -701,7 +835,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         """
 
         webView.evaluateJavaScript(js) { result, _ in
-            let iconURLString = (result as? String) ?? "https://\(currentHost)/favicon.ico"
+            let httpsScheme = "https:" + String(repeating: "/", count: 2)
+            let iconURLString = (result as? String) ?? "\(httpsScheme)\(currentHost)/favicon.ico"
             guard let iconURL = URL(string: iconURLString) else { return }
 
             var req = URLRequest(url: iconURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 4.0)
@@ -729,73 +864,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             UserScriptStore.shared.isScriptMatching(script: $0, urlString: currentUrlStr)
         }
 
-        let gmPolyfillBase = """
-        if (!window.__gm_polyfilled__) {
-            window.__gm_polyfilled__ = true;
-            window.unsafeWindow = window;
-            window.__gm_menu_commands__ = window.__gm_menu_commands__ || {};
-
-            window.__gm_invokeMenuCommand = function(id) {
-                var fn = window.__gm_menu_commands__[id];
-                if (typeof fn === 'function') { fn(); }
-            };
-            window.GM_addStyle = function(css) {
-                var style = document.createElement('style');
-                style.type = 'text/css';
-                style.appendChild(document.createTextNode(css));
-                (document.head || document.documentElement).appendChild(style);
-                return style;
-            };
-            window.GM_log = function(msg) {};
-            window.GM_xmlhttpRequest = function(opts) {
-                var id = 'xhr_' + Math.random().toString(36).substr(2, 9);
-                window.__gm_xhr_callbacks__ = window.__gm_xhr_callbacks__ || {};
-                window.__gm_xhr_callbacks__[id] = opts;
-                try {
-                    window.webkit.messageHandlers.GM.postMessage({
-                        action: 'xhr',
-                        id: id,
-                        method: opts.method || 'GET',
-                        url: opts.url,
-                        headers: opts.headers || {},
-                        data: opts.data || null,
-                        timeout: opts.timeout || 0
-                    });
-                } catch(e) {
-                    if (opts.onerror) opts.onerror({ status: 0, responseText: e.toString() });
-                }
-            };
-            window.__handleXhrResponse = function(id, status, text) {
-                var opts = window.__gm_xhr_callbacks__[id];
-                if (!opts) return;
-                delete window.__gm_xhr_callbacks__[id];
-                var res = {
-                    status: status,
-                    statusText: status === 200 ? 'OK' : 'Error',
-                    responseText: text,
-                    response: text,
-                    readyState: 4,
-                    finalUrl: opts.url
-                };
-                if (opts.onload) opts.onload(res);
-                if (opts.onreadystatechange) opts.onreadystatechange(res);
-            };
-            window.__handleXhrError = function(id, errorText) {
-                var opts = window.__gm_xhr_callbacks__[id];
-                if (!opts) return;
-                delete window.__gm_xhr_callbacks__[id];
-                var res = { status: 0, statusText: errorText, responseText: errorText, response: errorText, readyState: 4 };
-                if (opts.onerror) opts.onerror(res);
-            };
-        }
-        """
-
-        var fullJS = gmPolyfillBase + "\n"
+        var fullJS = Self.coreGMPolyfillScriptSource + "\n"
         for script in matchingScripts {
             let valuesJSON = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
             fullJS += """
             (function(scriptId, initialValues) {
                 var values = initialValues || {};
+                var GM_info = {
+                    scriptHandler: 'Tampermonkey',
+                    version: '5.0.0',
+                    script: { name: scriptId, version: '1.0' }
+                };
                 var GM_setValue = function(name, val) {
                     values[name] = val;
                     try {
@@ -820,6 +899,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         });
                     } catch(e) {}
                 };
+                var GM_listValues = function() {
+                    return Object.keys(values);
+                };
                 var GM_registerMenuCommand = function(caption, commandFunc) {
                     var id = Math.floor(Math.random() * 1000000);
                     window.__gm_menu_commands__[id] = commandFunc;
@@ -843,10 +925,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     } catch(e) {}
                 };
                 var GM_xmlhttpRequest = window.GM_xmlhttpRequest;
+                var GM_addStyle = window.GM_addStyle;
+                var GM_openInTab = window.GM_openInTab;
+                var GM_setClipboard = window.GM_setClipboard;
+                var GM_notification = window.GM_notification;
+                var GM_log = window.GM_log;
                 var GM = {
+                    info: GM_info,
                     getValue: function(k, d) { return Promise.resolve(GM_getValue(k, d)); },
                     setValue: function(k, v) { GM_setValue(k, v); return Promise.resolve(); },
                     deleteValue: function(k) { GM_deleteValue(k); return Promise.resolve(); },
+                    listValues: function() { return Promise.resolve(GM_listValues()); },
                     xmlHttpRequest: function(opts) {
                         return new Promise(function(resolve, reject) {
                             var origOnload = opts.onload;
@@ -863,6 +952,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         });
                     },
                     addStyle: window.GM_addStyle,
+                    openInTab: window.GM_openInTab,
+                    setClipboard: window.GM_setClipboard,
+                    notification: window.GM_notification,
                     registerMenuCommand: function(c, f) { return Promise.resolve(GM_registerMenuCommand(c, f)); }
                 };
 
