@@ -1521,6 +1521,57 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?) {
+        guard url != nil || (imageURLString != nil && !(imageURLString?.isEmpty ?? true)) else { return }
+
+        let alertTitle: String
+        if !title.isEmpty {
+            alertTitle = title
+        } else if let host = url?.host {
+            alertTitle = host
+        } else if let url = url {
+            alertTitle = url.absoluteString
+        } else {
+            alertTitle = "图片选项"
+        }
+
+        let alert = UIAlertController(title: alertTitle, message: nil, preferredStyle: .actionSheet)
+
+        if let url = url {
+            alert.addAction(UIAlertAction(title: "新标签打开", style: .default) { [weak self] _ in
+                self?.createNewTab(loadURL: url)
+            })
+            alert.addAction(UIAlertAction(title: "后台打开", style: .default) { [weak self] _ in
+                self?.createNewTabInBackground(loadURL: url)
+            })
+            alert.addAction(UIAlertAction(title: "拷贝链接", style: .default) { [weak self] _ in
+                UIPasteboard.general.string = url.absoluteString
+                self?.showToastNotice("已拷贝链接")
+            })
+        }
+
+        if let imgStr = imageURLString, !imgStr.isEmpty {
+            alert.addAction(UIAlertAction(title: "保存图片到相册", style: .default) { [weak self] _ in
+                self?.activeTab.saveImageToPhotos(from: imgStr)
+            })
+            alert.addAction(UIAlertAction(title: "拷贝图片链接", style: .default) { [weak self] _ in
+                UIPasteboard.general.string = imgStr
+                self?.showToastNotice("已拷贝图片链接")
+            })
+        }
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+
+        let presenter = presentedViewController ?? self
+        presenter.present(alert, animated: true)
+    }
+
     func tabRequestShowToast(_ message: String) {
         showToastNotice(message)
     }
@@ -1746,7 +1797,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc func handleFailureReload() {
-        guard let targetURL = activeTab.failedURL else { return }
+        guard activeTab.failedURL != nil else { return }
         activeTab.isDisplayingFailurePage = false
         failureOverlayView.isHidden = true
         activeTab.reloadFromTop()
