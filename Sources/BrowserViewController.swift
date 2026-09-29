@@ -157,6 +157,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         EyeProtectionManager.shared.restoreState(in: view.window)
+        ensureBottomPanelPosition()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        ensureBottomPanelPosition()
+    }
+
+    func ensureBottomPanelPosition() {
+        if !addressField.isFirstResponder && (bottomPanelBottomConstraint?.constant ?? 0) != 0 {
+            bottomPanelBottomConstraint?.constant = 0
+            view.layoutIfNeeded()
+        }
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -228,6 +241,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             name: UIApplication.willTerminateNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+    }
+
+    @objc func handleAppDidBecomeActive() {
+        ensureBottomPanelPosition()
     }
 
     @objc func handleSessionPersistenceNotification() {
@@ -1524,6 +1548,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?) {
         guard url != nil || (imageURLString != nil && !(imageURLString?.isEmpty ?? true)) else { return }
 
+        dismissKeyboard()
+        ensureBottomPanelPosition()
+
         let alertTitle: String
         if !title.isEmpty {
             alertTitle = title
@@ -1675,7 +1702,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             navigationStack.isHidden = false
             updateAddressEditingAppearance()
 
+            bottomPanelBottomConstraint?.constant = 0
             UIView.animate(withDuration: 0.2, animations: {
+                self.view.layoutIfNeeded()
                 self.editingDimmingView.alpha = 0
             }) { _ in
                 self.editingDimmingView.isHidden = true
@@ -1743,7 +1772,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let curve = userInfo[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 7
         let options = UIView.AnimationOptions(rawValue: curve << 16)
 
-        if addressField.isFirstResponder {
+        if addressField.isFirstResponder && overlap > 0 {
             bottomPanelBottomConstraint?.constant = -overlap
             UIView.animate(withDuration: duration, delay: 0, options: options) {
                 self.view.layoutIfNeeded()
