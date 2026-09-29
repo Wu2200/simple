@@ -117,8 +117,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         var style = document.createElement('style');
         style.type = 'text/css';
-        style.innerHTML = '* { -webkit-touch-callout: none !important; }';
+        style.innerHTML = '* { -webkit-touch-callout: none !important; } a, a *, img, video { -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; }';
         (document.head || document.documentElement).appendChild(style);
+
+        window.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+        }, true);
 
         var timer = null;
         var startX = 0;
@@ -129,6 +133,15 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             if (timer) {
                 clearTimeout(timer);
                 timer = null;
+            }
+        }
+
+        function clearSelection() {
+            if (window.getSelection) {
+                var sel = window.getSelection();
+                if (sel && sel.removeAllRanges) {
+                    sel.removeAllRanges();
+                }
             }
         }
 
@@ -182,6 +195,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 return;
             }
 
+            clearSelection();
+
             var touch = e.touches[0];
             startX = touch.clientX;
             startY = touch.clientY;
@@ -190,6 +205,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
             timer = setTimeout(function() {
                 longPressed = true;
+                clearSelection();
                 try {
                     window.webkit.messageHandlers.ContextMenuBridge.postMessage({
                         link: info.linkHref,
@@ -197,7 +213,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         image: info.imgSrc
                     });
                 } catch(err) {}
-            }, 980);
+            }, 620);
         }, { capture: true, passive: true });
 
         window.addEventListener('touchmove', function(e) {
