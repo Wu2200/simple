@@ -115,8 +115,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     var webBottomPanelConstraint: NSLayoutConstraint?
     var webBottomFullscreenConstraint: NSLayoutConstraint?
 
-    var navigationStackHeightConstraint: NSLayoutConstraint?
-    var navigationStackTopConstraint: NSLayoutConstraint?
     var fullscreenExitGesture: UILongPressGestureRecognizer?
 
     var isShowingLongPressMenu = false
@@ -709,12 +707,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             equalTo: view.bottomAnchor
         )
 
-        navigationStackTopConstraint = navigationStack.topAnchor.constraint(
-            equalTo: addressContainer.bottomAnchor,
-            constant: 4
-        )
-        navigationStackHeightConstraint = navigationStack.heightAnchor.constraint(equalToConstant: 40)
-
         webTopSafeConstraint?.isActive = true
         webBottomPanelConstraint?.isActive = true
 
@@ -839,7 +831,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             progressView.heightAnchor.constraint(equalToConstant: 2.5),
 
-            navigationStackTopConstraint!,
+            navigationStack.topAnchor.constraint(
+                equalTo: addressContainer.bottomAnchor,
+                constant: 4
+            ),
             navigationStack.leadingAnchor.constraint(
                 equalTo: bottomPanel.leadingAnchor,
                 constant: 12
@@ -852,7 +847,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 equalTo: bottomPanel.safeAreaLayoutGuide.bottomAnchor,
                 constant: -2
             ),
-            navigationStackHeightConstraint!
+            navigationStack.heightAnchor.constraint(equalToConstant: 40)
         ])
     }
 
@@ -1087,7 +1082,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     func configureFullscreenExitGesture() {
         let gesture = UILongPressGestureRecognizer(target: self, action: #selector(handleFullscreenExitGesture(_:)))
-        gesture.minimumPressDuration = 0.8
+        gesture.minimumPressDuration = 1.3
         gesture.numberOfTouchesRequired = 2
         gesture.cancelsTouchesInView = false
         gesture.delaysTouchesBegan = false
@@ -1442,7 +1437,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if activeTab.isDisplayingFailurePage {
             handleFailureReload()
         } else if activeTab.isLoading {
-            activeTab.webView.stopLoading()
+            activeTab.stopLoading()
             resetProgress()
             updateAddressRightButtons()
         } else {
@@ -1599,15 +1594,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 textField.text = (raw == "about:blank") ? "" : raw
             }
 
-            navigationStackHeightConstraint?.constant = 0
-            navigationStackTopConstraint?.constant = 0
             navigationStack.isHidden = true
             updateAddressEditingAppearance()
 
             editingDimmingView.isHidden = false
             UIView.animate(withDuration: 0.2) {
                 self.editingDimmingView.alpha = 1
-                self.bottomPanel.layoutIfNeeded()
             }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak textField] in
@@ -1629,14 +1621,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 textField.text = ""
             }
 
-            navigationStackHeightConstraint?.constant = 40
-            navigationStackTopConstraint?.constant = 4
             navigationStack.isHidden = false
             updateAddressEditingAppearance()
 
             UIView.animate(withDuration: 0.2, animations: {
                 self.editingDimmingView.alpha = 0
-                self.bottomPanel.layoutIfNeeded()
             }) { _ in
                 self.editingDimmingView.isHidden = true
             }
@@ -1760,7 +1749,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard let targetURL = activeTab.failedURL else { return }
         activeTab.isDisplayingFailurePage = false
         failureOverlayView.isHidden = true
-        activeTab.webView.load(URLRequest(url: targetURL))
+        activeTab.reloadFromTop()
         updateUIState()
         updateAddressRightButtons()
     }
@@ -1848,7 +1837,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             if let targetURL = targetURL, targetURL.absoluteString != "about:blank" {
                 self.activeTab.isDisplayingFailurePage = false
                 self.failureOverlayView.isHidden = true
-                self.activeTab.webView.load(URLRequest(url: targetURL))
+                self.activeTab.reloadFromTop()
             }
         }
         settingsVC.onExtractText = { [weak self] in

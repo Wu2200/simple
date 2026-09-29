@@ -13,6 +13,7 @@ protocol TabItemDelegate: AnyObject {
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let id = UUID()
     let webView: WKWebView
+    private let reloadCoverView = UIView()
     var title = "主页"
     var url: URL?
     var isLoading = false
@@ -145,6 +146,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.scrollView.backgroundColor = .white
         webView.isOpaque = true
 
+        reloadCoverView.translatesAutoresizingMaskIntoConstraints = false
+        reloadCoverView.backgroundColor = .systemBackground
+        reloadCoverView.isHidden = true
+        webView.addSubview(reloadCoverView)
+        NSLayoutConstraint.activate([
+            reloadCoverView.topAnchor.constraint(equalTo: webView.topAnchor),
+            reloadCoverView.leadingAnchor.constraint(equalTo: webView.leadingAnchor),
+            reloadCoverView.trailingAnchor.constraint(equalTo: webView.trailingAnchor),
+            reloadCoverView.bottomAnchor.constraint(equalTo: webView.bottomAnchor)
+        ])
+
         webView.scrollView.panGestureRecognizer.addTarget(self, action: #selector(handleScrollViewPan(_:)))
 
         NotificationCenter.default.addObserver(
@@ -166,9 +178,30 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
+    func showReloadCover() {
+        reloadCoverView.alpha = 1
+        reloadCoverView.isHidden = false
+        webView.bringSubviewToFront(reloadCoverView)
+    }
+
+    func hideReloadCover() {
+        guard !reloadCoverView.isHidden else { return }
+        UIView.animate(withDuration: 0.15, animations: {
+            self.reloadCoverView.alpha = 0
+        }) { _ in
+            self.reloadCoverView.isHidden = true
+        }
+    }
+
+    func stopLoading() {
+        hideReloadCover()
+        webView.stopLoading()
+    }
+
     func reloadFromTop() {
         userScrolledDuringLoading = false
         webView.scrollView.setContentOffset(.zero, animated: false)
+        showReloadCover()
         if let currentURL = url ?? webView.url {
             webView.load(URLRequest(url: currentURL))
         } else {
@@ -196,6 +229,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func destroy() {
+        hideReloadCover()
+        reloadCoverView.removeFromSuperview()
         NotificationCenter.default.removeObserver(self)
         AdBlockManager.shared.detach(from: webView)
         delegate = nil
@@ -222,6 +257,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func clearFailureState() {
+        hideReloadCover()
         isDisplayingFailurePage = false
         failedURL = nil
         failureError = nil
@@ -757,6 +793,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        hideReloadCover()
         if !isDisplayingFailurePage, let currentURL = webView.url, !currentURL.absoluteString.contains("about:blank") {
             if previousURL != currentURL {
                 previousURL = url
@@ -775,6 +812,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        hideReloadCover()
         isLoading = false
         if !isDisplayingFailurePage {
             url = webView.url
@@ -796,6 +834,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        hideReloadCover()
         isLoading = false
         delegate?.tabProcessTerminated(self)
     }
@@ -805,6 +844,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) {
+        hideReloadCover()
         isLoading = false
         if shouldIgnoreNavigationError(error) {
             delegate?.tabDidUpdate(self)
@@ -821,6 +861,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         didFail navigation: WKNavigation!,
         withError error: Error
     ) {
+        hideReloadCover()
         isLoading = false
         if shouldIgnoreNavigationError(error) {
             delegate?.tabDidUpdate(self)
