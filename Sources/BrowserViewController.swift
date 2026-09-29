@@ -1204,6 +1204,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             if let host = url.host {
                 FaviconLoader.shared.preloadFavicon(for: host)
             }
+            applyAutoFullscreenIfNeeded(for: url)
         } else {
             showHomeUI()
         }
@@ -1300,10 +1301,20 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    func applyAutoFullscreenIfNeeded(for url: URL?) {
+        guard let host = url?.host, !host.isEmpty else { return }
+        if DomainSettingsStore.shared.getBool(domain: host, setting: "autoFullscreen", defaultVal: false) {
+            if !isFullscreen {
+                setFullscreen(true)
+            }
+        }
+    }
+
     func load(url: URL) {
         showBrowserUI()
 
         activeTab.url = url
+        activeTab.lastAutoFullscreenCheckedURL = url
         activeTab.title = url.host ?? url.absoluteString
 
         let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
@@ -1314,6 +1325,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         progressView.setProgress(0.08, animated: false)
 
         activeTab.webView.load(URLRequest(url: url))
+        applyAutoFullscreenIfNeeded(for: url)
 
         if let host = url.host {
             FaviconLoader.shared.preloadFavicon(for: host)
@@ -1324,6 +1336,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func showHomeUI() {
+        if isFullscreen {
+            setFullscreen(false)
+        }
         homeView.alpha = 1
         webContainer.alpha = 0
         failureOverlayView.isHidden = true
@@ -1662,12 +1677,18 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         if !tab.isDisplayingFailurePage {
             failureOverlayView.isHidden = true
-            if let url = tab.url, !addressField.isFirstResponder {
-                let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-                let hostString = url.host?.removingPercentEncoding ?? url.host ?? (rawString == "about:blank" ? "" : rawString)
-                addressField.text = hostString
-                if let host = url.host {
-                    FaviconLoader.shared.preloadFavicon(for: host)
+            if let url = tab.url {
+                if !addressField.isFirstResponder {
+                    let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+                    let hostString = url.host?.removingPercentEncoding ?? url.host ?? (rawString == "about:blank" ? "" : rawString)
+                    addressField.text = hostString
+                    if let host = url.host {
+                        FaviconLoader.shared.preloadFavicon(for: host)
+                    }
+                }
+                if tab.lastAutoFullscreenCheckedURL != url {
+                    tab.lastAutoFullscreenCheckedURL = url
+                    applyAutoFullscreenIfNeeded(for: url)
                 }
             }
         }
@@ -1952,6 +1973,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 self.failureOverlayView.isHidden = true
                 self.activeTab.reloadFromTop()
             }
+        }
+        settingsVC.onFullscreenChanged = { [weak self] isEnabled in
+            self?.setFullscreen(isEnabled)
         }
         settingsVC.onExtractText = { [weak self] in
             self?.extractPageText()

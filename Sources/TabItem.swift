@@ -27,6 +27,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     var isDisplayingFailurePage = false
     var previousURL: URL?
     var failureOriginURL: URL?
+    var lastAutoFullscreenCheckedURL: URL?
     private var pendingRestoreURL: URL?
 
     private var hasInjectedScriptsForCurrentPage = false
@@ -457,6 +458,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func reloadFromTop() {
         userScrolledDuringLoading = false
+        lastAutoFullscreenCheckedURL = nil
         webView.scrollView.setContentOffset(.zero, animated: false)
         showReloadCover()
         if let currentURL = url ?? webView.url {

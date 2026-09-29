@@ -555,6 +555,7 @@ final class WebsiteDataDetailCell: UITableViewCell {
 final class DomainSettingsViewController: UITableViewController {
     private let domain: String
     var onSettingsChanged: (() -> Void)?
+    var onFullscreenChanged: ((Bool) -> Void)?
     var onExtractText: (() -> Void)?
 
     init(domain: String, onSettingsChanged: (() -> Void)?) {
@@ -591,9 +592,10 @@ final class DomainSettingsViewController: UITableViewController {
             switchView.tag = indexPath.row
 
             if indexPath.row == 0 {
-                cell.textLabel?.text = "视频悬窗"
-                switchView.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "videoPopout", defaultVal: false)
-                switchView.isEnabled = false
+                cell.textLabel?.text = "全屏浏览"
+                switchView.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "autoFullscreen", defaultVal: false)
+                switchView.isEnabled = true
+                switchView.addTarget(self, action: #selector(handleSwitchChanged(_:)), for: .valueChanged)
             } else if indexPath.row == 1 {
                 cell.textLabel?.text = "广告过滤"
                 switchView.isOn = DomainSettingsStore.shared.getBool(domain: domain, setting: "adBlock", defaultVal: true)
@@ -621,7 +623,10 @@ final class DomainSettingsViewController: UITableViewController {
     }
 
     @objc private func handleSwitchChanged(_ sender: UISwitch) {
-        if sender.tag == 1 {
+        if sender.tag == 0 {
+            DomainSettingsStore.shared.setBool(domain: domain, setting: "autoFullscreen", value: sender.isOn)
+            onFullscreenChanged?(sender.isOn)
+        } else if sender.tag == 1 {
             DomainSettingsStore.shared.setBool(domain: domain, setting: "adBlock", value: sender.isOn)
             onSettingsChanged?()
         } else if sender.tag == 2 {

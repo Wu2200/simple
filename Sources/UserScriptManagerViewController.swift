@@ -34,6 +34,24 @@ final class UserScriptStore {
         }
     }
 
+    func excludeHost(_ host: String, for script: inout UserScript) {
+        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanHost.isEmpty else { return }
+        let excludeToken = "!\(cleanHost)"
+        let parts = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if parts.contains(where: { $0.lowercased() == excludeToken }) {
+            return
+        }
+        var updated = parts
+        if updated.isEmpty {
+            updated.append("*")
+        }
+        updated.append(excludeToken)
+        script.matchPattern = updated.joined(separator: ", ")
+    }
+
     func parseMetadata(from code: String) -> (name: String, match: String) {
         var nameMap: [String: String] = [:]
         var matches: [String] = []
@@ -58,6 +76,11 @@ final class UserScriptStore {
                 if !val.isEmpty && !matches.contains(val) {
                     matches.append(val)
                 }
+            } else if tag == "@exclude" || tag == "@exclude-match" {
+                let exVal = "!" + val
+                if !val.isEmpty && !matches.contains(exVal) {
+                    matches.append(exVal)
+                }
             }
         }
 
@@ -67,60 +90,69 @@ final class UserScriptStore {
         return (preferredName, preferredMatch)
     }
 
+    private func doesHost(_ host: String, matchPattern rawPattern: String) -> Bool {
+        if rawPattern == "*" || rawPattern == "<all_urls>" {
+            return true
+        }
+
+        let schemeSeparator = ":" + String(repeating: "/", count: 2)
+        var p = rawPattern.lowercased()
+        if let schemeRange = p.range(of: schemeSeparator) {
+            p = String(p[schemeRange.upperBound...])
+        }
+        if let slashIndex = p.firstIndex(of: "/") {
+            p = String(p[..<slashIndex])
+        }
+        p = p.trimmingCharacters(in: .whitespaces)
+
+        if p == "*" || p.isEmpty {
+            return true
+        }
+
+        if p.hasPrefix("*.") {
+            let suffix = String(p.dropFirst(2))
+            return host == suffix || host.hasSuffix("." + suffix)
+        } else if p.hasPrefix("*") {
+            let suffix = String(p.dropFirst(1))
+            return host.hasSuffix(suffix)
+        } else {
+            return host == p || host.hasSuffix("." + p)
+        }
+    }
+
     func isScriptMatching(script: UserScript, urlString: String) -> Bool {
         guard script.isEnabled else { return false }
 
-        if let url = URL(string: urlString), let host = url.host {
-            let scriptEnabled = DomainSettingsStore.shared.getBool(domain: host, setting: "userScripts", defaultVal: true)
-            if !scriptEnabled { return false }
+        guard let url = URL(string: urlString), let rawHost = url.host, !rawHost.isEmpty else {
+            return false
         }
+        let host = rawHost.lowercased()
+
+        let scriptEnabled = DomainSettingsStore.shared.getBool(domain: host, setting: "userScripts", defaultVal: true)
+        if !scriptEnabled { return false }
 
         let rawPatterns = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        if rawPatterns.isEmpty || rawPatterns.contains("*") || rawPatterns.contains("<all_urls>") {
+        let excludePatterns = rawPatterns.filter { $0.hasPrefix("!") }.map {
+            String($0.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty }
+
+        for ex in excludePatterns {
+            if doesHost(host, matchPattern: ex) {
+                return false
+            }
+        }
+
+        let includePatterns = rawPatterns.filter { !$0.hasPrefix("!") }
+        if includePatterns.isEmpty || includePatterns.contains("*") || includePatterns.contains("<all_urls>") {
             return true
         }
 
-        guard let url = URL(string: urlString), let host = url.host?.lowercased() else {
-            return false
-        }
-
-        let schemeSeparator = ":" + String(repeating: "/", count: 2)
-
-        for pattern in rawPatterns {
-            if pattern == "*" || pattern == "<all_urls>" {
+        for pattern in includePatterns {
+            if doesHost(host, matchPattern: pattern) {
                 return true
-            }
-
-            var p = pattern.lowercased()
-            if let schemeRange = p.range(of: schemeSeparator) {
-                p = String(p[schemeRange.upperBound...])
-            }
-            if let slashIndex = p.firstIndex(of: "/") {
-                p = String(p[..<slashIndex])
-            }
-            p = p.trimmingCharacters(in: .whitespaces)
-
-            if p == "*" || p.isEmpty {
-                return true
-            }
-
-            if p.hasPrefix("*.") {
-                let suffix = String(p.dropFirst(2))
-                if host == suffix || host.hasSuffix("." + suffix) {
-                    return true
-                }
-            } else if p.hasPrefix("*") {
-                let suffix = String(p.dropFirst(1))
-                if host.hasSuffix(suffix) {
-                    return true
-                }
-            } else {
-                if host == p || host.hasSuffix("." + p) {
-                    return true
-                }
             }
         }
 

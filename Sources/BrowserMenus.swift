@@ -280,6 +280,25 @@ extension BrowserViewController {
         ))
 
         items.append(CustomBottomSheetItem(
+            title: "排除此网站",
+            iconName: "nosign",
+            handler: { [weak self] in
+                guard let self = self else { return }
+                guard let host = self.activeTab.url?.host, !host.isEmpty else {
+                    self.showToastNotice("当前页面无法排除")
+                    return
+                }
+                var scripts = UserScriptStore.shared.loadScripts()
+                if let idx = scripts.firstIndex(where: { $0.id == script.id }) {
+                    UserScriptStore.shared.excludeHost(host, for: &scripts[idx])
+                    UserScriptStore.shared.saveScripts(scripts)
+                    self.activeTab.reloadUserScripts()
+                    self.showToastNotice("已排除此网站")
+                }
+            }
+        ))
+
+        items.append(CustomBottomSheetItem(
             title: "清除脚本缓存数据",
             iconName: "trash",
             isDestructive: false,
