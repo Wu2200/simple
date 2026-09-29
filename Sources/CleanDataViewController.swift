@@ -1,5 +1,12 @@
 import UIKit
 
+enum CleanOption: Int, Hashable, CaseIterable {
+    case cache = 0
+    case loginAndData = 1
+    case searchHistory = 2
+    case scriptData = 3
+}
+
 final class CleanDataSelectionViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private var selectedOptions: Set<CleanOption> = [.cache]
     private let savedOptionsKey = "browser_saved_clean_options_v1"

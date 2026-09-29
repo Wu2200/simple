@@ -1,5 +1,41 @@
 import UIKit
 
+enum CustomBottomSheetLayout {
+    case grid
+    case list
+}
+
+struct CustomBottomSheetItem {
+    let title: String
+    var iconName: String? = nil
+    var customImage: UIImage? = nil
+    var isDestructive: Bool = false
+    var isSwitchOn: Bool? = nil
+    var dismissOnTap: Bool = true
+    let handler: (() -> Void)?
+    let longPressHandler: (() -> Void)?
+
+    init(
+        title: String,
+        iconName: String? = nil,
+        customImage: UIImage? = nil,
+        isDestructive: Bool = false,
+        isSwitchOn: Bool? = nil,
+        dismissOnTap: Bool = true,
+        handler: (() -> Void)?,
+        longPressHandler: (() -> Void)? = nil
+    ) {
+        self.title = title
+        self.iconName = iconName
+        self.customImage = customImage
+        self.isDestructive = isDestructive
+        self.isSwitchOn = isSwitchOn
+        self.dismissOnTap = dismissOnTap
+        self.handler = handler
+        self.longPressHandler = longPressHandler
+    }
+}
+
 final class CustomBottomSheetViewController: UIViewController, UIScrollViewDelegate, UITableViewDataSource, UITableViewDelegate {
     private let titleString: String
     private var items: [CustomBottomSheetItem]
@@ -177,8 +213,6 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
         sv.setContentOffset(CGPoint(x: offset, y: 0), animated: true)
     }
 
-    // MARK: - 悬浮式未来感按钮页面 (全悬浮式浮岛卡片，消除分割线与扁平死板列表)
-
     private func setupListLayout() {
         let grabber = UIView()
         grabber.translatesAutoresizingMaskIntoConstraints = false
@@ -340,8 +374,6 @@ final class CustomBottomSheetViewController: UIViewController, UIScrollViewDeleg
     }
 }
 
-// MARK: - 独立悬浮胶囊卡片按钮 (iOS 16/未来拟物悬浮流体风格)
-
 final class FloatingActionCardButton: TouchButton {
     var item: CustomBottomSheetItem
     private let iconCapsule = UIView()
@@ -501,8 +533,6 @@ final class FloatingActionCardButton: TouchButton {
         onSwitchChanged?(sender.isOn)
     }
 }
-
-// MARK: - 更多菜单网格项按钮
 
 final class GridItemButton: TouchButton {
     var item: CustomBottomSheetItem

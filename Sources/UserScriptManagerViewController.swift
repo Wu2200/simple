@@ -1,5 +1,188 @@
 import UIKit
 
+struct UserScript: Codable {
+    var id: String
+    var name: String
+    var matchPattern: String
+    var code: String
+    var isEnabled: Bool
+}
+
+struct RegisteredMenuCommand {
+    let scriptId: String
+    let cmdId: Int
+    let caption: String
+}
+
+final class UserScriptStore {
+    static let shared = UserScriptStore()
+    private let key = "user_tampermonkey_scripts_v5"
+
+    private init() {}
+
+    func loadScripts() -> [UserScript] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let scripts = try? JSONDecoder().decode([UserScript].self, from: data) else {
+            return []
+        }
+        return scripts
+    }
+
+    func saveScripts(_ scripts: [UserScript]) {
+        if let data = try? JSONEncoder().encode(scripts) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    func parseMetadata(from code: String) -> (name: String, match: String) {
+        var nameMap: [String: String] = [:]
+        var matches: [String] = []
+        let doubleSlash = String(repeating: "/", count: 2)
+
+        let lines = code.components(separatedBy: .newlines)
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix(doubleSlash) else { continue }
+            let content = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            guard content.hasPrefix("@") else { continue }
+
+            let components = content.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            guard components.count >= 2 else { continue }
+
+            let tag = components[0]
+            let val = components.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespaces)
+
+            if tag.hasPrefix("@name") {
+                nameMap[tag] = val
+            } else if tag == "@match" || tag == "@include" {
+                if !val.isEmpty && !matches.contains(val) {
+                    matches.append(val)
+                }
+            }
+        }
+
+        let preferredName = nameMap["@name:zh-CN"] ?? nameMap["@name:zh"] ?? nameMap["@name:zh-TW"] ?? nameMap["@name"] ?? "未命名脚本"
+        let preferredMatch = matches.isEmpty ? "*" : matches.joined(separator: ", ")
+
+        return (preferredName, preferredMatch)
+    }
+
+    func isScriptMatching(script: UserScript, urlString: String) -> Bool {
+        guard script.isEnabled else { return false }
+
+        if let url = URL(string: urlString), let host = url.host {
+            let scriptEnabled = DomainSettingsStore.shared.getBool(domain: host, setting: "userScripts", defaultVal: true)
+            if !scriptEnabled { return false }
+        }
+
+        let rawPatterns = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if rawPatterns.isEmpty || rawPatterns.contains("*") || rawPatterns.contains("<all_urls>") {
+            return true
+        }
+
+        guard let url = URL(string: urlString), let host = url.host?.lowercased() else {
+            return false
+        }
+
+        let schemeSeparator = ":" + String(repeating: "/", count: 2)
+
+        for pattern in rawPatterns {
+            if pattern == "*" || pattern == "<all_urls>" {
+                return true
+            }
+
+            var p = pattern.lowercased()
+            if let schemeRange = p.range(of: schemeSeparator) {
+                p = String(p[schemeRange.upperBound...])
+            }
+            if let slashIndex = p.firstIndex(of: "/") {
+                p = String(p[..<slashIndex])
+            }
+            p = p.trimmingCharacters(in: .whitespaces)
+
+            if p == "*" || p.isEmpty {
+                return true
+            }
+
+            if p.hasPrefix("*.") {
+                let suffix = String(p.dropFirst(2))
+                if host == suffix || host.hasSuffix("." + suffix) {
+                    return true
+                }
+            } else if p.hasPrefix("*") {
+                let suffix = String(p.dropFirst(1))
+                if host.hasSuffix(suffix) {
+                    return true
+                }
+            } else {
+                if host == p || host.hasSuffix("." + p) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+}
+
+final class ScriptDataStore {
+    static let shared = ScriptDataStore()
+    private init() {}
+
+    private func makeKey(_ scriptId: String, _ name: String) -> String {
+        return "GM_DATA_\(scriptId)_\(name)"
+    }
+
+    func getValue(scriptId: String, name: String) -> Any? {
+        return UserDefaults.standard.object(forKey: makeKey(scriptId, name))
+    }
+
+    func setValue(scriptId: String, name: String, value: Any) {
+        UserDefaults.standard.set(value, forKey: makeKey(scriptId, name))
+    }
+
+    func deleteValue(scriptId: String, name: String) {
+        UserDefaults.standard.removeObject(forKey: makeKey(scriptId, name))
+    }
+
+    func clearDataForScript(scriptId: String) {
+        let prefix = "GM_DATA_\(scriptId)_"
+        for (k, _) in UserDefaults.standard.dictionaryRepresentation() {
+            if k.hasPrefix(prefix) {
+                UserDefaults.standard.removeObject(forKey: k)
+            }
+        }
+    }
+
+    func clearAllScriptData() {
+        let prefix = "GM_DATA_"
+        for (k, _) in UserDefaults.standard.dictionaryRepresentation() {
+            if k.hasPrefix(prefix) {
+                UserDefaults.standard.removeObject(forKey: k)
+            }
+        }
+    }
+
+    func getAllValuesJSON(scriptId: String) -> String {
+        let prefix = "GM_DATA_\(scriptId)_"
+        var dict: [String: Any] = [:]
+        for (k, v) in UserDefaults.standard.dictionaryRepresentation() {
+            if k.hasPrefix(prefix) {
+                let name = String(k.dropFirst(prefix.count))
+                dict[name] = v
+            }
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
+           let str = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return "{}"
+    }
+}
+
 final class UserScriptManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate {
     private var allScripts: [UserScript] = []
     private var filteredScripts: [UserScript] = []
@@ -308,5 +491,128 @@ final class UserScriptRowCell: UITableViewCell {
 
     @objc private func handleSwitch() {
         onToggle?(toggleSwitch.isOn)
+    }
+}
+
+final class UserScriptEditorViewController: UIViewController {
+    private var script: UserScript?
+    var onSave: ((UserScript) -> Void)?
+
+    private let nameField = UITextField()
+    private let matchField = UITextView()
+    private let textView = UITextView()
+
+    init(script: UserScript?) {
+        self.script = script
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = script == nil ? "新建油猴脚本" : "编辑脚本"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "保存",
+            style: .done,
+            target: self,
+            action: #selector(handleSave)
+        )
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "取消",
+            style: .plain,
+            target: self,
+            action: #selector(handleCancel)
+        )
+
+        nameField.translatesAutoresizingMaskIntoConstraints = false
+        nameField.backgroundColor = .secondarySystemGroupedBackground
+        nameField.layer.cornerRadius = 10
+        nameField.clipsToBounds = true
+        nameField.placeholder = "脚本名称"
+        nameField.font = .systemFont(ofSize: 15)
+
+        let namePadding = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 1))
+        nameField.leftView = namePadding
+        nameField.leftViewMode = .always
+
+        matchField.translatesAutoresizingMaskIntoConstraints = false
+        matchField.backgroundColor = .secondarySystemGroupedBackground
+        matchField.layer.cornerRadius = 10
+        matchField.clipsToBounds = true
+        matchField.font = .systemFont(ofSize: 14)
+        matchField.textColor = .label
+        matchField.autocapitalizationType = .none
+        matchField.autocorrectionType = .no
+        matchField.textContainerInset = UIEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.backgroundColor = .secondarySystemGroupedBackground
+        textView.layer.cornerRadius = 12
+        textView.clipsToBounds = true
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .no
+        textView.textContainerInset = UIEdgeInsets(top: 12, left: 10, bottom: 12, right: 10)
+
+        if let currentScript = script {
+            nameField.text = currentScript.name
+            matchField.text = currentScript.matchPattern
+            textView.text = currentScript.code
+        } else {
+            let defaultCode = "(function() {\n    'use strict';\n})();"
+            textView.text = defaultCode
+            let parsed = UserScriptStore.shared.parseMetadata(from: defaultCode)
+            nameField.text = parsed.name == "未命名脚本" ? "" : parsed.name
+            matchField.text = parsed.match
+        }
+
+        view.addSubview(nameField)
+        view.addSubview(matchField)
+        view.addSubview(textView)
+
+        NSLayoutConstraint.activate([
+            nameField.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            nameField.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            nameField.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            nameField.heightAnchor.constraint(equalToConstant: 42),
+
+            matchField.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 10),
+            matchField.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            matchField.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            matchField.heightAnchor.constraint(equalToConstant: 54),
+
+            textView.topAnchor.constraint(equalTo: matchField.bottomAnchor, constant: 12),
+            textView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            textView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            textView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
+        ])
+    }
+
+    @objc private func handleSave() {
+        let codeText = textView.text ?? ""
+        var nameText = nameField.text?.trimmingCharacters(in: .whitespaces) ?? ""
+        var matchText = matchField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let parsed = UserScriptStore.shared.parseMetadata(from: codeText)
+        if nameText.isEmpty { nameText = parsed.name }
+        if matchText.isEmpty { matchText = parsed.match }
+
+        let item = UserScript(
+            id: script?.id ?? UUID().uuidString,
+            name: nameText,
+            matchPattern: matchText,
+            code: codeText,
+            isEnabled: script?.isEnabled ?? true
+        )
+
+        onSave?(item)
+        dismiss(animated: true)
+    }
+
+    @objc private func handleCancel() {
+        dismiss(animated: true)
     }
 }
