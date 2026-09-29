@@ -115,6 +115,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     var webBottomPanelConstraint: NSLayoutConstraint?
     var webBottomFullscreenConstraint: NSLayoutConstraint?
 
+    var navigationStackHeightConstraint: NSLayoutConstraint?
+    var navigationStackTopConstraint: NSLayoutConstraint?
+    var fullscreenExitGesture: UILongPressGestureRecognizer?
+
     var isShowingLongPressMenu = false
     weak var activeCalloutOverlay: UIView?
     weak var currentToastView: UIView?
@@ -126,7 +130,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
-        .darkContent
+        traitCollection.userInterfaceStyle == .dark ? .lightContent : .darkContent
     }
 
     override var prefersStatusBarHidden: Bool {
@@ -157,6 +161,18 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         EyeProtectionManager.shared.restoreState(in: view.window)
     }
 
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
+            setNeedsStatusBarAppearanceUpdate()
+        }
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        dismissCalloutMenu()
+    }
+
     override func didReceiveMemoryWarning() {
         super.didReceiveMemoryWarning()
         for (idx, tab) in tabs.enumerated() {
@@ -185,11 +201,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         progressView.setProgress(1.0, animated: true)
         UIView.animate(withDuration: 0.25, delay: 0.05, options: [.curveEaseOut, .allowUserInteraction], animations: {
             self.progressView.alpha = 0
-        }, completion: { [weak self] finished in
-            if finished {
-                self?.progressView.setProgress(0, animated: false)
-                self?.isCompletingProgress = false
-            }
+        }, completion: { [weak self] _ in
+            self?.progressView.setProgress(0, animated: false)
+            self?.isCompletingProgress = false
         })
     }
 
@@ -271,7 +285,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard let scriptURL = notification.object as? URL else { return }
 
         let task = URLSession.shared.dataTask(with: scriptURL) { [weak self] data, response, error in
-            guard let data = data, let code = String(data: data, encoding: .utf8), !code.isEmpty else { return }
+            guard let data = data, let code = String(data: data, encoding: .utf8), !code.isEmpty else {
+                DispatchQueue.main.async {
+                    self?.showToastNotice("下载或解析油猴脚本失败")
+                }
+                return
+            }
             let (parsedName, parsedMatch) = UserScriptStore.shared.parseMetadata(from: code)
 
             DispatchQueue.main.async {
@@ -690,6 +709,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             equalTo: view.bottomAnchor
         )
 
+        navigationStackTopConstraint = navigationStack.topAnchor.constraint(
+            equalTo: addressContainer.bottomAnchor,
+            constant: 4
+        )
+        navigationStackHeightConstraint = navigationStack.heightAnchor.constraint(equalToConstant: 40)
+
         webTopSafeConstraint?.isActive = true
         webBottomPanelConstraint?.isActive = true
 
@@ -814,10 +839,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             ),
             progressView.heightAnchor.constraint(equalToConstant: 2.5),
 
-            navigationStack.topAnchor.constraint(
-                equalTo: addressContainer.bottomAnchor,
-                constant: 4
-            ),
+            navigationStackTopConstraint!,
             navigationStack.leadingAnchor.constraint(
                 equalTo: bottomPanel.leadingAnchor,
                 constant: 12
@@ -830,7 +852,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 equalTo: bottomPanel.safeAreaLayoutGuide.bottomAnchor,
                 constant: -2
             ),
-            navigationStack.heightAnchor.constraint(equalToConstant: 40)
+            navigationStackHeightConstraint!
         ])
     }
 
@@ -844,7 +866,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard gesture.state == .began else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
-        view.endEditing(true)
+        dismissKeyboard()
+        dismissCalloutMenu()
         isShowingLongPressMenu = true
 
         let targetRect = addressContentView.convert(addressContentView.bounds, to: view)
@@ -906,11 +929,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     @objc func dismissCalloutMenu() {
-        guard let overlay = activeCalloutOverlay else { return }
+        guard let overlay = activeCalloutOverlay else {
+            isShowingLongPressMenu = false
+            return
+        }
         if let menu = overlay.subviews.first(where: { $0 is AddressCalloutMenuView }) {
             dismissCalloutMenuAnimated(menu, overlay: overlay, completion: nil)
         } else {
             overlay.removeFromSuperview()
+            activeCalloutOverlay = nil
             isShowingLongPressMenu = false
         }
     }
@@ -921,6 +948,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             menu.transform = CGAffineTransform(scaleX: 0.88, y: 0.88)
         }) { [weak self] _ in
             overlay.removeFromSuperview()
+            self?.activeCalloutOverlay = nil
             self?.isShowingLongPressMenu = false
             completion?()
         }
@@ -1059,10 +1087,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     func configureFullscreenExitGesture() {
         let gesture = UILongPressGestureRecognizer(target: self, action: #selector(handleFullscreenExitGesture(_:)))
-        gesture.minimumPressDuration = 1.0
+        gesture.minimumPressDuration = 0.8
         gesture.numberOfTouchesRequired = 2
         gesture.cancelsTouchesInView = false
+        gesture.delaysTouchesBegan = false
+        gesture.delaysTouchesEnded = false
+        gesture.delegate = self
+        gesture.isEnabled = false
         view.addGestureRecognizer(gesture)
+        fullscreenExitGesture = gesture
     }
 
     func createNewTab(loadURL url: URL?, sourceID: UUID? = nil) {
@@ -1198,6 +1231,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 let progress = Float(observedWebView.estimatedProgress)
 
                 if observedWebView.isLoading {
+                    if progress < 0.2 {
+                        self.isCompletingProgress = false
+                    }
                     if self.isCompletingProgress {
                         return
                     }
@@ -1424,19 +1460,27 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             if let url = URL(string: value) {
                 return url
             }
-            if let encoded = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+            let decoded = value.removingPercentEncoding ?? value
+            if let encoded = decoded.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
                let url = URL(string: encoded) {
                 return url
             }
             return nil
         }
 
-        if value.contains(".") && !value.contains(" ") {
-            let prefixed = "https://" + value
+        let lower = value.lowercased()
+        let isLocal = lower.hasPrefix("localhost") || lower.hasPrefix("127.0.0.1")
+        let hasDot = value.contains(".") && !value.contains(" ")
+        let hasPort = value.contains(":") && !value.contains(" ")
+
+        if isLocal || hasDot || hasPort {
+            let scheme = isLocal ? "http://" : "https://"
+            let prefixed = scheme + value
             if let url = URL(string: prefixed) {
                 return url
             }
-            if let encoded = prefixed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+            let decoded = prefixed.removingPercentEncoding ?? prefixed
+            if let encoded = decoded.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
                let url = URL(string: encoded) {
                 return url
             }
@@ -1453,6 +1497,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         dismissKeyboard()
 
         isFullscreen = enabled
+        fullscreenExitGesture?.isEnabled = enabled
         bottomPanel.isHidden = enabled
 
         webTopSafeConstraint?.isActive = !enabled
@@ -1554,12 +1599,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 textField.text = (raw == "about:blank") ? "" : raw
             }
 
+            navigationStackHeightConstraint?.constant = 0
+            navigationStackTopConstraint?.constant = 0
             navigationStack.isHidden = true
             updateAddressEditingAppearance()
 
             editingDimmingView.isHidden = false
             UIView.animate(withDuration: 0.2) {
                 self.editingDimmingView.alpha = 1
+                self.bottomPanel.layoutIfNeeded()
             }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak textField] in
@@ -1581,11 +1629,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 textField.text = ""
             }
 
+            navigationStackHeightConstraint?.constant = 40
+            navigationStackTopConstraint?.constant = 4
             navigationStack.isHidden = false
             updateAddressEditingAppearance()
 
             UIView.animate(withDuration: 0.2, animations: {
                 self.editingDimmingView.alpha = 0
+                self.bottomPanel.layoutIfNeeded()
             }) { _ in
                 self.editingDimmingView.isHidden = true
             }
@@ -1604,12 +1655,21 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if gestureRecognizer == fullscreenExitGesture {
+            return isFullscreen
+        }
         if touch.view?.isDescendant(of: bottomPanel) == true ||
            touch.view?.isDescendant(of: homeSearchContainer) == true {
             return false
         }
-
         return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer == fullscreenExitGesture {
+            return true
+        }
+        return false
     }
 
     @objc func addressFieldDidChange() {
@@ -1631,14 +1691,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             return
         }
 
-        guard addressField.isFirstResponder else {
-            if bottomPanelBottomConstraint?.constant != 0 {
-                bottomPanelBottomConstraint?.constant = 0
-                view.layoutIfNeeded()
-            }
-            return
-        }
-
         guard !isFullscreen,
               let userInfo = notification.userInfo,
               let keyboardFrame = userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
@@ -1651,14 +1703,34 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let curve = userInfo[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 7
         let options = UIView.AnimationOptions(rawValue: curve << 16)
 
-        bottomPanelBottomConstraint?.constant = -overlap
-
-        UIView.animate(withDuration: duration, delay: 0, options: options) {
-            self.view.layoutIfNeeded()
+        if addressField.isFirstResponder {
+            bottomPanelBottomConstraint?.constant = -overlap
+            UIView.animate(withDuration: duration, delay: 0, options: options) {
+                self.view.layoutIfNeeded()
+            }
+        } else if homeSearchField.isFirstResponder {
+            if bottomPanelBottomConstraint?.constant != 0 {
+                bottomPanelBottomConstraint?.constant = 0
+            }
+            let insets = UIEdgeInsets(top: 0, left: 0, bottom: overlap, right: 0)
+            homeScrollView.contentInset = insets
+            homeScrollView.scrollIndicatorInsets = insets
+            let searchFrame = homeSearchContainer.convert(homeSearchContainer.bounds, to: homeScrollView)
+            homeScrollView.scrollRectToVisible(searchFrame.insetBy(dx: 0, dy: -20), animated: true)
+        } else {
+            if bottomPanelBottomConstraint?.constant != 0 {
+                bottomPanelBottomConstraint?.constant = 0
+                UIView.animate(withDuration: duration, delay: 0, options: options) {
+                    self.view.layoutIfNeeded()
+                }
+            }
         }
     }
 
     @objc func keyboardWillHide(_ notification: Notification) {
+        homeScrollView.contentInset = .zero
+        homeScrollView.scrollIndicatorInsets = .zero
+
         guard let userInfo = notification.userInfo,
               let duration = userInfo[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval else {
             bottomPanelBottomConstraint?.constant = 0
@@ -1680,7 +1752,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard isFullscreen, gesture.state == .began else {
             return
         }
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
         setFullscreen(false)
     }
 
@@ -1695,7 +1767,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     @objc func handleFailureContinue() {
         guard let targetURL = activeTab.failedURL ?? activeTab.url,
-              let host = targetURL.host else {
+              let host = targetURL.host?.lowercased() else {
             return
         }
         let alert = UIAlertController(
@@ -1753,8 +1825,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             closeTab(at: closingIndex)
         } else if let prevURL = activeTab.previousURL, prevURL != activeTab.url {
             load(url: prevURL)
-        } else if tabs.count > 1 {
-            closeTab(at: activeTabIndex)
         } else {
             showHomeUI()
         }
