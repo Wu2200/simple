@@ -27,6 +27,8 @@ final class AdBlockManager {
     private let cosmeticScriptPayloadLimit = 180000
     private let maximumCompilationDuration: TimeInterval = 180
     private let maximumSingleChunkDuration: TimeInterval = 45
+    private let autoUpdateInterval: TimeInterval = 86400
+    private let autoUpdateRetryCooldown: TimeInterval = 1800
 
     private var attachedWebViews = NSHashTable<WKWebView>.weakObjects()
     private var compiledListsBySource: [String: [WKContentRuleList]] = [:]
@@ -35,6 +37,7 @@ final class AdBlockManager {
     private var unsupportedRulesBySource: [String: [AdBlockUnsupportedRule]] = [:]
     private var updatingSourceIds = Set<String>()
     private var updateStatusBySource: [String: String] = [:]
+    private var lastAutoUpdateAttemptBySource: [String: Date] = [:]
     private let parseQueue = DispatchQueue(label: "SimpleBrowser.AdBlockParser", qos: .userInitiated)
     private let stateLock = NSLock()
 
@@ -45,6 +48,9 @@ final class AdBlockManager {
         set {
             UserDefaults.standard.set(newValue, forKey: enabledKey)
             applyRulesToAttachedWebViews()
+            if newValue {
+                checkAndAutoUpdateSubscriptions()
+            }
         }
     }
 
@@ -56,6 +62,79 @@ final class AdBlockManager {
         metadataBySource = loadMetadata()
         unsupportedRulesBySource = loadUnsupportedRules()
         restorePersistedRules()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.checkAndAutoUpdateSubscriptions()
+        }
+    }
+
+    @objc private func handleAppDidBecomeActive() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.checkAndAutoUpdateSubscriptions()
+        }
+    }
+
+    func checkAndAutoUpdateSubscriptions() {
+        guard isEnabled else { return }
+
+        let now = Date()
+        let subscriptions = loadSubscriptions()
+
+        let dueSubscriptions = subscriptions.filter { sub in
+            guard sub.isEnabled else { return false }
+
+            stateLock.lock()
+            let isCurrentlyUpdating = updatingSourceIds.contains(sub.id)
+            let lastAttempt = lastAutoUpdateAttemptBySource[sub.id]
+            stateLock.unlock()
+
+            if isCurrentlyUpdating {
+                return false
+            }
+
+            if let lastAttempt = lastAttempt, now.timeIntervalSince(lastAttempt) < autoUpdateRetryCooldown {
+                return false
+            }
+
+            guard let lastUpdated = sub.lastUpdated else {
+                return true
+            }
+
+            return now.timeIntervalSince(lastUpdated) >= autoUpdateInterval
+        }
+
+        guard !dueSubscriptions.isEmpty else { return }
+        autoUpdateSequentially(subscriptions: dueSubscriptions, index: 0)
+    }
+
+    private func autoUpdateSequentially(subscriptions: [AdBlockSubscription], index: Int) {
+        guard index < subscriptions.count, isEnabled else { return }
+
+        let sub = subscriptions[index]
+        let now = Date()
+
+        stateLock.lock()
+        let isCurrentlyUpdating = updatingSourceIds.contains(sub.id)
+        if !isCurrentlyUpdating {
+            lastAutoUpdateAttemptBySource[sub.id] = now
+        }
+        stateLock.unlock()
+
+        if isCurrentlyUpdating {
+            autoUpdateSequentially(subscriptions: subscriptions, index: index + 1)
+            return
+        }
+
+        fetchSubscription(sub) { [weak self] _, _, _ in
+            self?.autoUpdateSequentially(subscriptions: subscriptions, index: index + 1)
+        }
     }
 
     func loadSubscriptions() -> [AdBlockSubscription] {
@@ -82,6 +161,7 @@ final class AdBlockManager {
             saveSubscriptions(subscriptions)
             if isEnabled {
                 compileSource(id: id, completion: nil)
+                checkAndAutoUpdateSubscriptions()
             } else {
                 deactivateSource(id: id)
             }
@@ -303,6 +383,7 @@ final class AdBlockManager {
             return
         }
         updatingSourceIds.insert(subscription.id)
+        lastAutoUpdateAttemptBySource[subscription.id] = Date()
         stateLock.unlock()
 
         guard let url = URL(string: subscription.urlString),
