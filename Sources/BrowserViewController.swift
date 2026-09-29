@@ -104,6 +104,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     let failureReloadButton = TouchButton()
     let failureContinueButton = TouchButton()
 
+    let statusBarBackgroundView = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
     let editingDimmingView = UIView()
 
     let bottomPanel = UIView()
@@ -526,6 +527,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         configureFailureView()
 
+        statusBarBackgroundView.translatesAutoresizingMaskIntoConstraints = false
+        statusBarBackgroundView.alpha = 0
+        statusBarBackgroundView.isUserInteractionEnabled = false
+
         editingDimmingView.translatesAutoresizingMaskIntoConstraints = false
         editingDimmingView.backgroundColor = UIColor.black.withAlphaComponent(0.2)
         editingDimmingView.alpha = 0
@@ -725,6 +730,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         view.addSubview(webContainer)
         view.addSubview(homeView)
         view.addSubview(failureOverlayView)
+        view.addSubview(statusBarBackgroundView)
         view.addSubview(editingDimmingView)
         view.addSubview(bottomPanel)
 
@@ -761,6 +767,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             failureOverlayView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             failureOverlayView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             failureOverlayView.bottomAnchor.constraint(equalTo: webContainer.bottomAnchor),
+
+            statusBarBackgroundView.topAnchor.constraint(equalTo: view.topAnchor),
+            statusBarBackgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            statusBarBackgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            statusBarBackgroundView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
 
             editingDimmingView.topAnchor.constraint(equalTo: view.topAnchor),
             editingDimmingView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -1388,12 +1399,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
+    func updateStatusBarBackgroundAppearance() {
+        let isHome = homeView.alpha > 0.5
+        let hideStatusBar = isFullscreen && (fullscreenMode == .full)
+        statusBarBackgroundView.alpha = (isHome || hideStatusBar) ? 0 : 1
+    }
+
     func updateUIState() {
         guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex) else {
             return
         }
 
         let isHome = homeView.alpha > 0.5
+        updateStatusBarBackgroundAppearance()
 
         let canGoBack = activeTab.webView.canGoBack || activeTab.isDisplayingFailurePage || activeTab.sourceTabID != nil || activeTab.previousURL != nil
         backButton.isEnabled = !isHome && canGoBack
@@ -1537,6 +1555,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         webTopFullscreenConstraint?.isActive = hideStatusBar
         webBottomPanelConstraint?.isActive = !enabled
         webBottomFullscreenConstraint?.isActive = enabled
+        updateStatusBarBackgroundAppearance()
 
         UIView.animate(withDuration: 0.2) {
             self.view.layoutIfNeeded()
