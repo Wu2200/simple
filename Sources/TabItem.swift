@@ -213,7 +213,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         image: info.imgSrc
                     });
                 } catch(err) {}
-            }, 620);
+            }, 520);
         }, { capture: true, passive: true });
 
         window.addEventListener('touchmove', function(e) {
