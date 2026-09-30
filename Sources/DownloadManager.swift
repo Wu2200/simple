@@ -10,6 +10,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }()
 
     private var downloadTasks: [URLSessionDownloadTask: (filename: String, targetURL: URL)] = [:]
+    private var cancelledDownloads: Set<WKDownload> = []
 
     private override init() {
         super.init()
@@ -79,6 +80,10 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         guard let downloadTask = task as? URLSessionDownloadTask, let error = error else { return }
         if downloadTasks[downloadTask] != nil {
             downloadTasks.removeValue(forKey: downloadTask)
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                return
+            }
             NotificationCenter.default.post(
                 name: NSNotification.Name("DownloadFailedNotification"),
                 object: error.localizedDescription
@@ -102,7 +107,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                 userInfo: [
                     "filename": filename,
                     "host": host,
-                    "onConfirm": { (shouldDownload: Bool) in
+                    "onConfirm": { [weak self] (shouldDownload: Bool) in
                         if shouldDownload {
                             let destDir = Self.getDownloadsDirectory()
                             var targetURL = destDir.appendingPathComponent(filename)
@@ -122,6 +127,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                             )
                             completionHandler(targetURL)
                         } else {
+                            self?.cancelledDownloads.insert(download)
                             completionHandler(nil)
                         }
                     } as (Bool) -> Void
@@ -131,6 +137,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 
     func downloadDidFinish(_ download: WKDownload) {
+        cancelledDownloads.remove(download)
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadFinishedNotification"),
             object: nil
@@ -138,6 +145,19 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        if cancelledDownloads.remove(download) != nil {
+            return
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return
+        }
+        if nsError.domain == WKError.errorDomain {
+            return
+        }
+        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 {
+            return
+        }
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadFailedNotification"),
             object: error.localizedDescription
@@ -239,12 +259,84 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         tableView.deselectRow(at: indexPath, animated: true)
         guard indexPath.row < files.count else { return }
         let file = files[indexPath.row]
+        let cell = tableView.cellForRow(at: indexPath) ?? tableView
 
+        let alert = UIAlertController(title: file.name, message: nil, preferredStyle: .actionSheet)
+
+        alert.addAction(UIAlertAction(title: "隔空投送/分享/其他应用", style: .default) { [weak self] _ in
+            self?.shareFile(file, sourceView: cell)
+        })
+
+        alert.addAction(UIAlertAction(title: "文件预览", style: .default) { [weak self] _ in
+            self?.previewFile(file)
+        })
+
+        alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+            self?.deleteFile(file)
+        })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = cell
+            popover.sourceRect = cell.bounds
+        }
+
+        present(alert, animated: true)
+    }
+
+    override func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        guard indexPath.row < files.count else { return nil }
+        let file = files[indexPath.row]
+        let cell = tableView.cellForRow(at: indexPath) ?? tableView
+
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            let shareAction = UIAction(
+                title: "隔空投送/分享/其他应用",
+                image: UIImage(systemName: "square.and.arrow.up")
+            ) { _ in
+                self?.shareFile(file, sourceView: cell)
+            }
+
+            let previewAction = UIAction(
+                title: "文件预览",
+                image: UIImage(systemName: "eye")
+            ) { _ in
+                self?.previewFile(file)
+            }
+
+            let deleteAction = UIAction(
+                title: "删除",
+                image: UIImage(systemName: "trash"),
+                attributes: .destructive
+            ) { _ in
+                self?.deleteFile(file)
+            }
+
+            return UIMenu(title: file.name, children: [shareAction, previewAction, deleteAction])
+        }
+    }
+
+    private func shareFile(_ file: DownloadedFile, sourceView: UIView) {
+        let activity = UIActivityViewController(activityItems: [file.url], applicationActivities: nil)
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = sourceView
+            popover.sourceRect = sourceView.bounds
+        }
+        present(activity, animated: true)
+    }
+
+    private func previewFile(_ file: DownloadedFile) {
         docController = UIDocumentInteractionController(url: file.url)
         docController?.delegate = self
         if !docController!.presentPreview(animated: true) {
             docController?.presentOptionsMenu(from: view.bounds, in: view, animated: true)
         }
+    }
+
+    private func deleteFile(_ file: DownloadedFile) {
+        try? FileManager.default.removeItem(at: file.url)
+        loadDownloadedFiles()
     }
 
     func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
@@ -256,14 +348,13 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         let file = files[indexPath.row]
 
         let deleteAction = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
-            try? FileManager.default.removeItem(at: file.url)
-            self?.loadDownloadedFiles()
+            self?.deleteFile(file)
             completion(true)
         }
 
-        let shareAction = UIContextualAction(style: .normal, title: "共享") { [weak self] _, _, completion in
-            let activity = UIActivityViewController(activityItems: [file.url], applicationActivities: nil)
-            self?.present(activity, animated: true)
+        let shareAction = UIContextualAction(style: .normal, title: "隔空投送/分享/其他应用") { [weak self] _, _, completion in
+            let cell = self?.tableView.cellForRow(at: indexPath) ?? self?.view ?? UIView()
+            self?.shareFile(file, sourceView: cell)
             completion(true)
         }
         shareAction.backgroundColor = .systemBlue
@@ -334,12 +425,14 @@ extension BrowserViewController {
             if let url = url {
                 UIPasteboard.general.string = url.absoluteString
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                self?.showToastNotice("已复制下载链接")
+                self?.showToastNotice("复制成功")
             }
             onConfirm?(false)
         })
 
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            onConfirm?(false)
+        })
 
         present(alert, animated: true)
     }
@@ -356,7 +449,7 @@ extension BrowserViewController {
             preferredStyle: .alert
         )
 
-        alert.addAction(UIAlertAction(title: "共享文件", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "隔空投送/分享/其他应用", style: .default) { [weak self] _ in
             guard let self = self else { return }
             let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
             if let popover = activity.popoverPresentationController {
