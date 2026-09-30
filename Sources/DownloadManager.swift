@@ -10,7 +10,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }()
 
     private var downloadTasks: [URLSessionDownloadTask: (filename: String, targetURL: URL)] = [:]
-    private var cancelledDownloads: Set<WKDownload> = []
+    private var cancelledDownloadIDs: Set<ObjectIdentifier> = []
 
     private override init() {
         super.init()
@@ -108,6 +108,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                     "filename": filename,
                     "host": host,
                     "onConfirm": { [weak self] (shouldDownload: Bool) in
+                        guard let self = self else { return }
                         if shouldDownload {
                             let destDir = Self.getDownloadsDirectory()
                             var targetURL = destDir.appendingPathComponent(filename)
@@ -127,7 +128,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                             )
                             completionHandler(targetURL)
                         } else {
-                            self?.cancelledDownloads.insert(download)
+                            self.cancelledDownloadIDs.insert(ObjectIdentifier(download))
                             completionHandler(nil)
                         }
                     } as (Bool) -> Void
@@ -137,7 +138,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        cancelledDownloads.remove(download)
+        cancelledDownloadIDs.remove(ObjectIdentifier(download))
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadFinishedNotification"),
             object: nil
@@ -145,17 +146,17 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        if cancelledDownloads.remove(download) != nil {
+        if cancelledDownloadIDs.remove(ObjectIdentifier(download)) != nil {
             return
         }
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             return
         }
-        if nsError.domain == WKError.errorDomain {
+        if nsError.domain == "WebKitErrorDomain" && (nsError.code == 1 || nsError.code == 102) {
             return
         }
-        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 {
+        if nsError.domain == WKError.errorDomain {
             return
         }
         NotificationCenter.default.post(
@@ -260,29 +261,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         guard indexPath.row < files.count else { return }
         let file = files[indexPath.row]
         let cell = tableView.cellForRow(at: indexPath) ?? tableView
-
-        let alert = UIAlertController(title: file.name, message: nil, preferredStyle: .actionSheet)
-
-        alert.addAction(UIAlertAction(title: "隔空投送/分享/其他应用", style: .default) { [weak self] _ in
-            self?.shareFile(file, sourceView: cell)
-        })
-
-        alert.addAction(UIAlertAction(title: "文件预览", style: .default) { [weak self] _ in
-            self?.previewFile(file)
-        })
-
-        alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
-            self?.deleteFile(file)
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-
-        if let popover = alert.popoverPresentationController {
-            popover.sourceView = cell
-            popover.sourceRect = cell.bounds
-        }
-
-        present(alert, animated: true)
+        shareFile(file, sourceView: cell)
     }
 
     override func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
@@ -292,7 +271,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
 
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             let shareAction = UIAction(
-                title: "隔空投送/分享/其他应用",
+                title: "分享",
                 image: UIImage(systemName: "square.and.arrow.up")
             ) { _ in
                 self?.shareFile(file, sourceView: cell)
@@ -318,19 +297,29 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
     }
 
     private func shareFile(_ file: DownloadedFile, sourceView: UIView) {
-        let activity = UIActivityViewController(activityItems: [file.url], applicationActivities: nil)
-        if let popover = activity.popoverPresentationController {
-            popover.sourceView = sourceView
-            popover.sourceRect = sourceView.bounds
+        docController = UIDocumentInteractionController(url: file.url)
+        docController?.delegate = self
+        docController?.name = file.name
+
+        let presented = docController?.presentOptionsMenu(from: sourceView.bounds, in: sourceView, animated: true) ?? false
+        if !presented {
+            let openInPresented = docController?.presentOpenInMenu(from: sourceView.bounds, in: sourceView, animated: true) ?? false
+            if !openInPresented {
+                let activity = UIActivityViewController(activityItems: [file.url], applicationActivities: nil)
+                if let popover = activity.popoverPresentationController {
+                    popover.sourceView = sourceView
+                    popover.sourceRect = sourceView.bounds
+                }
+                present(activity, animated: true)
+            }
         }
-        present(activity, animated: true)
     }
 
     private func previewFile(_ file: DownloadedFile) {
         docController = UIDocumentInteractionController(url: file.url)
         docController?.delegate = self
         if !docController!.presentPreview(animated: true) {
-            docController?.presentOptionsMenu(from: view.bounds, in: view, animated: true)
+            shareFile(file, sourceView: view)
         }
     }
 
@@ -352,7 +341,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
             completion(true)
         }
 
-        let shareAction = UIContextualAction(style: .normal, title: "隔空投送/分享/其他应用") { [weak self] _, _, completion in
+        let shareAction = UIContextualAction(style: .normal, title: "分享") { [weak self] _, _, completion in
             let cell = self?.tableView.cellForRow(at: indexPath) ?? self?.view ?? UIView()
             self?.shareFile(file, sourceView: cell)
             completion(true)
@@ -449,15 +438,19 @@ extension BrowserViewController {
             preferredStyle: .alert
         )
 
-        alert.addAction(UIAlertAction(title: "隔空投送/分享/其他应用", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "分享", style: .default) { [weak self] _ in
             guard let self = self else { return }
-            let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-            if let popover = activity.popoverPresentationController {
-                popover.sourceView = self.view
-                popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
-                popover.permittedArrowDirections = []
+            let doc = UIDocumentInteractionController(url: fileURL)
+            doc.name = filename
+            if !doc.presentOptionsMenu(from: self.view.bounds, in: self.view, animated: true) {
+                let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                if let popover = activity.popoverPresentationController {
+                    popover.sourceView = self.view
+                    popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+                    popover.permittedArrowDirections = []
+                }
+                self.present(activity, animated: true)
             }
-            self.present(activity, animated: true)
         })
 
         alert.addAction(UIAlertAction(title: "存入下载管理", style: .default) { [weak self] _ in
