@@ -227,6 +227,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }, true);
 
         var timer = null;
+        var resetTimer = null;
         var startX = 0;
         var startY = 0;
         var longPressed = false;
@@ -235,6 +236,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             if (timer) {
                 clearTimeout(timer);
                 timer = null;
+            }
+        }
+
+        function clearResetTimer() {
+            if (resetTimer) {
+                clearTimeout(resetTimer);
+                resetTimer = null;
             }
         }
 
@@ -280,6 +288,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         window.addEventListener('touchstart', function(e) {
+            clearResetTimer();
+            longPressed = false;
+
             if (!e.touches || e.touches.length !== 1) {
                 clearTimer();
                 return;
@@ -302,7 +313,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             var touch = e.touches[0];
             startX = touch.clientX;
             startY = touch.clientY;
-            longPressed = false;
             clearTimer();
 
             timer = setTimeout(function() {
@@ -335,15 +345,23 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             if (longPressed) {
                 e.preventDefault();
                 e.stopPropagation();
+                clearResetTimer();
+                resetTimer = setTimeout(function() {
+                    longPressed = false;
+                }, 300);
             }
         }, { capture: true, passive: false });
 
         window.addEventListener('touchcancel', function(e) {
             clearTimer();
+            clearResetTimer();
+            longPressed = false;
         }, { capture: true, passive: true });
 
         window.addEventListener('blur', function() {
             clearTimer();
+            clearResetTimer();
+            longPressed = false;
         }, true);
 
         window.addEventListener('scroll', function() {
@@ -353,6 +371,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         document.addEventListener('visibilitychange', function() {
             if (document.hidden) {
                 clearTimer();
+                clearResetTimer();
+                longPressed = false;
             }
         }, true);
 
@@ -360,6 +380,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             if (longPressed) {
                 e.preventDefault();
                 e.stopPropagation();
+                clearResetTimer();
                 longPressed = false;
             }
         }, true);
