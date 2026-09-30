@@ -1,0 +1,30 @@
+name: Cleanup
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete Releases and Tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --repo Wu2200/simple --limit 1000 --json tagName -q '.[].tagName' | while read -r tag; do
+            gh release delete "$tag" --repo Wu2200/simple --cleanup-tag -y
+          done
+          git fetch --tags
+          git tag -l | while read -r tag; do
+            git push origin ":refs/tags/$tag" || true
+          done

@@ -7,9 +7,6 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: macos-14
@@ -146,13 +143,3 @@ jobs:
         with:
           name: SimpleBrowser-IPA
           path: SimpleBrowser.ipa
-
-      - name: Release IPA
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="v1.0.${{ github.run_number }}"
-          git tag -f "$TAG"
-          git push -f origin "$TAG" || true
-          gh release create "$TAG" SimpleBrowser.ipa --title "SimpleBrowser 构建 #$GITHUB_RUN_NUMBER" --notes "自动打包版本（支持巨魔 / 自签直接安装）"
