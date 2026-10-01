@@ -28,6 +28,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     var previousURL: URL?
     var failureOriginURL: URL?
     var lastAutoFullscreenCheckedURL: URL?
+    var triggeredAutoFullscreenHosts: Set<String> = []
     private var pendingRestoreURL: URL?
 
     private var hasInjectedScriptsForCurrentPage = false
