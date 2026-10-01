@@ -55,7 +55,7 @@ final class BrowserSessionStore {
     }
 }
 
-final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate, UIGestureRecognizerDelegate, UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate,标志, UIGestureRecognizerDelegate, UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
     var tabs: [TabItem] = []
     var activeTabIndex = 0
     var isFullscreen = false
@@ -1303,7 +1303,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     func applyAutoFullscreenIfNeeded(for url: URL?) {
         guard let host = url?.host, !host.isEmpty else { return }
+        if activeTab.triggeredAutoFullscreenHosts.contains(host) {
+            return
+        }
         if DomainSettingsStore.shared.getBool(domain: host, setting: "autoFullscreen", defaultVal: false) {
+            activeTab.triggeredAutoFullscreenHosts.insert(host)
             if !isFullscreen {
                 setFullscreen(true)
             }
