@@ -6,6 +6,9 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60.0
+        config.timeoutIntervalForResource = 3600.0
+        config.waitsForConnectivity = true
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
@@ -51,6 +54,26 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadStartedNotification"),
             object: baseFilename
+        )
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard let info = downloadTasks[downloadTask] else { return }
+        let progress = totalBytesExpectedToWrite > 0 ? Float(totalBytesWritten) / Float(totalBytesExpectedToWrite) : 0
+        NotificationCenter.default.post(
+            name: NSNotification.Name("DownloadProgressNotification"),
+            object: info.filename,
+            userInfo: [
+                "progress": progress,
+                "written": totalBytesWritten,
+                "total": totalBytesExpectedToWrite
+            ]
         )
     }
 
@@ -100,6 +123,13 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         let filename = suggestedFilename.isEmpty ? "download_\(Int(Date().timeIntervalSince1970))" : suggestedFilename
         let host = response.url?.host ?? response.url?.absoluteString ?? "未知来源"
 
+        var isHandled = false
+        let safeCompletion: (URL?) -> Void = { dest in
+            guard !isHandled else { return }
+            isHandled = true
+            completionHandler(dest)
+        }
+
         DispatchQueue.main.async {
             NotificationCenter.default.post(
                 name: NSNotification.Name("PromptDownloadNotification"),
@@ -108,7 +138,10 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                     "filename": filename,
                     "host": host,
                     "onConfirm": { [weak self] (shouldDownload: Bool) in
-                        guard let self = self else { return }
+                        guard let self = self else {
+                            safeCompletion(nil)
+                            return
+                        }
                         if shouldDownload {
                             let destDir = Self.getDownloadsDirectory()
                             var targetURL = destDir.appendingPathComponent(filename)
@@ -126,10 +159,10 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                                 name: NSNotification.Name("DownloadStartedNotification"),
                                 object: filename
                             )
-                            completionHandler(targetURL)
+                            safeCompletion(targetURL)
                         } else {
                             self.cancelledDownloadIDs.insert(ObjectIdentifier(download))
-                            completionHandler(nil)
+                            safeCompletion(nil)
                         }
                     } as (Bool) -> Void
                 ]
@@ -191,7 +224,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
     }
 
     private func getDownloadsDirectory() -> URL {
-        return DownloadCoordinator.getDownloadsDirectory()
+        DownloadCoordinator.getDownloadsDirectory()
     }
 
     private func loadDownloadedFiles() {
@@ -245,11 +278,14 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         let cell = tableView.dequeueReusableCell(withIdentifier: "DownloadFileCell", for: indexPath)
         let item = files[indexPath.row]
 
+        let ext = item.url.pathExtension.lowercased()
+        let isArchive = (ext == "zip" || ext == "gz")
+
         var content = cell.defaultContentConfiguration()
         content.text = item.name
         content.secondaryText = "\(item.sizeString) • \(item.dateString)"
-        content.image = UIImage(systemName: "doc.fill")
-        content.imageProperties.tintColor = .systemBlue
+        content.image = UIImage(systemName: isArchive ? "doc.zipper" : "doc.fill")
+        content.imageProperties.tintColor = isArchive ? .systemOrange : .systemBlue
         content.imageProperties.maximumSize = CGSize(width: 22, height: 22)
         cell.contentConfiguration = content
         cell.accessoryType = .disclosureIndicator
@@ -268,14 +304,29 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         guard indexPath.row < files.count else { return nil }
         let file = files[indexPath.row]
         let cell = tableView.cellForRow(at: indexPath) ?? tableView
+        let ext = file.url.pathExtension.lowercased()
+        let isArchive = (ext == "zip" || ext == "gz")
 
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            var actions: [UIAction] = []
+
+            if isArchive {
+                let unzipAction = UIAction(
+                    title: "解压",
+                    image: UIImage(systemName: "doc.zipper")
+                ) { _ in
+                    self?.unzipArchiveFile(file)
+                }
+                actions.append(unzipAction)
+            }
+
             let shareAction = UIAction(
                 title: "分享",
                 image: UIImage(systemName: "square.and.arrow.up")
             ) { _ in
                 self?.shareFile(file, sourceView: cell)
             }
+            actions.append(shareAction)
 
             let previewAction = UIAction(
                 title: "文件预览",
@@ -283,6 +334,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
             ) { _ in
                 self?.previewFile(file)
             }
+            actions.append(previewAction)
 
             let deleteAction = UIAction(
                 title: "删除",
@@ -291,8 +343,24 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
             ) { _ in
                 self?.deleteFile(file)
             }
+            actions.append(deleteAction)
 
-            return UIMenu(title: file.name, children: [shareAction, previewAction, deleteAction])
+            return UIMenu(title: file.name, children: actions)
+        }
+    }
+
+    private func unzipArchiveFile(_ file: DownloadedFile) {
+        let destDir = getDownloadsDirectory().appendingPathComponent((file.name as NSString).deletingPathExtension, isDirectory: true)
+        do {
+            try ZipExtractor.unzip(archiveURL: file.url, destinationURL: destDir)
+            loadDownloadedFiles()
+            let alert = UIAlertController(title: "解压完成", message: "已解压至: \(destDir.lastPathComponent)", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "确定", style: .default))
+            present(alert, animated: true)
+        } catch {
+            let alert = UIAlertController(title: "解压失败", message: error.localizedDescription, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "确定", style: .default))
+            present(alert, animated: true)
         }
     }
 
@@ -335,11 +403,16 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard indexPath.row < files.count else { return nil }
         let file = files[indexPath.row]
+        let ext = file.url.pathExtension.lowercased()
+        let isArchive = (ext == "zip" || ext == "gz")
+
+        var contextualActions: [UIContextualAction] = []
 
         let deleteAction = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
             self?.deleteFile(file)
             completion(true)
         }
+        contextualActions.append(deleteAction)
 
         let shareAction = UIContextualAction(style: .normal, title: "分享") { [weak self] _, _, completion in
             let cell = self?.tableView.cellForRow(at: indexPath) ?? self?.view ?? UIView()
@@ -347,8 +420,18 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
             completion(true)
         }
         shareAction.backgroundColor = .systemBlue
+        contextualActions.append(shareAction)
 
-        return UISwipeActionsConfiguration(actions: [deleteAction, shareAction])
+        if isArchive {
+            let unzipAction = UIContextualAction(style: .normal, title: "解压") { [weak self] _, _, completion in
+                self?.unzipArchiveFile(file)
+                completion(true)
+            }
+            unzipAction.backgroundColor = .systemOrange
+            contextualActions.append(unzipAction)
+        }
+
+        return UISwipeActionsConfiguration(actions: contextualActions)
     }
 }
 
@@ -388,9 +471,112 @@ extension BrowserViewController {
             name: NSNotification.Name("DownloadFailedNotification"),
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDownloadProgressNotification(_:)),
+            name: NSNotification.Name("DownloadProgressNotification"),
+            object: nil
+        )
+    }
+
+    @objc func handleDownloadProgressNotification(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let progress = userInfo["progress"] as? Float,
+              let filename = notification.object as? String else {
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let percent = Int(progress * 100)
+            let written = userInfo["written"] as? Int64 ?? 0
+            let total = userInfo["total"] as? Int64 ?? 0
+            let writtenStr = ByteCountFormatter.string(fromByteCount: written, countStyle: .file)
+            let totalStr = total > 0 ? ByteCountFormatter.string(fromByteCount: total, countStyle: .file) : ""
+            let detail = totalStr.isEmpty ? "\(writtenStr) • \(percent)%" : "\(writtenStr)/\(totalStr) • \(percent)%"
+            self.showDownloadProgressToast(filename: filename, progress: progress, detail: detail)
+        }
+    }
+
+    func showDownloadProgressToast(filename: String, progress: Float, detail: String) {
+        currentToastView?.layer.removeAllAnimations()
+        currentToastView?.removeFromSuperview()
+
+        let toast = UIView()
+        toast.translatesAutoresizingMaskIntoConstraints = false
+        toast.backgroundColor = .secondarySystemGroupedBackground
+        toast.layer.cornerRadius = 16
+        toast.layer.cornerCurve = .continuous
+        toast.layer.borderWidth = 0.5
+        toast.layer.borderColor = UIColor.separator.cgColor
+        toast.layer.shadowColor = UIColor.black.cgColor
+        toast.layer.shadowOpacity = 0.08
+        toast.layer.shadowOffset = CGSize(width: 0, height: 3)
+        toast.layer.shadowRadius = 8
+
+        let titleLabel = UILabel()
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = filename
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .label
+        titleLabel.lineBreakMode = .byTruncatingMiddle
+
+        let detailLabel = UILabel()
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.text = detail
+        detailLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        detailLabel.textColor = .secondaryLabel
+        detailLabel.textAlignment = .right
+
+        let pView = UIProgressView(progressViewStyle: .default)
+        pView.translatesAutoresizingMaskIntoConstraints = false
+        pView.progress = progress
+        pView.progressTintColor = .systemBlue
+        pView.trackTintColor = UIColor.systemGray5
+        pView.layer.cornerRadius = 2
+        pView.clipsToBounds = true
+
+        let headerStack = UIStackView(arrangedSubviews: [titleLabel, detailLabel])
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+        headerStack.axis = .horizontal
+        headerStack.distribution = .fillProportionally
+        headerStack.spacing = 8
+
+        let mainStack = UIStackView(arrangedSubviews: [headerStack, pView])
+        mainStack.translatesAutoresizingMaskIntoConstraints = false
+        mainStack.axis = .vertical
+        mainStack.spacing = 6
+
+        toast.addSubview(mainStack)
+        view.addSubview(toast)
+        currentToastView = toast
+
+        NSLayoutConstraint.activate([
+            mainStack.topAnchor.constraint(equalTo: toast.topAnchor, constant: 10),
+            mainStack.bottomAnchor.constraint(equalTo: toast.bottomAnchor, constant: -10),
+            mainStack.leadingAnchor.constraint(equalTo: toast.leadingAnchor, constant: 14),
+            mainStack.trailingAnchor.constraint(equalTo: toast.trailingAnchor, constant: -14),
+            pView.heightAnchor.constraint(equalToConstant: 4),
+
+            toast.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            toast.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 20),
+            toast.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -20),
+            toast.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
+            toast.bottomAnchor.constraint(equalTo: bottomPanel.topAnchor, constant: -14)
+        ])
+
+        toast.alpha = 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak toast] in
+            guard let toast = toast else { return }
+            UIView.animate(withDuration: 0.2, animations: { toast.alpha = 0 }) { _ in
+                toast.removeFromSuperview()
+            }
+        }
     }
 
     @objc func handlePromptDownloadNotification(_ notification: Notification) {
+        guard view.window != nil else { return }
         let url = notification.object as? URL
         let filename = (notification.userInfo?["filename"] as? String) ?? url?.lastPathComponent ?? "文件"
         let displayName = filename.isEmpty ? "文件" : filename
@@ -423,11 +609,12 @@ extension BrowserViewController {
             onConfirm?(false)
         })
 
-        present(alert, animated: true)
+        let presenter = presentedViewController ?? self
+        presenter.present(alert, animated: true)
     }
 
     @objc func handlePromptBlobExportNotification(_ notification: Notification) {
-        guard let fileURL = notification.object as? URL else { return }
+        guard view.window != nil, let fileURL = notification.object as? URL else { return }
         let filename = (notification.userInfo?["filename"] as? String) ?? fileURL.lastPathComponent
         let fileSize = (notification.userInfo?["fileSize"] as? Int) ?? 0
         let sizeString = ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file)
@@ -442,14 +629,15 @@ extension BrowserViewController {
             guard let self = self else { return }
             let doc = UIDocumentInteractionController(url: fileURL)
             doc.name = filename
-            if !doc.presentOptionsMenu(from: self.view.bounds, in: self.view, animated: true) {
+            let presenter = self.presentedViewController ?? self
+            if !doc.presentOptionsMenu(from: presenter.view.bounds, in: presenter.view, animated: true) {
                 let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
                 if let popover = activity.popoverPresentationController {
-                    popover.sourceView = self.view
-                    popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+                    popover.sourceView = presenter.view
+                    popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
                     popover.permittedArrowDirections = []
                 }
-                self.present(activity, animated: true)
+                presenter.present(activity, animated: true)
             }
         })
 
@@ -461,7 +649,8 @@ extension BrowserViewController {
             try? FileManager.default.removeItem(at: fileURL)
         })
 
-        present(alert, animated: true)
+        let presenter = presentedViewController ?? self
+        presenter.present(alert, animated: true)
     }
 
     @objc func handleDownloadNotification(_ notification: Notification) {
