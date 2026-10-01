@@ -352,7 +352,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 })
                 alert.addAction(UIAlertAction(title: "取消", style: .cancel))
 
-                self?.present(alert, animated: true)
+                self?.safePresentAlert(alert)
             }
         }
         task.resume()
@@ -1313,12 +1313,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func applyAutoFullscreenIfNeeded(for url: URL?) {
+        guard !activeTab.hasTriggeredAutoFullscreen else { return }
         guard let host = url?.host, !host.isEmpty else { return }
-        if activeTab.triggeredAutoFullscreenHosts.contains(host) {
-            return
-        }
         if DomainSettingsStore.shared.getBool(domain: host, setting: "autoFullscreen", defaultVal: false) {
-            activeTab.triggeredAutoFullscreenHosts.insert(host)
+            activeTab.hasTriggeredAutoFullscreen = true
             if !isFullscreen {
                 setFullscreen(true)
             }
@@ -1655,8 +1653,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             popover.permittedArrowDirections = []
         }
 
-        let presenter = presentedViewController ?? self
-        presenter.present(alert, animated: true)
+        safePresentAlert(alert)
     }
 
     func tabRequestShowToast(_ message: String) {
@@ -1917,7 +1914,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             self.updateUIState()
             self.updateAddressRightButtons()
         })
-        present(alert, animated: true)
+        safePresentAlert(alert)
     }
 
     @objc func goBack() {
