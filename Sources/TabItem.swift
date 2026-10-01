@@ -28,7 +28,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     var previousURL: URL?
     var failureOriginURL: URL?
     var lastAutoFullscreenCheckedURL: URL?
-    var triggeredAutoFullscreenHosts: Set<String> = []
+    var hasTriggeredAutoFullscreen = false
     private var pendingRestoreURL: URL?
 
     private var hasInjectedScriptsForCurrentPage = false
@@ -864,7 +864,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             DispatchQueue.main.async {
                 NotificationCenter.default.post(
                     name: NSNotification.Name("DownloadFailedNotification"),
-                    object: error.localizedDescription
+                    object: filename,
+                    userInfo: ["error": error.localizedDescription]
                 )
             }
         }
