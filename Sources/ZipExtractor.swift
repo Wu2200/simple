@@ -228,7 +228,7 @@ enum ZipExtractor {
                 output.withUnsafeMutableBytes { outPtr in
                     guard let outBase = outPtr.bindMemory(to: Bytef.self).baseAddress else { return }
                     stream.next_out = outBase.advanced(by: Int(stream.total_out))
-                    stream.avail_out = uInt(output.count - Int(stream.total_out))
+                    stream.avail_out = uInt(outPtr.count - Int(stream.total_out))
                     status = inflate(&stream, Z_NO_FLUSH)
                 }
             }
@@ -272,7 +272,7 @@ enum ZipExtractor {
                 output.withUnsafeMutableBytes { outPtr in
                     guard let outBase = outPtr.bindMemory(to: Bytef.self).baseAddress else { return }
                     stream.next_out = outBase.advanced(by: Int(stream.total_out))
-                    stream.avail_out = uInt(output.count - Int(stream.total_out))
+                    stream.avail_out = uInt(outPtr.count - Int(stream.total_out))
                     status = inflate(&stream, Z_NO_FLUSH)
                 }
             }
