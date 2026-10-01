@@ -60,6 +60,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     private var taskContexts: [String: DownloadTaskContext] = [:]
     private var sessionTasks: [URLSessionDownloadTask: String] = [:]
     private var wkDownloads: [ObjectIdentifier: String] = [:]
+    private var wkDownloadInstances: [String: WKDownload] = [:]
     private var progressObservations: [ObjectIdentifier: NSKeyValueObservation] = [:]
     private var cancelledTaskIDs: Set<String> = []
 
@@ -138,18 +139,32 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
 
     func removeActiveTask(id: String) {
         cancelledTaskIDs.insert(id)
+
         if let (task, _) = sessionTasks.first(where: { $0.value == id }) {
             task.cancel()
             sessionTasks.removeValue(forKey: task)
         }
+
+        if let download = wkDownloadInstances.removeValue(forKey: id) {
+            download.cancel()
+            let downloadID = ObjectIdentifier(download)
+            wkDownloads.removeValue(forKey: downloadID)
+            progressObservations[downloadID]?.invalidate()
+            progressObservations.removeValue(forKey: downloadID)
+        }
+
         taskContexts.removeValue(forKey: id)
         activeTasks.removeValue(forKey: id)
-        NotificationCenter.default.post(name: NSNotification.Name("ActiveDownloadTasksChangedNotification"), object: nil)
+
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: NSNotification.Name("ActiveDownloadTasksChangedNotification"), object: nil)
+        }
     }
 
     func manualRetry(taskId: String) {
         guard let context = taskContexts[taskId] else { return }
         context.retryCount = 0
+        cancelledTaskIDs.remove(taskId)
         activeTasks[taskId] = ActiveDownloadItem(
             id: taskId,
             filename: context.filename,
@@ -240,6 +255,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                 try fm.removeItem(at: context.targetURL)
             }
             try fm.moveItem(at: location, to: context.targetURL)
+            try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: context.targetURL.path)
             NotificationCenter.default.post(
                 name: NSNotification.Name("DownloadFinishedNotification"),
                 object: context.targetURL.lastPathComponent,
@@ -404,6 +420,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                             context.totalBytes = response.expectedContentLength > 0 ? response.expectedContentLength : 0
                             self.taskContexts[taskID] = context
                             self.wkDownloads[downloadID] = taskID
+                            self.wkDownloadInstances[taskID] = download
 
                             self.activeTasks[taskID] = ActiveDownloadItem(
                                 id: taskID,
@@ -474,9 +491,14 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         guard let taskID = wkDownloads.removeValue(forKey: downloadID) else { return }
         progressObservations[downloadID]?.invalidate()
         progressObservations.removeValue(forKey: downloadID)
+        wkDownloadInstances.removeValue(forKey: taskID)
 
         let targetInfo = taskContexts.removeValue(forKey: taskID)
         activeTasks.removeValue(forKey: taskID)
+
+        if let destURL = targetInfo?.targetURL {
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: destURL.path)
+        }
 
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadFinishedNotification"),
@@ -492,6 +514,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
 
         progressObservations[downloadID]?.invalidate()
         progressObservations.removeValue(forKey: downloadID)
+        wkDownloadInstances.removeValue(forKey: taskID)
 
         if cancelledTaskIDs.contains(taskID) {
             taskContexts.removeValue(forKey: taskID)
@@ -586,6 +609,7 @@ final class DownloadProgressCell: UITableViewCell {
     private let retryButton = UIButton(type: .system)
     private let removeButton = UIButton(type: .system)
 
+    var taskID: String = ""
     var onRemove: (() -> Void)?
     var onRetry: (() -> Void)?
 
@@ -675,13 +699,15 @@ final class DownloadProgressCell: UITableViewCell {
     }
 
     func configure(with item: ActiveDownloadItem) {
+        self.taskID = item.id
         titleLabel.text = item.filename
         if item.isFailed {
             progressView.progressTintColor = .systemRed
             progressView.progress = 1.0
             detailLabel.text = "下载失败"
             detailLabel.textColor = .systemRed
-            errorLabel.text = item.errorMessage ?? "未知错误"
+            let reason = item.errorMessage ?? "网络连接断开"
+            errorLabel.text = "失败原因: \(reason)"
             errorLabel.isHidden = false
             retryButton.isHidden = false
         } else if item.isRetrying {
@@ -743,7 +769,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
             navigationItem.rightBarButtonItem = UIBarButtonItem(title: "清空", style: .plain, target: self, action: #selector(handleClearAll))
         }
 
-        NotificationCenter.default.addObserver(self, selector: #selector(handleProgressChanged), name: NSNotification.Name("DownloadProgressNotification"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleProgressChanged(_:)), name: NSNotification.Name("DownloadProgressNotification"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTasksChanged), name: NSNotification.Name("DownloadStartedNotification"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTasksChanged), name: NSNotification.Name("DownloadFinishedNotification"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTasksChanged), name: NSNotification.Name("DownloadFailedNotification"), object: nil)
@@ -760,9 +786,15 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         dismiss(animated: true)
     }
 
-    @objc private func handleProgressChanged() {
-        if !DownloadCoordinator.shared.activeTasks.isEmpty {
-            tableView.reloadSections(IndexSet(integer: 0), with: .none)
+    @objc private func handleProgressChanged(_ notification: Notification) {
+        guard let taskID = notification.userInfo?["taskId"] as? String,
+              let task = DownloadCoordinator.shared.activeTasks[taskID] else {
+            return
+        }
+        for cell in tableView.visibleCells {
+            if let progressCell = cell as? DownloadProgressCell, progressCell.taskID == taskID {
+                progressCell.configure(with: task)
+            }
         }
     }
 
@@ -979,6 +1011,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         let destDir = currentDirectory.appendingPathComponent((file.name as NSString).deletingPathExtension, isDirectory: true)
         do {
             try ZipExtractor.unzip(archiveURL: file.url, destinationURL: destDir)
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: destDir.path)
             loadDownloadedFiles()
             let alert = UIAlertController(title: "解压完成", message: "已解压至: \(destDir.lastPathComponent)", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "确定", style: .default))
@@ -1108,122 +1141,6 @@ extension BrowserViewController {
             name: NSNotification.Name("DownloadFailedNotification"),
             object: nil
         )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDownloadProgressNotification(_:)),
-            name: NSNotification.Name("DownloadProgressNotification"),
-            object: nil
-        )
-    }
-
-    @objc func handleDownloadProgressNotification(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let progress = userInfo["progress"] as? Float,
-              let filename = notification.object as? String else {
-            return
-        }
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            let percent = Int(progress * 100)
-            let written = userInfo["written"] as? Int64 ?? 0
-            let total = userInfo["total"] as? Int64 ?? 0
-            let statusText = userInfo["statusText"] as? String
-            let writtenStr = ByteCountFormatter.string(fromByteCount: written, countStyle: .file)
-            let totalStr = total > 0 ? ByteCountFormatter.string(fromByteCount: total, countStyle: .file) : ""
-            let detail = statusText ?? (totalStr.isEmpty ? "\(writtenStr) • \(percent)%" : "\(writtenStr)/\(totalStr) • \(percent)%")
-            self.showDownloadProgressToast(filename: filename, progress: progress, detail: detail, errorMessage: nil)
-        }
-    }
-
-    func showDownloadProgressToast(filename: String, progress: Float, detail: String, errorMessage: String?) {
-        currentToastView?.layer.removeAllAnimations()
-        currentToastView?.removeFromSuperview()
-
-        let toast = UIView()
-        toast.translatesAutoresizingMaskIntoConstraints = false
-        toast.backgroundColor = .secondarySystemGroupedBackground
-        toast.layer.cornerRadius = 16
-        toast.layer.cornerCurve = .continuous
-        toast.layer.borderWidth = 0.5
-        toast.layer.borderColor = UIColor.separator.cgColor
-        toast.layer.shadowColor = UIColor.black.cgColor
-        toast.layer.shadowOpacity = 0.08
-        toast.layer.shadowOffset = CGSize(width: 0, height: 3)
-        toast.layer.shadowRadius = 8
-
-        let titleLabel = UILabel()
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = filename
-        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        titleLabel.textColor = .label
-        titleLabel.lineBreakMode = .byTruncatingMiddle
-
-        let detailLabel = UILabel()
-        detailLabel.translatesAutoresizingMaskIntoConstraints = false
-        detailLabel.text = detail
-        detailLabel.font = .systemFont(ofSize: 11, weight: .regular)
-        detailLabel.textColor = errorMessage != nil ? .systemRed : .secondaryLabel
-        detailLabel.textAlignment = .right
-
-        let pView = UIProgressView(progressViewStyle: .default)
-        pView.translatesAutoresizingMaskIntoConstraints = false
-        pView.progress = progress
-        pView.progressTintColor = errorMessage != nil ? .systemRed : .systemBlue
-        pView.trackTintColor = UIColor.systemGray5
-        pView.layer.cornerRadius = 2
-        pView.clipsToBounds = true
-
-        let headerStack = UIStackView(arrangedSubviews: [titleLabel, detailLabel])
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
-        headerStack.axis = .horizontal
-        headerStack.distribution = .fillProportionally
-        headerStack.spacing = 8
-
-        var arrangedSubviews: [UIView] = [headerStack, pView]
-
-        if let err = errorMessage {
-            let errLabel = UILabel()
-            errLabel.translatesAutoresizingMaskIntoConstraints = false
-            errLabel.text = "失败原因: \(err)"
-            errLabel.font = .systemFont(ofSize: 11, weight: .medium)
-            errLabel.textColor = .systemRed
-            errLabel.numberOfLines = 2
-            arrangedSubviews.append(errLabel)
-        }
-
-        let mainStack = UIStackView(arrangedSubviews: arrangedSubviews)
-        mainStack.translatesAutoresizingMaskIntoConstraints = false
-        mainStack.axis = .vertical
-        mainStack.spacing = 6
-
-        toast.addSubview(mainStack)
-        view.addSubview(toast)
-        currentToastView = toast
-
-        NSLayoutConstraint.activate([
-            mainStack.topAnchor.constraint(equalTo: toast.topAnchor, constant: 10),
-            mainStack.bottomAnchor.constraint(equalTo: toast.bottomAnchor, constant: -10),
-            mainStack.leadingAnchor.constraint(equalTo: toast.leadingAnchor, constant: 14),
-            mainStack.trailingAnchor.constraint(equalTo: toast.trailingAnchor, constant: -14),
-            pView.heightAnchor.constraint(equalToConstant: 4),
-
-            toast.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            toast.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 20),
-            toast.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -20),
-            toast.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
-            toast.bottomAnchor.constraint(equalTo: bottomPanel.topAnchor, constant: -14)
-        ])
-
-        toast.alpha = 1
-        let dismissDelay = errorMessage != nil ? 4.5 : 2.5
-        DispatchQueue.main.asyncAfter(deadline: .now() + dismissDelay) { [weak toast] in
-            guard let toast = toast else { return }
-            UIView.animate(withDuration: 0.2, animations: { toast.alpha = 0 }) { _ in
-                toast.removeFromSuperview()
-            }
-        }
     }
 
     func safePresentAlert(_ alert: UIViewController, animated: Bool = true, completion: (() -> Void)? = nil) {
@@ -1324,14 +1241,12 @@ extension BrowserViewController {
             guard let self = self else { return }
             if notification.name == NSNotification.Name("DownloadStartedNotification") {
                 let filename = (notification.object as? String) ?? "文件"
-                self.showDownloadProgressToast(filename: filename, progress: 0.05, detail: "0%", errorMessage: nil)
+                self.showToastNotice("已开始下载: \(filename)")
             } else if notification.name == NSNotification.Name("DownloadFinishedNotification") {
-                let filename = (notification.object as? String) ?? "文件"
-                self.showDownloadProgressToast(filename: filename, progress: 1.0, detail: "下载完成", errorMessage: nil)
+                self.showToastNotice("下载完成，已存入下载管理")
             } else if notification.name == NSNotification.Name("DownloadFailedNotification") {
-                let filename = (notification.object as? String) ?? "文件"
-                let err = (notification.userInfo?["error"] as? String) ?? "未知错误"
-                self.showDownloadProgressToast(filename: filename, progress: 1.0, detail: "下载失败", errorMessage: err)
+                let err = (notification.userInfo?["error"] as? String) ?? "网络异常"
+                self.showToastNotice("下载失败: \(err)")
             }
         }
     }
