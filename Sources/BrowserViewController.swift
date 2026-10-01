@@ -946,7 +946,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         overlay.addGestureRecognizer(tapDismiss)
 
         let menuView = AddressCalloutMenuView(arrowDirection: arrowDir, arrowOffset: arrowOffset)
-        menuView.frame = CGRect(x: menuX, y: menuY, width: menuWidth, height: menuHeight)
+        menuView.frame = CGRect(x: menuX, y: menuY, width: menuWidth, height: mechanicalWidth(menuWidth))
 
         menuView.onCopy = { [weak self] in
             self?.dismissCalloutMenuAnimated(menuView, overlay: overlay) {
@@ -983,6 +983,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             menuView.alpha = 1
             menuView.transform = .identity
         }
+    }
+
+    private func mechanicalWidth(_ base: CGFloat) -> CGFloat {
+        51
     }
 
     @objc func dismissCalloutMenu() {
@@ -1073,6 +1077,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.textColor = UIColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0)
         label.textAlignment = .center
+        label.lineBreakMode = .byTruncatingMiddle
+        label.numberOfLines = 1
         toast.addSubview(label)
 
         view.addSubview(toast)
@@ -1085,6 +1091,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             label.trailingAnchor.constraint(equalTo: toast.trailingAnchor, constant: -16),
 
             toast.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            toast.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
+            toast.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
             toast.bottomAnchor.constraint(equalTo: bottomPanel.topAnchor, constant: -14)
         ])
 
