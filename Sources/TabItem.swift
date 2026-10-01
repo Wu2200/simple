@@ -1548,7 +1548,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         let ext = targetURL.pathExtension.lowercased()
         let knownDownloadExtensions: Set<String> = [
-            "ipa", "apk", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz",
+            "ipa", "apk", "xapk", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz",
             "dmg", "pkg", "deb", "torrent", "iso", "bin", "exe", "msi"
         ]
         if navigationAction.shouldPerformDownload || knownDownloadExtensions.contains(ext) {
