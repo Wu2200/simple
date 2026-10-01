@@ -318,6 +318,162 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         )
     }
 
+    func safePresentAlert(_ alert: UIViewController, animated: Bool = true, completion: (() -> Void)? = nil) {
+        guard view.window != nil else { return }
+        var topController: UIViewController = self
+        while let presented = topController.presentedViewController, !presented.isBeingDismissed {
+            topController = presented
+        }
+        if topController.isBeingPresented {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.safePresentAlert(alert, animated: animated, completion: completion)
+            }
+            return
+        }
+        if topController is UIAlertController {
+            return
+        }
+        topController.present(alert, animated: animated, completion: completion)
+    }
+
+    func configureDownloadObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePromptDownloadNotification(_:)),
+            name: NSNotification.Name("PromptDownloadNotification"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePromptBlobExportNotification(_:)),
+            name: NSNotification.Name("PromptBlobExportNotification"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDownloadNotification(_:)),
+            name: NSNotification.Name("DownloadStartedNotification"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDownloadNotification(_:)),
+            name: NSNotification.Name("DownloadFinishedNotification"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDownloadNotification(_:)),
+            name: NSNotification.Name("DownloadFailedNotification"),
+            object: nil
+        )
+    }
+
+    func showDownloadManager() {
+        if addressField.isFirstResponder {
+            addressField.resignFirstResponder()
+        }
+        let vc = DownloadManagerViewController()
+        let nav = UINavigationController(rootViewController: vc)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true)
+    }
+
+    @objc func handlePromptDownloadNotification(_ notification: Notification) {
+        let url = notification.object as? URL
+        let filename = (notification.userInfo?["filename"] as? String) ?? url?.lastPathComponent ?? "文件"
+        let displayName = filename.isEmpty ? "文件" : filename
+        let onConfirm = notification.userInfo?["onConfirm"] as? ((Bool) -> Void)
+
+        let alert = UIAlertController(
+            title: "下载文件",
+            message: "\(displayName)\n\n来源: \(url?.host ?? url?.absoluteString ?? "未知来源")",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(UIAlertAction(title: "下载文件", style: .default) { _ in
+            if let onConfirm = onConfirm {
+                onConfirm(true)
+            } else if let url = url {
+                DownloadCoordinator.shared.startDownload(url: url, filename: displayName)
+            }
+        })
+
+        alert.addAction(UIAlertAction(title: "复制下载链接", style: .default) { [weak self] _ in
+            if let url = url {
+                UIPasteboard.general.string = url.absoluteString
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                self?.showToastNotice("复制成功")
+            }
+            onConfirm?(false)
+        })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            onConfirm?(false)
+        })
+
+        safePresentAlert(alert)
+    }
+
+    @objc func handlePromptBlobExportNotification(_ notification: Notification) {
+        guard let fileURL = notification.object as? URL else { return }
+        let filename = (notification.userInfo?["filename"] as? String) ?? fileURL.lastPathComponent
+        let fileSize = (notification.userInfo?["fileSize"] as? Int) ?? 0
+        let sizeString = ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file)
+
+        let alert = UIAlertController(
+            title: "网页文件已准备就绪",
+            message: "\(filename) (\(sizeString))\n\n该文件已在网页中生成完毕，您可以直接导出或保存至下载管理。",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(UIAlertAction(title: "分享", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            let doc = UIDocumentInteractionController(url: fileURL)
+            doc.name = filename
+            let presenter = self.presentedViewController ?? self
+            if !doc.presentOptionsMenu(from: presenter.view.bounds, in: presenter.view, animated: true) {
+                let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                if let popover = activity.popoverPresentationController {
+                    popover.sourceView = presenter.view
+                    popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
+                    popover.permittedArrowDirections = []
+                }
+                presenter.present(activity, animated: true)
+            }
+        })
+
+        alert.addAction(UIAlertAction(title: "存入下载管理", style: .default) { [weak self] _ in
+            self?.showToastNotice("已存入下载管理: \(filename)")
+        })
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            try? FileManager.default.removeItem(at: fileURL)
+        })
+
+        safePresentAlert(alert)
+    }
+
+    @objc func handleDownloadNotification(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if notification.name == NSNotification.Name("DownloadStartedNotification") {
+                let filename = (notification.object as? String) ?? "文件"
+                self.showToastNotice("已开始下载: \(filename)")
+            } else if notification.name == NSNotification.Name("DownloadFinishedNotification") {
+                let filename = (notification.object as? String) ?? "文件"
+                self.showToastNotice("下载完成: \(filename)")
+            } else if notification.name == NSNotification.Name("DownloadFailedNotification") {
+                let filename = (notification.object as? String) ?? "文件"
+                self.showToastNotice("下载失败: \(filename)")
+            }
+        }
+    }
+
     @objc func handleInstallUserScriptNotification(_ notification: Notification) {
         guard let scriptURL = notification.object as? URL else { return }
 
@@ -1079,6 +1235,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         label.textAlignment = .center
         label.lineBreakMode = .byTruncatingMiddle
         label.numberOfLines = 1
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         toast.addSubview(label)
 
         view.addSubview(toast)
