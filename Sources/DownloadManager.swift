@@ -13,33 +13,38 @@ struct ActiveDownloadItem {
     var isRetrying: Bool
 }
 
-final class DownloadTaskContext {
+final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
     let id: String
     let filename: String
-    var originalURL: URL
-    var targetURL: URL
-    var retryCount: Int = 0
-    let maxInitialRetries: Int = 5
-    var hasEverReceivedData: Bool = false
-    var resumeData: Data?
-    var lastProgress: Float = 0.01
-    var writtenBytes: Int64 = 0
-    var totalBytes: Int64 = 0
-    var isWKDownload: Bool = false
+    let originalURL: URL
+    let targetURL: URL
+    let tempURL: URL
+    private(set) var writtenBytes: Int64 = 0
+    private(set) var totalBytes: Int64 = 0
+    private(set) var retryCount: Int = 0
+    private let maxInitialRetries: Int = 5
+    private var hasReceivedAnyData: Bool = false
+    private var fileHandle: FileHandle?
+    private var dataTask: URLSessionDataTask?
+    private var session: URLSession?
+    private var isCancelled: Bool = false
 
-    init(id: String, filename: String, originalURL: URL, targetURL: URL, isWKDownload: Bool = false) {
+    var onProgress: ((StreamDownloadTask) -> Void)?
+    var onFinished: ((StreamDownloadTask) -> Void)?
+    var onFailed: ((StreamDownloadTask, Error) -> Void)?
+
+    init(id: String, filename: String, url: URL, targetURL: URL) {
         self.id = id
         self.filename = filename
-        self.originalURL = originalURL
+        self.originalURL = url
         self.targetURL = targetURL
-        self.isWKDownload = isWKDownload
+        let tempDir = DownloadCoordinator.getDownloadsDirectory()
+        self.tempURL = tempDir.appendingPathComponent(".tmp_\(id).part")
+        super.init()
     }
-}
 
-final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloadDelegate {
-    static let shared = DownloadCoordinator()
-
-    private lazy var session: URLSession = {
+    func start() {
+        guard !isCancelled else { return }
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 180.0
         config.timeoutIntervalForResource = 86400.0
@@ -48,17 +53,228 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         config.allowsExpensiveNetworkAccess = true
         config.allowsConstrainedNetworkAccess = true
         config.httpMaximumConnectionsPerHost = 6
-        config.httpAdditionalHeaders = [
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
-            "Accept": "*/*",
-            "Accept-Language": "zh-CN,zh-Hans;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Connection": "keep-alive"
-        ]
-        return URLSession(configuration: config, delegate: self, delegateQueue: .main)
-    }()
 
-    private var taskContexts: [String: DownloadTaskContext] = [:]
-    private var sessionTasks: [URLSessionDownloadTask: String] = [:]
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        self.session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
+
+        resumeDownload()
+    }
+
+    private func resumeDownload() {
+        guard !isCancelled, let session = session else { return }
+
+        let fm = FileManager.default
+        var existingSize: Int64 = 0
+        if fm.fileExists(atPath: tempURL.path) {
+            existingSize = Int64((try? fm.attributesOfItem(atPath: tempURL.path)[.size] as? UInt64) ?? 0)
+        } else {
+            fm.createFile(atPath: tempURL.path, contents: nil)
+        }
+        self.writtenBytes = existingSize
+
+        var request = URLRequest(url: originalURL)
+        request.timeoutInterval = 180.0
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("zh-CN,zh-Hans;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
+        request.setValue("keep-alive", forHTTPHeaderField: "Connection")
+
+        if existingSize > 0 {
+            request.setValue("bytes=\(existingSize)-", forHTTPHeaderField: "Range")
+        }
+
+        let task = session.dataTask(with: request)
+        self.dataTask = task
+        task.resume()
+    }
+
+    func cancel() {
+        isCancelled = true
+        dataTask?.cancel()
+        dataTask = nil
+        closeFile()
+        session?.invalidateAndCancel()
+        session = nil
+        try? FileManager.default.removeItem(at: tempURL)
+    }
+
+    private func closeFile() {
+        try? fileHandle?.synchronize()
+        try? fileHandle?.close()
+        fileHandle = nil
+    }
+
+    func retryManually() {
+        guard !isCancelled else { return }
+        retryCount = 0
+        dataTask?.cancel()
+        closeFile()
+        resumeDownload()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard !isCancelled else {
+            completionHandler(.cancel)
+            return
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            completionHandler(.cancel)
+            return
+        }
+
+        let fm = FileManager.default
+
+        if http.statusCode == 206 {
+            if let handle = try? FileHandle(forWritingTo: tempURL) {
+                _ = try? handle.seekToEnd()
+                self.fileHandle = handle
+            }
+            if response.expectedContentLength > 0 {
+                self.totalBytes = self.writtenBytes + response.expectedContentLength
+            }
+            completionHandler(.allow)
+            return
+        }
+
+        if http.statusCode == 200 {
+            closeFile()
+            try? fm.removeItem(at: tempURL)
+            fm.createFile(atPath: tempURL.path, contents: nil)
+            self.writtenBytes = 0
+            if response.expectedContentLength > 0 {
+                self.totalBytes = response.expectedContentLength
+            }
+            self.fileHandle = try? FileHandle(forWritingTo: tempURL)
+            completionHandler(.allow)
+            return
+        }
+
+        if http.statusCode == 416 {
+            if self.totalBytes > 0 && self.writtenBytes >= self.totalBytes {
+                completionHandler(.cancel)
+                finishSuccess()
+                return
+            }
+            closeFile()
+            try? fm.removeItem(at: tempURL)
+            fm.createFile(atPath: tempURL.path, contents: nil)
+            self.writtenBytes = 0
+            self.fileHandle = try? FileHandle(forWritingTo: tempURL)
+            completionHandler(.allow)
+            return
+        }
+
+        completionHandler(.cancel)
+        let err = NSError(domain: "HTTPError", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP状态码 \(http.statusCode)"])
+        handleFailure(error: err)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard !isCancelled, let handle = fileHandle else { return }
+        do {
+            try handle.write(contentsOf: data)
+            writtenBytes += Int64(data.count)
+            hasReceivedAnyData = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.onProgress?(self)
+            }
+        } catch {
+            handleFailure(error: error)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !isCancelled else { return }
+        closeFile()
+
+        if let error = error {
+            let ns = error as NSError
+            if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
+                return
+            }
+            handleFailure(error: error)
+            return
+        }
+
+        let fm = FileManager.default
+        let currentSize = Int64((try? fm.attributesOfItem(atPath: tempURL.path)[.size] as? UInt64) ?? 0)
+
+        if totalBytes > 0 && currentSize < totalBytes {
+            let truncatedError = NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorNetworkConnectionLost,
+                userInfo: [NSLocalizedDescriptionKey: "连接中断，文件不完整"]
+            )
+            handleFailure(error: truncatedError)
+            return
+        }
+
+        finishSuccess()
+    }
+
+    private func finishSuccess() {
+        closeFile()
+        let fm = FileManager.default
+        do {
+            if fm.fileExists(atPath: targetURL.path) {
+                try fm.removeItem(at: targetURL)
+            }
+            try fm.moveItem(at: tempURL, to: targetURL)
+            try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: targetURL.path)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.onFinished?(self)
+            }
+        } catch {
+            handleFailure(error: error)
+        }
+    }
+
+    private func handleFailure(error: Error) {
+        guard !isCancelled else { return }
+        closeFile()
+
+        let canRetry = hasReceivedAnyData ? true : (retryCount < maxInitialRetries)
+
+        if canRetry {
+            retryCount += 1
+            let retryMsg = hasReceivedAnyData ? "网络波动，正在重试 (\(retryCount))" : "连接失败，正在重试 \(retryCount)/\(maxInitialRetries)"
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("DownloadProgressNotification"),
+                    object: self.filename,
+                    userInfo: [
+                        "taskId": self.id,
+                        "progress": self.totalBytes > 0 ? Float(self.writtenBytes) / Float(self.totalBytes) : 0,
+                        "written": self.writtenBytes,
+                        "total": self.totalBytes,
+                        "statusText": retryMsg,
+                        "isRetrying": true
+                    ]
+                )
+            }
+            let delay: Double = min(Double(retryCount) * 1.5, 4.0)
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.resumeDownload()
+            }
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.onFailed?(self, error)
+            }
+        }
+    }
+}
+
+final class DownloadCoordinator: NSObject, WKDownloadDelegate {
+    static let shared = DownloadCoordinator()
+
+    private var activeStreamTasks: [String: StreamDownloadTask] = [:]
     private var wkDownloads: [ObjectIdentifier: String] = [:]
     private var wkDownloadInstances: [String: WKDownload] = [:]
     private var progressObservations: [ObjectIdentifier: NSKeyValueObservation] = [:]
@@ -80,17 +296,6 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         return downloads
     }
 
-    private func createRequest(for url: URL) -> URLRequest {
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 180.0
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-        req.setValue("*/*", forHTTPHeaderField: "Accept")
-        req.setValue("zh-CN,zh-Hans;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
-        req.setValue("keep-alive", forHTTPHeaderField: "Connection")
-        return req
-    }
-
     func startDownload(url: URL, filename: String) {
         let destDir = Self.getDownloadsDirectory()
         let rawName = filename.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -110,8 +315,8 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         }
 
         let taskID = UUID().uuidString
-        let context = DownloadTaskContext(id: taskID, filename: baseFilename, originalURL: url, targetURL: targetURL, isWKDownload: false)
-        taskContexts[taskID] = context
+        let streamTask = StreamDownloadTask(id: taskID, filename: baseFilename, url: url, targetURL: targetURL)
+        activeStreamTasks[taskID] = streamTask
 
         activeTasks[taskID] = ActiveDownloadItem(
             id: taskID,
@@ -125,10 +330,64 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
             isRetrying: false
         )
 
-        let req = createRequest(for: url)
-        let task = session.downloadTask(with: req)
-        sessionTasks[task] = taskID
-        task.resume()
+        streamTask.onProgress = { [weak self] t in
+            guard let self = self else { return }
+            let p = t.totalBytes > 0 ? Float(t.writtenBytes) / Float(t.totalBytes) : 0
+            self.activeTasks[t.id] = ActiveDownloadItem(
+                id: t.id,
+                filename: t.filename,
+                progress: p,
+                writtenBytes: t.writtenBytes,
+                totalBytes: t.totalBytes,
+                isFailed: false,
+                errorMessage: nil,
+                statusText: nil,
+                isRetrying: false
+            )
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DownloadProgressNotification"),
+                object: t.filename,
+                userInfo: [
+                    "taskId": t.id,
+                    "progress": p,
+                    "written": t.writtenBytes,
+                    "total": t.totalBytes
+                ]
+            )
+        }
+
+        streamTask.onFinished = { [weak self] t in
+            guard let self = self else { return }
+            self.activeStreamTasks.removeValue(forKey: t.id)
+            self.activeTasks.removeValue(forKey: t.id)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DownloadFinishedNotification"),
+                object: t.targetURL.lastPathComponent,
+                userInfo: ["taskId": t.id]
+            )
+        }
+
+        streamTask.onFailed = { [weak self] t, err in
+            guard let self = self else { return }
+            self.activeTasks[t.id] = ActiveDownloadItem(
+                id: t.id,
+                filename: t.filename,
+                progress: t.totalBytes > 0 ? Float(t.writtenBytes) / Float(t.totalBytes) : 0,
+                writtenBytes: t.writtenBytes,
+                totalBytes: t.totalBytes,
+                isFailed: true,
+                errorMessage: err.localizedDescription,
+                statusText: "下载失败",
+                isRetrying: false
+            )
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DownloadFailedNotification"),
+                object: t.filename,
+                userInfo: ["taskId": t.id, "error": err.localizedDescription]
+            )
+        }
+
+        streamTask.start()
 
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadStartedNotification"),
@@ -140,20 +399,18 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     func removeActiveTask(id: String) {
         cancelledTaskIDs.insert(id)
 
-        if let (task, _) = sessionTasks.first(where: { $0.value == id }) {
-            task.cancel()
-            sessionTasks.removeValue(forKey: task)
+        if let streamTask = activeStreamTasks.removeValue(forKey: id) {
+            streamTask.cancel()
         }
 
         if let download = wkDownloadInstances.removeValue(forKey: id) {
-            download.cancel()
+            download.cancel { _ in }
             let downloadID = ObjectIdentifier(download)
             wkDownloads.removeValue(forKey: downloadID)
             progressObservations[downloadID]?.invalidate()
             progressObservations.removeValue(forKey: downloadID)
         }
 
-        taskContexts.removeValue(forKey: id)
         activeTasks.removeValue(forKey: id)
 
         DispatchQueue.main.async {
@@ -162,208 +419,31 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 
     func manualRetry(taskId: String) {
-        guard let context = taskContexts[taskId] else { return }
-        context.retryCount = 0
         cancelledTaskIDs.remove(taskId)
-        activeTasks[taskId] = ActiveDownloadItem(
-            id: taskId,
-            filename: context.filename,
-            progress: context.lastProgress,
-            writtenBytes: context.writtenBytes,
-            totalBytes: context.totalBytes,
-            isFailed: false,
-            errorMessage: nil,
-            statusText: "正在重新连接",
-            isRetrying: true
-        )
-        NotificationCenter.default.post(
-            name: NSNotification.Name("DownloadProgressNotification"),
-            object: context.filename,
-            userInfo: [
-                "taskId": taskId,
-                "progress": context.lastProgress,
-                "written": context.writtenBytes,
-                "total": context.totalBytes,
-                "statusText": "正在重新连接"
-            ]
-        )
-        retryTask(context: context)
-    }
-
-    private func retryTask(context: DownloadTaskContext) {
-        guard taskContexts[context.id] != nil, !cancelledTaskIDs.contains(context.id) else { return }
-
-        let newTask: URLSessionDownloadTask
-        if let data = context.resumeData {
-            newTask = session.downloadTask(withResumeData: data)
-        } else {
-            let req = createRequest(for: context.originalURL)
-            newTask = session.downloadTask(with: req)
-        }
-        sessionTasks[newTask] = context.id
-        newTask.resume()
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        guard let taskID = sessionTasks[downloadTask], let context = taskContexts[taskID] else { return }
-        let progress = totalBytesExpectedToWrite > 0 ? Float(totalBytesWritten) / Float(totalBytesExpectedToWrite) : 0
-        context.writtenBytes = totalBytesWritten
-        context.totalBytes = totalBytesExpectedToWrite
-        context.lastProgress = progress
-        if totalBytesWritten > 0 {
-            context.hasEverReceivedData = true
-        }
-
-        activeTasks[taskID] = ActiveDownloadItem(
-            id: taskID,
-            filename: context.filename,
-            progress: progress,
-            writtenBytes: totalBytesWritten,
-            totalBytes: totalBytesExpectedToWrite,
-            isFailed: false,
-            errorMessage: nil,
-            statusText: nil,
-            isRetrying: false
-        )
-
-        NotificationCenter.default.post(
-            name: NSNotification.Name("DownloadProgressNotification"),
-            object: context.filename,
-            userInfo: [
-                "taskId": taskID,
-                "progress": progress,
-                "written": totalBytesWritten,
-                "total": totalBytesExpectedToWrite
-            ]
-        )
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let taskID = sessionTasks.removeValue(forKey: downloadTask), let context = taskContexts[taskID] else { return }
-        taskContexts.removeValue(forKey: taskID)
-        activeTasks.removeValue(forKey: taskID)
-
-        let fm = FileManager.default
-        do {
-            if fm.fileExists(atPath: context.targetURL.path) {
-                try fm.removeItem(at: context.targetURL)
-            }
-            try fm.moveItem(at: location, to: context.targetURL)
-            try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: context.targetURL.path)
-            NotificationCenter.default.post(
-                name: NSNotification.Name("DownloadFinishedNotification"),
-                object: context.targetURL.lastPathComponent,
-                userInfo: ["taskId": taskID]
-            )
-        } catch {
-            activeTasks[taskID] = ActiveDownloadItem(
-                id: taskID,
-                filename: context.filename,
-                progress: context.lastProgress,
-                writtenBytes: context.writtenBytes,
-                totalBytes: context.totalBytes,
-                isFailed: true,
-                errorMessage: error.localizedDescription,
-                statusText: "下载失败",
-                isRetrying: false
-            )
-            NotificationCenter.default.post(
-                name: NSNotification.Name("DownloadFailedNotification"),
-                object: context.filename,
-                userInfo: ["taskId": taskID, "error": error.localizedDescription]
-            )
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let downloadTask = task as? URLSessionDownloadTask,
-              let taskID = sessionTasks.removeValue(forKey: downloadTask),
-              let context = taskContexts[taskID] else { return }
-
-        guard let error = error else { return }
-
-        if cancelledTaskIDs.contains(taskID) {
-            activeTasks.removeValue(forKey: taskID)
-            taskContexts.removeValue(forKey: taskID)
-            return
-        }
-
-        let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-            activeTasks.removeValue(forKey: taskID)
-            taskContexts.removeValue(forKey: taskID)
-            return
-        }
-
-        if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-            context.resumeData = resumeData
-        }
-
-        let canRetry: Bool
-        if context.hasEverReceivedData {
-            canRetry = true
-        } else {
-            canRetry = context.retryCount < context.maxInitialRetries
-        }
-
-        if canRetry {
-            context.retryCount += 1
-            let retryStatus: String
-            if context.hasEverReceivedData {
-                retryStatus = "网络波动，正在重试 (\(context.retryCount))"
-            } else {
-                retryStatus = "连接失败，正在重试 \(context.retryCount)/\(context.maxInitialRetries)"
-            }
-
-            activeTasks[taskID] = ActiveDownloadItem(
-                id: taskID,
-                filename: context.filename,
-                progress: context.lastProgress,
-                writtenBytes: context.writtenBytes,
-                totalBytes: context.totalBytes,
+        if let streamTask = activeStreamTasks[taskId] {
+            activeTasks[taskId] = ActiveDownloadItem(
+                id: taskId,
+                filename: streamTask.filename,
+                progress: streamTask.totalBytes > 0 ? Float(streamTask.writtenBytes) / Float(streamTask.totalBytes) : 0,
+                writtenBytes: streamTask.writtenBytes,
+                totalBytes: streamTask.totalBytes,
                 isFailed: false,
                 errorMessage: nil,
-                statusText: retryStatus,
+                statusText: "正在重新连接",
                 isRetrying: true
             )
             NotificationCenter.default.post(
                 name: NSNotification.Name("DownloadProgressNotification"),
-                object: context.filename,
+                object: streamTask.filename,
                 userInfo: [
-                    "taskId": taskID,
-                    "progress": context.lastProgress,
-                    "written": context.writtenBytes,
-                    "total": context.totalBytes,
-                    "statusText": retryStatus
+                    "taskId": taskId,
+                    "progress": streamTask.totalBytes > 0 ? Float(streamTask.writtenBytes) / Float(streamTask.totalBytes) : 0,
+                    "written": streamTask.writtenBytes,
+                    "total": streamTask.totalBytes,
+                    "statusText": "正在重新连接"
                 ]
             )
-            let delay: Double = min(Double(context.retryCount) * 1.5, 4.0)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.retryTask(context: context)
-            }
-        } else {
-            activeTasks[taskID] = ActiveDownloadItem(
-                id: taskID,
-                filename: context.filename,
-                progress: context.lastProgress,
-                writtenBytes: context.writtenBytes,
-                totalBytes: context.totalBytes,
-                isFailed: true,
-                errorMessage: error.localizedDescription,
-                statusText: "下载失败",
-                isRetrying: false
-            )
-            NotificationCenter.default.post(
-                name: NSNotification.Name("DownloadFailedNotification"),
-                object: context.filename,
-                userInfo: ["taskId": taskID, "error": error.localizedDescription]
-            )
+            streamTask.retryManually()
         }
     }
 
@@ -397,6 +477,12 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                             return
                         }
                         if shouldDownload {
+                            if let directURL = response.url {
+                                safeCompletion(nil)
+                                self.startDownload(url: directURL, filename: filename)
+                                return
+                            }
+
                             let destDir = Self.getDownloadsDirectory()
                             var targetURL = destDir.appendingPathComponent(filename)
                             let nameWithoutExt = (filename as NSString).deletingPathExtension
@@ -410,15 +496,6 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                             }
 
                             let taskID = UUID().uuidString
-                            let context = DownloadTaskContext(
-                                id: taskID,
-                                filename: filename,
-                                originalURL: response.url ?? URL(string: "about:blank")!,
-                                targetURL: targetURL,
-                                isWKDownload: true
-                            )
-                            context.totalBytes = response.expectedContentLength > 0 ? response.expectedContentLength : 0
-                            self.taskContexts[taskID] = context
                             self.wkDownloads[downloadID] = taskID
                             self.wkDownloadInstances[taskID] = download
 
@@ -427,7 +504,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                                 filename: filename,
                                 progress: 0.01,
                                 writtenBytes: 0,
-                                totalBytes: context.totalBytes,
+                                totalBytes: response.expectedContentLength > 0 ? response.expectedContentLength : 0,
                                 isFailed: false,
                                 errorMessage: nil,
                                 statusText: nil,
@@ -440,12 +517,6 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                                 let written = p.completedUnitCount
                                 let total = p.totalUnitCount
                                 DispatchQueue.main.async {
-                                    context.lastProgress = currentProgress
-                                    context.writtenBytes = written
-                                    context.totalBytes = total
-                                    if written > 0 {
-                                        context.hasEverReceivedData = true
-                                    }
                                     self.activeTasks[taskID] = ActiveDownloadItem(
                                         id: taskID,
                                         filename: filename,
@@ -492,112 +563,55 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         progressObservations[downloadID]?.invalidate()
         progressObservations.removeValue(forKey: downloadID)
         wkDownloadInstances.removeValue(forKey: taskID)
-
-        let targetInfo = taskContexts.removeValue(forKey: taskID)
-        activeTasks.removeValue(forKey: taskID)
-
-        if let destURL = targetInfo?.targetURL {
-            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: destURL.path)
-        }
+        let item = activeTasks.removeValue(forKey: taskID)
 
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadFinishedNotification"),
-            object: targetInfo?.filename ?? nil,
+            object: item?.filename ?? nil,
             userInfo: ["taskId": taskID]
         )
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         let downloadID = ObjectIdentifier(download)
-        guard let taskID = wkDownloads.removeValue(forKey: downloadID),
-              let context = taskContexts[taskID] else { return }
-
+        guard let taskID = wkDownloads.removeValue(forKey: downloadID) else { return }
         progressObservations[downloadID]?.invalidate()
         progressObservations.removeValue(forKey: downloadID)
         wkDownloadInstances.removeValue(forKey: taskID)
 
         if cancelledTaskIDs.contains(taskID) {
-            taskContexts.removeValue(forKey: taskID)
             activeTasks.removeValue(forKey: taskID)
             return
         }
 
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-            taskContexts.removeValue(forKey: taskID)
             activeTasks.removeValue(forKey: taskID)
             return
         }
         if nsError.domain == "WebKitErrorDomain" && (nsError.code == 1 || nsError.code == 102) {
-            taskContexts.removeValue(forKey: taskID)
             activeTasks.removeValue(forKey: taskID)
             return
         }
 
-        if let resumeData = resumeData {
-            context.resumeData = resumeData
-        }
+        let fname = activeTasks[taskID]?.filename ?? "文件"
+        activeTasks[taskID] = ActiveDownloadItem(
+            id: taskID,
+            filename: fname,
+            progress: activeTasks[taskID]?.progress ?? 0,
+            writtenBytes: activeTasks[taskID]?.writtenBytes ?? 0,
+            totalBytes: activeTasks[taskID]?.totalBytes ?? 0,
+            isFailed: true,
+            errorMessage: error.localizedDescription,
+            statusText: "下载失败",
+            isRetrying: false
+        )
 
-        let canRetry: Bool
-        if context.hasEverReceivedData {
-            canRetry = true
-        } else {
-            canRetry = context.retryCount < context.maxInitialRetries
-        }
-
-        if canRetry {
-            context.retryCount += 1
-            let retryStatus: String
-            if context.hasEverReceivedData {
-                retryStatus = "网络波动，正在重试 (\(context.retryCount))"
-            } else {
-                retryStatus = "连接失败，正在重试 \(context.retryCount)/\(context.maxInitialRetries)"
-            }
-
-            activeTasks[taskID] = ActiveDownloadItem(
-                id: taskID,
-                filename: context.filename,
-                progress: context.lastProgress,
-                writtenBytes: context.writtenBytes,
-                totalBytes: context.totalBytes,
-                isFailed: false,
-                errorMessage: nil,
-                statusText: retryStatus,
-                isRetrying: true
-            )
-            NotificationCenter.default.post(
-                name: NSNotification.Name("DownloadProgressNotification"),
-                object: context.filename,
-                userInfo: [
-                    "taskId": taskID,
-                    "progress": context.lastProgress,
-                    "written": context.writtenBytes,
-                    "total": context.totalBytes,
-                    "statusText": retryStatus
-                ]
-            )
-            let delay: Double = min(Double(context.retryCount) * 1.5, 4.0)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.retryTask(context: context)
-            }
-        } else {
-            activeTasks[taskID] = ActiveDownloadItem(
-                id: taskID,
-                filename: context.filename,
-                progress: context.lastProgress,
-                writtenBytes: context.writtenBytes,
-                totalBytes: context.totalBytes,
-                isFailed: true,
-                errorMessage: error.localizedDescription,
-                statusText: "下载失败",
-                isRetrying: false
-            )
-            NotificationCenter.default.post(
-                name: NSNotification.Name("DownloadFailedNotification"),
-                object: context.filename,
-                userInfo: ["taskId": taskID, "error": error.localizedDescription]
-            )
-        }
+        NotificationCenter.default.post(
+            name: NSNotification.Name("DownloadFailedNotification"),
+            object: fname,
+            userInfo: ["taskId": taskID, "error": error.localizedDescription]
+        )
     }
 }
 
@@ -1102,162 +1116,5 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         }
 
         return UISwipeActionsConfiguration(actions: contextualActions)
-    }
-}
-
-extension BrowserViewController {
-    func configureDownloadObservers() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handlePromptDownloadNotification(_:)),
-            name: NSNotification.Name("PromptDownloadNotification"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handlePromptBlobExportNotification(_:)),
-            name: NSNotification.Name("PromptBlobExportNotification"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDownloadNotification(_:)),
-            name: NSNotification.Name("DownloadStartedNotification"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDownloadNotification(_:)),
-            name: NSNotification.Name("DownloadFinishedNotification"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDownloadNotification(_:)),
-            name: NSNotification.Name("DownloadFailedNotification"),
-            object: nil
-        )
-    }
-
-    func safePresentAlert(_ alert: UIViewController, animated: Bool = true, completion: (() -> Void)? = nil) {
-        guard view.window != nil else { return }
-        var topController: UIViewController = self
-        while let presented = topController.presentedViewController, !presented.isBeingDismissed {
-            topController = presented
-        }
-        if topController.isBeingPresented {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                self?.safePresentAlert(alert, animated: animated, completion: completion)
-            }
-            return
-        }
-        if topController is UIAlertController {
-            return
-        }
-        topController.present(alert, animated: animated, completion: completion)
-    }
-
-    @objc func handlePromptDownloadNotification(_ notification: Notification) {
-        let url = notification.object as? URL
-        let filename = (notification.userInfo?["filename"] as? String) ?? url?.lastPathComponent ?? "文件"
-        let displayName = filename.isEmpty ? "文件" : filename
-        let onConfirm = notification.userInfo?["onConfirm"] as? ((Bool) -> Void)
-
-        let alert = UIAlertController(
-            title: "下载文件",
-            message: "\(displayName)\n\n来源: \(url?.host ?? url?.absoluteString ?? "未知来源")",
-            preferredStyle: .alert
-        )
-
-        alert.addAction(UIAlertAction(title: "下载文件", style: .default) { _ in
-            if let onConfirm = onConfirm {
-                onConfirm(true)
-            } else if let url = url {
-                DownloadCoordinator.shared.startDownload(url: url, filename: displayName)
-            }
-        })
-
-        alert.addAction(UIAlertAction(title: "复制下载链接", style: .default) { [weak self] _ in
-            if let url = url {
-                UIPasteboard.general.string = url.absoluteString
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                self?.showToastNotice("复制成功")
-            }
-            onConfirm?(false)
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
-            onConfirm?(false)
-        })
-
-        safePresentAlert(alert)
-    }
-
-    @objc func handlePromptBlobExportNotification(_ notification: Notification) {
-        guard let fileURL = notification.object as? URL else { return }
-        let filename = (notification.userInfo?["filename"] as? String) ?? fileURL.lastPathComponent
-        let fileSize = (notification.userInfo?["fileSize"] as? Int) ?? 0
-        let sizeString = ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file)
-
-        let alert = UIAlertController(
-            title: "网页文件已准备就绪",
-            message: "\(filename) (\(sizeString))\n\n该文件已在网页中生成完毕，您可以直接导出或保存至下载管理。",
-            preferredStyle: .alert
-        )
-
-        alert.addAction(UIAlertAction(title: "分享", style: .default) { [weak self] _ in
-            guard let self = self else { return }
-            let doc = UIDocumentInteractionController(url: fileURL)
-            doc.name = filename
-            let presenter = self.presentedViewController ?? self
-            if !doc.presentOptionsMenu(from: presenter.view.bounds, in: presenter.view, animated: true) {
-                let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-                if let popover = activity.popoverPresentationController {
-                    popover.sourceView = presenter.view
-                    popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
-                    popover.permittedArrowDirections = []
-                }
-                presenter.present(activity, animated: true)
-            }
-        })
-
-        alert.addAction(UIAlertAction(title: "存入下载管理", style: .default) { [weak self] _ in
-            self?.showToastNotice("已存入下载管理: \(filename)")
-        })
-
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
-            try? FileManager.default.removeItem(at: fileURL)
-        })
-
-        safePresentAlert(alert)
-    }
-
-    @objc func handleDownloadNotification(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            if notification.name == NSNotification.Name("DownloadStartedNotification") {
-                let filename = (notification.object as? String) ?? "文件"
-                self.showToastNotice("已开始下载: \(filename)")
-            } else if notification.name == NSNotification.Name("DownloadFinishedNotification") {
-                self.showToastNotice("下载完成，已存入下载管理")
-            } else if notification.name == NSNotification.Name("DownloadFailedNotification") {
-                let err = (notification.userInfo?["error"] as? String) ?? "网络异常"
-                self.showToastNotice("下载失败: \(err)")
-            }
-        }
-    }
-
-    func showDownloadManager() {
-        if addressField.isFirstResponder {
-            addressField.resignFirstResponder()
-        }
-        let vc = DownloadManagerViewController()
-        let nav = UINavigationController(rootViewController: vc)
-        nav.modalPresentationStyle = .pageSheet
-        present(nav, animated: true)
     }
 }
