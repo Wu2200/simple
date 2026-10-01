@@ -9,6 +9,30 @@ struct ActiveDownloadItem {
     var totalBytes: Int64
     var isFailed: Bool
     var errorMessage: String?
+    var statusText: String?
+    var isRetrying: Bool
+}
+
+final class DownloadTaskContext {
+    let id: String
+    let filename: String
+    var originalURL: URL
+    var targetURL: URL
+    var retryCount: Int = 0
+    let maxRetries: Int = 5
+    var resumeData: Data?
+    var lastProgress: Float = 0.01
+    var writtenBytes: Int64 = 0
+    var totalBytes: Int64 = 0
+    var isWKDownload: Bool = false
+
+    init(id: String, filename: String, originalURL: URL, targetURL: URL, isWKDownload: Bool = false) {
+        self.id = id
+        self.filename = filename
+        self.originalURL = originalURL
+        self.targetURL = targetURL
+        self.isWKDownload = isWKDownload
+    }
 }
 
 final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloadDelegate {
@@ -17,16 +41,19 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60.0
-        config.timeoutIntervalForResource = 3600.0
+        config.timeoutIntervalForResource = 86400.0
         config.waitsForConnectivity = true
         config.allowsCellularAccess = true
+        config.allowsExpensiveNetworkAccess = true
+        config.allowsConstrainedNetworkAccess = true
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
-    private var downloadTasks: [URLSessionDownloadTask: (filename: String, targetURL: URL)] = [:]
-    private var cancelledDownloadIDs: Set<ObjectIdentifier> = []
+    private var taskContexts: [String: DownloadTaskContext] = [:]
+    private var sessionTasks: [URLSessionDownloadTask: String] = [:]
+    private var wkDownloads: [ObjectIdentifier: String] = [:]
     private var progressObservations: [ObjectIdentifier: NSKeyValueObservation] = [:]
-    private var downloadTargets: [ObjectIdentifier: (filename: String, targetURL: URL)] = [:]
+    private var cancelledTaskIDs: Set<String> = []
 
     private(set) var activeTasks: [String: ActiveDownloadItem] = [:]
 
@@ -62,10 +89,10 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
             counter += 1
         }
 
-        let task = session.downloadTask(with: url)
-        downloadTasks[task] = (baseFilename, targetURL)
+        let taskID = UUID().uuidString
+        let context = DownloadTaskContext(id: taskID, filename: baseFilename, originalURL: url, targetURL: targetURL, isWKDownload: false)
+        taskContexts[taskID] = context
 
-        let taskID = "\(task.taskIdentifier)"
         activeTasks[taskID] = ActiveDownloadItem(
             id: taskID,
             filename: baseFilename,
@@ -73,9 +100,13 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
             writtenBytes: 0,
             totalBytes: 0,
             isFailed: false,
-            errorMessage: nil
+            errorMessage: nil,
+            statusText: nil,
+            isRetrying: false
         )
 
+        let task = session.downloadTask(with: url)
+        sessionTasks[task] = taskID
         task.resume()
 
         NotificationCenter.default.post(
@@ -86,8 +117,55 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 
     func removeActiveTask(id: String) {
+        cancelledTaskIDs.insert(id)
+        if let (task, _) = sessionTasks.first(where: { $0.value == id }) {
+            task.cancel()
+            sessionTasks.removeValue(forKey: task)
+        }
+        taskContexts.removeValue(forKey: id)
         activeTasks.removeValue(forKey: id)
         NotificationCenter.default.post(name: NSNotification.Name("ActiveDownloadTasksChangedNotification"), object: nil)
+    }
+
+    func manualRetry(taskId: String) {
+        guard let context = taskContexts[taskId] else { return }
+        context.retryCount = 0
+        activeTasks[taskId] = ActiveDownloadItem(
+            id: taskId,
+            filename: context.filename,
+            progress: context.lastProgress,
+            writtenBytes: context.writtenBytes,
+            totalBytes: context.totalBytes,
+            isFailed: false,
+            errorMessage: nil,
+            statusText: "正在重新连接",
+            isRetrying: true
+        )
+        NotificationCenter.default.post(
+            name: NSNotification.Name("DownloadProgressNotification"),
+            object: context.filename,
+            userInfo: [
+                "taskId": taskId,
+                "progress": context.lastProgress,
+                "written": context.writtenBytes,
+                "total": context.totalBytes,
+                "statusText": "正在重新连接"
+            ]
+        )
+        retryTask(context: context)
+    }
+
+    private func retryTask(context: DownloadTaskContext) {
+        guard taskContexts[context.id] != nil, !cancelledTaskIDs.contains(context.id) else { return }
+
+        let newTask: URLSessionDownloadTask
+        if let data = context.resumeData {
+            newTask = session.downloadTask(withResumeData: data)
+        } else {
+            newTask = session.downloadTask(with: context.originalURL)
+        }
+        sessionTasks[newTask] = context.id
+        newTask.resume()
     }
 
     func urlSession(
@@ -97,22 +175,27 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard let info = downloadTasks[downloadTask] else { return }
+        guard let taskID = sessionTasks[downloadTask], let context = taskContexts[taskID] else { return }
         let progress = totalBytesExpectedToWrite > 0 ? Float(totalBytesWritten) / Float(totalBytesExpectedToWrite) : 0
-        let taskID = "\(downloadTask.taskIdentifier)"
+        context.writtenBytes = totalBytesWritten
+        context.totalBytes = totalBytesExpectedToWrite
+        context.lastProgress = progress
+
         activeTasks[taskID] = ActiveDownloadItem(
             id: taskID,
-            filename: info.filename,
+            filename: context.filename,
             progress: progress,
             writtenBytes: totalBytesWritten,
             totalBytes: totalBytesExpectedToWrite,
             isFailed: false,
-            errorMessage: nil
+            errorMessage: nil,
+            statusText: nil,
+            isRetrying: false
         )
 
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadProgressNotification"),
-            object: info.filename,
+            object: context.filename,
             userInfo: [
                 "taskId": taskID,
                 "progress": progress,
@@ -123,62 +206,109 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let info = downloadTasks[downloadTask] else { return }
-        downloadTasks.removeValue(forKey: downloadTask)
-        let taskID = "\(downloadTask.taskIdentifier)"
+        guard let taskID = sessionTasks.removeValue(forKey: downloadTask), let context = taskContexts[taskID] else { return }
+        taskContexts.removeValue(forKey: taskID)
         activeTasks.removeValue(forKey: taskID)
 
         let fm = FileManager.default
         do {
-            if fm.fileExists(atPath: info.targetURL.path) {
-                try fm.removeItem(at: info.targetURL)
+            if fm.fileExists(atPath: context.targetURL.path) {
+                try fm.removeItem(at: context.targetURL)
             }
-            try fm.moveItem(at: location, to: info.targetURL)
+            try fm.moveItem(at: location, to: context.targetURL)
             NotificationCenter.default.post(
                 name: NSNotification.Name("DownloadFinishedNotification"),
-                object: info.targetURL.lastPathComponent,
+                object: context.targetURL.lastPathComponent,
                 userInfo: ["taskId": taskID]
             )
         } catch {
             activeTasks[taskID] = ActiveDownloadItem(
                 id: taskID,
-                filename: info.filename,
-                progress: 0,
-                writtenBytes: 0,
-                totalBytes: 0,
+                filename: context.filename,
+                progress: context.lastProgress,
+                writtenBytes: context.writtenBytes,
+                totalBytes: context.totalBytes,
                 isFailed: true,
-                errorMessage: error.localizedDescription
+                errorMessage: error.localizedDescription,
+                statusText: "下载失败",
+                isRetrying: false
             )
             NotificationCenter.default.post(
                 name: NSNotification.Name("DownloadFailedNotification"),
-                object: info.filename,
+                object: context.filename,
                 userInfo: ["taskId": taskID, "error": error.localizedDescription]
             )
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let downloadTask = task as? URLSessionDownloadTask, let error = error else { return }
-        if let info = downloadTasks[downloadTask] {
-            downloadTasks.removeValue(forKey: downloadTask)
-            let taskID = "\(downloadTask.taskIdentifier)"
-            let nsError = error as NSError
-            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-                activeTasks.removeValue(forKey: taskID)
-                return
-            }
+        guard let downloadTask = task as? URLSessionDownloadTask,
+              let taskID = sessionTasks.removeValue(forKey: downloadTask),
+              let context = taskContexts[taskID] else { return }
+
+        guard let error = error else { return }
+
+        if cancelledTaskIDs.contains(taskID) {
+            activeTasks.removeValue(forKey: taskID)
+            taskContexts.removeValue(forKey: taskID)
+            return
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            activeTasks.removeValue(forKey: taskID)
+            taskContexts.removeValue(forKey: taskID)
+            return
+        }
+
+        if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+            context.resumeData = resumeData
+        }
+
+        if context.retryCount < context.maxRetries {
+            context.retryCount += 1
+            let retryStatus = "网络波动，正在重试 \(context.retryCount)/\(context.maxRetries)"
             activeTasks[taskID] = ActiveDownloadItem(
                 id: taskID,
-                filename: info.filename,
-                progress: 0,
-                writtenBytes: 0,
-                totalBytes: 0,
+                filename: context.filename,
+                progress: context.lastProgress,
+                writtenBytes: context.writtenBytes,
+                totalBytes: context.totalBytes,
+                isFailed: false,
+                errorMessage: nil,
+                statusText: retryStatus,
+                isRetrying: true
+            )
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DownloadProgressNotification"),
+                object: context.filename,
+                userInfo: [
+                    "taskId": taskID,
+                    "progress": context.lastProgress,
+                    "written": context.writtenBytes,
+                    "total": context.totalBytes,
+                    "statusText": retryStatus
+                ]
+            )
+            let delay = Double(context.retryCount) * 1.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.retryTask(context: context)
+            }
+        } else {
+            activeTasks[taskID] = ActiveDownloadItem(
+                id: taskID,
+                filename: context.filename,
+                progress: context.lastProgress,
+                writtenBytes: context.writtenBytes,
+                totalBytes: context.totalBytes,
                 isFailed: true,
-                errorMessage: error.localizedDescription
+                errorMessage: error.localizedDescription,
+                statusText: "下载失败",
+                isRetrying: false
             )
             NotificationCenter.default.post(
                 name: NSNotification.Name("DownloadFailedNotification"),
-                object: info.filename,
+                object: context.filename,
                 userInfo: ["taskId": taskID, "error": error.localizedDescription]
             )
         }
@@ -193,7 +323,6 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         let filename = suggestedFilename.isEmpty ? "download_\(Int(Date().timeIntervalSince1970))" : suggestedFilename
         let host = response.url?.host ?? response.url?.absoluteString ?? "未知来源"
         let downloadID = ObjectIdentifier(download)
-        let taskKey = "\(downloadID.hashValue)"
 
         var isHandled = false
         let safeCompletion: (URL?) -> Void = { dest in
@@ -227,15 +356,28 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                                 counter += 1
                             }
 
-                            self.downloadTargets[downloadID] = (filename, targetURL)
-                            self.activeTasks[taskKey] = ActiveDownloadItem(
-                                id: taskKey,
+                            let taskID = UUID().uuidString
+                            let context = DownloadTaskContext(
+                                id: taskID,
+                                filename: filename,
+                                originalURL: response.url ?? URL(string: "about:blank")!,
+                                targetURL: targetURL,
+                                isWKDownload: true
+                            )
+                            context.totalBytes = response.expectedContentLength > 0 ? response.expectedContentLength : 0
+                            self.taskContexts[taskID] = context
+                            self.wkDownloads[downloadID] = taskID
+
+                            self.activeTasks[taskID] = ActiveDownloadItem(
+                                id: taskID,
                                 filename: filename,
                                 progress: 0.01,
                                 writtenBytes: 0,
-                                totalBytes: response.expectedContentLength > 0 ? response.expectedContentLength : 0,
+                                totalBytes: context.totalBytes,
                                 isFailed: false,
-                                errorMessage: nil
+                                errorMessage: nil,
+                                statusText: nil,
+                                isRetrying: false
                             )
 
                             let obs = download.progress.observe(\.fractionCompleted) { [weak self] p, _ in
@@ -244,20 +386,25 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                                 let written = p.completedUnitCount
                                 let total = p.totalUnitCount
                                 DispatchQueue.main.async {
-                                    self.activeTasks[taskKey] = ActiveDownloadItem(
-                                        id: taskKey,
+                                    context.lastProgress = currentProgress
+                                    context.writtenBytes = written
+                                    context.totalBytes = total
+                                    self.activeTasks[taskID] = ActiveDownloadItem(
+                                        id: taskID,
                                         filename: filename,
                                         progress: currentProgress,
                                         writtenBytes: written,
                                         totalBytes: total,
                                         isFailed: false,
-                                        errorMessage: nil
+                                        errorMessage: nil,
+                                        statusText: nil,
+                                        isRetrying: false
                                     )
                                     NotificationCenter.default.post(
                                         name: NSNotification.Name("DownloadProgressNotification"),
                                         object: filename,
                                         userInfo: [
-                                            "taskId": taskKey,
+                                            "taskId": taskID,
                                             "progress": currentProgress,
                                             "written": written,
                                             "total": total
@@ -270,11 +417,10 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                             NotificationCenter.default.post(
                                 name: NSNotification.Name("DownloadStartedNotification"),
                                 object: filename,
-                                userInfo: ["taskId": taskKey]
+                                userInfo: ["taskId": taskID]
                             )
                             safeCompletion(targetURL)
                         } else {
-                            self.cancelledDownloadIDs.insert(downloadID)
                             safeCompletion(nil)
                         }
                     } as (Bool) -> Void
@@ -285,58 +431,97 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
 
     func downloadDidFinish(_ download: WKDownload) {
         let downloadID = ObjectIdentifier(download)
-        let taskKey = "\(downloadID.hashValue)"
-        let targetInfo = downloadTargets.removeValue(forKey: downloadID)
+        guard let taskID = wkDownloads.removeValue(forKey: downloadID) else { return }
         progressObservations[downloadID]?.invalidate()
         progressObservations.removeValue(forKey: downloadID)
-        cancelledDownloadIDs.remove(downloadID)
-        activeTasks.removeValue(forKey: taskKey)
+
+        let targetInfo = taskContexts.removeValue(forKey: taskID)
+        activeTasks.removeValue(forKey: taskID)
 
         NotificationCenter.default.post(
             name: NSNotification.Name("DownloadFinishedNotification"),
             object: targetInfo?.filename ?? nil,
-            userInfo: ["taskId": taskKey]
+            userInfo: ["taskId": taskID]
         )
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         let downloadID = ObjectIdentifier(download)
-        let taskKey = "\(downloadID.hashValue)"
-        let targetInfo = downloadTargets.removeValue(forKey: downloadID)
+        guard let taskID = wkDownloads.removeValue(forKey: downloadID),
+              let context = taskContexts[taskID] else { return }
+
         progressObservations[downloadID]?.invalidate()
         progressObservations.removeValue(forKey: downloadID)
 
-        if cancelledDownloadIDs.remove(downloadID) != nil {
-            activeTasks.removeValue(forKey: taskKey)
+        if cancelledTaskIDs.contains(taskID) {
+            taskContexts.removeValue(forKey: taskID)
+            activeTasks.removeValue(forKey: taskID)
             return
         }
 
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-            activeTasks.removeValue(forKey: taskKey)
+            taskContexts.removeValue(forKey: taskID)
+            activeTasks.removeValue(forKey: taskID)
             return
         }
         if nsError.domain == "WebKitErrorDomain" && (nsError.code == 1 || nsError.code == 102) {
-            activeTasks.removeValue(forKey: taskKey)
+            taskContexts.removeValue(forKey: taskID)
+            activeTasks.removeValue(forKey: taskID)
             return
         }
 
-        let fname = targetInfo?.filename ?? "文件"
-        activeTasks[taskKey] = ActiveDownloadItem(
-            id: taskKey,
-            filename: fname,
-            progress: 0,
-            writtenBytes: 0,
-            totalBytes: 0,
-            isFailed: true,
-            errorMessage: error.localizedDescription
-        )
+        if let resumeData = resumeData {
+            context.resumeData = resumeData
+        }
 
-        NotificationCenter.default.post(
-            name: NSNotification.Name("DownloadFailedNotification"),
-            object: fname,
-            userInfo: ["taskId": taskKey, "error": error.localizedDescription]
-        )
+        if context.retryCount < context.maxRetries {
+            context.retryCount += 1
+            let retryStatus = "网络波动，正在重试 \(context.retryCount)/\(context.maxRetries)"
+            activeTasks[taskID] = ActiveDownloadItem(
+                id: taskID,
+                filename: context.filename,
+                progress: context.lastProgress,
+                writtenBytes: context.writtenBytes,
+                totalBytes: context.totalBytes,
+                isFailed: false,
+                errorMessage: nil,
+                statusText: retryStatus,
+                isRetrying: true
+            )
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DownloadProgressNotification"),
+                object: context.filename,
+                userInfo: [
+                    "taskId": taskID,
+                    "progress": context.lastProgress,
+                    "written": context.writtenBytes,
+                    "total": context.totalBytes,
+                    "statusText": retryStatus
+                ]
+            )
+            let delay = Double(context.retryCount) * 1.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.retryTask(context: context)
+            }
+        } else {
+            activeTasks[taskID] = ActiveDownloadItem(
+                id: taskID,
+                filename: context.filename,
+                progress: context.lastProgress,
+                writtenBytes: context.writtenBytes,
+                totalBytes: context.totalBytes,
+                isFailed: true,
+                errorMessage: error.localizedDescription,
+                statusText: "下载失败",
+                isRetrying: false
+            )
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DownloadFailedNotification"),
+                object: context.filename,
+                userInfo: ["taskId": taskID, "error": error.localizedDescription]
+            )
+        }
     }
 }
 
@@ -345,9 +530,11 @@ final class DownloadProgressCell: UITableViewCell {
     private let detailLabel = UILabel()
     private let progressView = UIProgressView(progressViewStyle: .default)
     private let errorLabel = UILabel()
+    private let retryButton = UIButton(type: .system)
     private let removeButton = UIButton(type: .system)
 
     var onRemove: (() -> Void)?
+    var onRetry: (() -> Void)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -382,12 +569,24 @@ final class DownloadProgressCell: UITableViewCell {
         errorLabel.numberOfLines = 2
         errorLabel.isHidden = true
 
+        retryButton.translatesAutoresizingMaskIntoConstraints = false
+        retryButton.setImage(UIImage(systemName: "arrow.clockwise.circle.fill"), for: .normal)
+        retryButton.tintColor = .systemBlue
+        retryButton.addTarget(self, action: #selector(handleRetry), for: .touchUpInside)
+        retryButton.isHidden = true
+
         removeButton.translatesAutoresizingMaskIntoConstraints = false
         removeButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
         removeButton.tintColor = .systemGray3
         removeButton.addTarget(self, action: #selector(handleRemove), for: .touchUpInside)
 
-        let topRow = UIStackView(arrangedSubviews: [titleLabel, detailLabel, removeButton])
+        let actionStack = UIStackView(arrangedSubviews: [retryButton, removeButton])
+        actionStack.translatesAutoresizingMaskIntoConstraints = false
+        actionStack.axis = .horizontal
+        actionStack.spacing = 8
+        actionStack.alignment = .center
+
+        let topRow = UIStackView(arrangedSubviews: [titleLabel, detailLabel, actionStack])
         topRow.translatesAutoresizingMaskIntoConstraints = false
         topRow.axis = .horizontal
         topRow.spacing = 8
@@ -401,6 +600,8 @@ final class DownloadProgressCell: UITableViewCell {
         contentView.addSubview(mainStack)
 
         NSLayoutConstraint.activate([
+            retryButton.widthAnchor.constraint(equalToConstant: 24),
+            retryButton.heightAnchor.constraint(equalToConstant: 24),
             removeButton.widthAnchor.constraint(equalToConstant: 24),
             removeButton.heightAnchor.constraint(equalToConstant: 24),
             progressView.heightAnchor.constraint(equalToConstant: 4),
@@ -416,6 +617,10 @@ final class DownloadProgressCell: UITableViewCell {
         onRemove?()
     }
 
+    @objc private func handleRetry() {
+        onRetry?()
+    }
+
     func configure(with item: ActiveDownloadItem) {
         titleLabel.text = item.filename
         if item.isFailed {
@@ -425,11 +630,20 @@ final class DownloadProgressCell: UITableViewCell {
             detailLabel.textColor = .systemRed
             errorLabel.text = item.errorMessage ?? "未知错误"
             errorLabel.isHidden = false
+            retryButton.isHidden = false
+        } else if item.isRetrying {
+            progressView.progressTintColor = .systemOrange
+            progressView.progress = item.progress
+            detailLabel.text = item.statusText ?? "正在重试"
+            detailLabel.textColor = .systemOrange
+            errorLabel.isHidden = true
+            retryButton.isHidden = true
         } else {
             progressView.progressTintColor = .systemBlue
             progressView.progress = item.progress
             detailLabel.textColor = .secondaryLabel
             errorLabel.isHidden = true
+            retryButton.isHidden = true
 
             let percent = Int(item.progress * 100)
             let writtenStr = ByteCountFormatter.string(fromByteCount: item.writtenBytes, countStyle: .file)
@@ -597,6 +811,9 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
             cell.configure(with: task)
             cell.onRemove = {
                 DownloadCoordinator.shared.removeActiveTask(id: task.id)
+            }
+            cell.onRetry = {
+                DownloadCoordinator.shared.manualRetry(taskId: task.id)
             }
             return cell
         }
@@ -859,9 +1076,10 @@ extension BrowserViewController {
             let percent = Int(progress * 100)
             let written = userInfo["written"] as? Int64 ?? 0
             let total = userInfo["total"] as? Int64 ?? 0
+            let statusText = userInfo["statusText"] as? String
             let writtenStr = ByteCountFormatter.string(fromByteCount: written, countStyle: .file)
             let totalStr = total > 0 ? ByteCountFormatter.string(fromByteCount: total, countStyle: .file) : ""
-            let detail = totalStr.isEmpty ? "\(writtenStr) • \(percent)%" : "\(writtenStr)/\(totalStr) • \(percent)%"
+            let detail = statusText ?? (totalStr.isEmpty ? "\(writtenStr) • \(percent)%" : "\(writtenStr)/\(totalStr) • \(percent)%")
             self.showDownloadProgressToast(filename: filename, progress: progress, detail: detail, errorMessage: nil)
         }
     }
