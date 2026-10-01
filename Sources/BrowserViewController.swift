@@ -55,7 +55,7 @@ final class BrowserSessionStore {
     }
 }
 
-final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate,标志, UIGestureRecognizerDelegate, UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+final class BrowserViewController: UIViewController, UITextFieldDelegate, TabItemDelegate, UIGestureRecognizerDelegate, UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
     var tabs: [TabItem] = []
     var activeTabIndex = 0
     var isFullscreen = false
@@ -512,6 +512,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             card.trailingAnchor.constraint(equalTo: failureOverlayView.trailingAnchor, constant: -24),
             card.centerYAnchor.constraint(equalTo: failureOverlayView.centerYAnchor, constant: -30)
         ])
+    }
+
+    func formattedAddress(for url: URL?) -> String {
+        guard let url = url else { return "" }
+        let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+        if raw.isEmpty || raw == "about:blank" { return "" }
+        if raw.hasPrefix("https://") {
+            return String(raw.dropFirst(8))
+        }
+        if raw.hasPrefix("http://") {
+            return String(raw.dropFirst(7))
+        }
+        return raw
     }
 
     func configureInterface() {
@@ -1198,9 +1211,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             showFailureUI(for: tab)
         } else if let url = tab.url {
             showBrowserUI()
-            let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-            let hostString = url.host?.removingPercentEncoding ?? url.host ?? (rawString == "about:blank" ? "" : rawString)
-            addressField.text = hostString
+            addressField.text = formattedAddress(for: url)
             if let host = url.host {
                 FaviconLoader.shared.preloadFavicon(for: host)
             }
@@ -1321,8 +1332,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         activeTab.lastAutoFullscreenCheckedURL = url
         activeTab.title = url.host ?? url.absoluteString
 
-        let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-        addressField.text = (raw == "about:blank") ? "" : raw
+        addressField.text = formattedAddress(for: url)
 
         resetProgress()
         progressView.alpha = 1
@@ -1410,9 +1420,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if let err = tab.failureError as NSError? {
             failureReasonLabel.text = err.localizedDescription
         }
-        let rawStr = targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? ""
-        let hostStr = targetURL?.host?.removingPercentEncoding ?? targetURL?.host ?? (rawStr == "about:blank" ? "" : rawStr)
-        addressField.text = hostStr
+        addressField.text = formattedAddress(for: targetURL)
         resetProgress()
         updateUIState()
         updateAddressRightButtons()
@@ -1683,9 +1691,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             failureOverlayView.isHidden = true
             if let url = tab.url {
                 if !addressField.isFirstResponder {
-                    let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-                    let hostString = url.host?.removingPercentEncoding ?? url.host ?? (rawString == "about:blank" ? "" : rawString)
-                    addressField.text = hostString
+                    addressField.text = formattedAddress(for: url)
                     if let host = url.host {
                         FaviconLoader.shared.preloadFavicon(for: host)
                     }
@@ -1751,8 +1757,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     func textFieldDidEndEditing(_ textField: UITextField) {
         if textField == addressField {
             if let url = activeTab.url {
-                let rawString = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-                textField.text = url.host?.removingPercentEncoding ?? url.host ?? (rawString == "about:blank" ? "" : rawString)
+                textField.text = formattedAddress(for: url)
             } else if textField.text?.isEmpty == true {
                 textField.text = ""
             }
