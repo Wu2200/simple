@@ -55,24 +55,56 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             } catch(e) {}
         }
 
-        var origPush = history.pushState;
-        history.pushState = function() {
-            var ret = origPush.apply(this, arguments);
+        function scheduleNotify() {
             notifyUrlChange();
-            return ret;
-        };
+            setTimeout(notifyUrlChange, 50);
+            setTimeout(notifyUrlChange, 200);
+        }
 
-        var origReplace = history.replaceState;
-        history.replaceState = function() {
-            var ret = origReplace.apply(this, arguments);
-            notifyUrlChange();
-            return ret;
-        };
+        if (window.History && window.History.prototype) {
+            var protoPush = window.History.prototype.pushState;
+            if (protoPush) {
+                window.History.prototype.pushState = function() {
+                    var ret = protoPush.apply(this, arguments);
+                    scheduleNotify();
+                    return ret;
+                };
+            }
+            var protoReplace = window.History.prototype.replaceState;
+            if (protoReplace) {
+                window.History.prototype.replaceState = function() {
+                    var ret = protoReplace.apply(this, arguments);
+                    scheduleNotify();
+                    return ret;
+                };
+            }
+        }
 
-        window.addEventListener('popstate', notifyUrlChange, true);
-        window.addEventListener('hashchange', notifyUrlChange, true);
-        document.addEventListener('turbo:load', notifyUrlChange, true);
-        document.addEventListener('turbolinks:load', notifyUrlChange, true);
+        if (window.history) {
+            var origPush = window.history.pushState;
+            if (origPush && (!window.History || window.history.pushState !== window.History.prototype.pushState)) {
+                window.history.pushState = function() {
+                    var ret = origPush.apply(this, arguments);
+                    scheduleNotify();
+                    return ret;
+                };
+            }
+            var origReplace = window.history.replaceState;
+            if (origReplace && (!window.History || window.history.replaceState !== window.History.prototype.replaceState)) {
+                window.history.replaceState = function() {
+                    var ret = origReplace.apply(this, arguments);
+                    scheduleNotify();
+                    return ret;
+                };
+            }
+        }
+
+        window.addEventListener('popstate', scheduleNotify, true);
+        window.addEventListener('hashchange', scheduleNotify, true);
+        document.addEventListener('turbo:load', scheduleNotify, true);
+        document.addEventListener('turbo:render', scheduleNotify, true);
+        document.addEventListener('turbolinks:load', scheduleNotify, true);
+        document.addEventListener('pjax:end', scheduleNotify, true);
     })();
     """
 
@@ -660,16 +692,23 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     func handleURLChange(_ newURL: URL?, explicitTitle: String? = nil) {
         guard let newURL = newURL, !newURL.absoluteString.contains("about:blank") else { return }
         if !isDisplayingFailurePage {
+            var hasChanged = false
             if url != newURL {
                 previousURL = url
                 url = newURL
-                if let t = explicitTitle, !t.isEmpty {
-                    title = t
-                } else if let t = webView.title, !t.isEmpty {
-                    title = t
-                } else {
-                    title = newURL.host ?? "新标签页"
-                }
+                hasChanged = true
+            }
+            if let t = explicitTitle, !t.isEmpty, title != t {
+                title = t
+                hasChanged = true
+            } else if let t = webView.title, !t.isEmpty, title != t {
+                title = t
+                hasChanged = true
+            } else if title.isEmpty {
+                title = newURL.host ?? "新标签页"
+                hasChanged = true
+            }
+            if hasChanged {
                 delegate?.tabDidUpdate(self)
             }
         }
@@ -1530,7 +1569,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         decisionHandler(.cancel, preferences)
 
         if scheme == "intent", let fallbackURL = fallbackURL(from: targetURL) {
-            webView.load(URLRequest(fallbackURL))
+            webView.load(URLRequest(url: fallbackURL))
             return
         }
 
