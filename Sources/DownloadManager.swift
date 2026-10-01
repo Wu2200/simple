@@ -19,7 +19,8 @@ final class DownloadTaskContext {
     var originalURL: URL
     var targetURL: URL
     var retryCount: Int = 0
-    let maxRetries: Int = 5
+    let maxInitialRetries: Int = 5
+    var hasEverReceivedData: Bool = false
     var resumeData: Data?
     var lastProgress: Float = 0.01
     var writtenBytes: Int64 = 0
@@ -40,12 +41,19 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 60.0
+        config.timeoutIntervalForRequest = 180.0
         config.timeoutIntervalForResource = 86400.0
         config.waitsForConnectivity = true
         config.allowsCellularAccess = true
         config.allowsExpensiveNetworkAccess = true
         config.allowsConstrainedNetworkAccess = true
+        config.httpMaximumConnectionsPerHost = 6
+        config.httpAdditionalHeaders = [
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh-Hans;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Connection": "keep-alive"
+        ]
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
@@ -69,6 +77,17 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
             try? fm.createDirectory(at: downloads, withIntermediateDirectories: true)
         }
         return downloads
+    }
+
+    private func createRequest(for url: URL) -> URLRequest {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 180.0
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        req.setValue("zh-CN,zh-Hans;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
+        req.setValue("keep-alive", forHTTPHeaderField: "Connection")
+        return req
     }
 
     func startDownload(url: URL, filename: String) {
@@ -105,7 +124,8 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
             isRetrying: false
         )
 
-        let task = session.downloadTask(with: url)
+        let req = createRequest(for: url)
+        let task = session.downloadTask(with: req)
         sessionTasks[task] = taskID
         task.resume()
 
@@ -162,7 +182,8 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         if let data = context.resumeData {
             newTask = session.downloadTask(withResumeData: data)
         } else {
-            newTask = session.downloadTask(with: context.originalURL)
+            let req = createRequest(for: context.originalURL)
+            newTask = session.downloadTask(with: req)
         }
         sessionTasks[newTask] = context.id
         newTask.resume()
@@ -180,6 +201,9 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
         context.writtenBytes = totalBytesWritten
         context.totalBytes = totalBytesExpectedToWrite
         context.lastProgress = progress
+        if totalBytesWritten > 0 {
+            context.hasEverReceivedData = true
+        }
 
         activeTasks[taskID] = ActiveDownloadItem(
             id: taskID,
@@ -265,9 +289,22 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
             context.resumeData = resumeData
         }
 
-        if context.retryCount < context.maxRetries {
+        let canRetry: Bool
+        if context.hasEverReceivedData {
+            canRetry = true
+        } else {
+            canRetry = context.retryCount < context.maxInitialRetries
+        }
+
+        if canRetry {
             context.retryCount += 1
-            let retryStatus = "网络波动，正在重试 \(context.retryCount)/\(context.maxRetries)"
+            let retryStatus: String
+            if context.hasEverReceivedData {
+                retryStatus = "网络波动，正在重试 (\(context.retryCount))"
+            } else {
+                retryStatus = "连接失败，正在重试 \(context.retryCount)/\(context.maxInitialRetries)"
+            }
+
             activeTasks[taskID] = ActiveDownloadItem(
                 id: taskID,
                 filename: context.filename,
@@ -290,7 +327,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                     "statusText": retryStatus
                 ]
             )
-            let delay = Double(context.retryCount) * 1.5
+            let delay: Double = min(Double(context.retryCount) * 1.5, 4.0)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.retryTask(context: context)
             }
@@ -389,6 +426,9 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                                     context.lastProgress = currentProgress
                                     context.writtenBytes = written
                                     context.totalBytes = total
+                                    if written > 0 {
+                                        context.hasEverReceivedData = true
+                                    }
                                     self.activeTasks[taskID] = ActiveDownloadItem(
                                         id: taskID,
                                         filename: filename,
@@ -475,9 +515,22 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
             context.resumeData = resumeData
         }
 
-        if context.retryCount < context.maxRetries {
+        let canRetry: Bool
+        if context.hasEverReceivedData {
+            canRetry = true
+        } else {
+            canRetry = context.retryCount < context.maxInitialRetries
+        }
+
+        if canRetry {
             context.retryCount += 1
-            let retryStatus = "网络波动，正在重试 \(context.retryCount)/\(context.maxRetries)"
+            let retryStatus: String
+            if context.hasEverReceivedData {
+                retryStatus = "网络波动，正在重试 (\(context.retryCount))"
+            } else {
+                retryStatus = "连接失败，正在重试 \(context.retryCount)/\(context.maxInitialRetries)"
+            }
+
             activeTasks[taskID] = ActiveDownloadItem(
                 id: taskID,
                 filename: context.filename,
@@ -500,7 +553,7 @@ final class DownloadCoordinator: NSObject, URLSessionDownloadDelegate, WKDownloa
                     "statusText": retryStatus
                 ]
             )
-            let delay = Double(context.retryCount) * 1.5
+            let delay: Double = min(Double(context.retryCount) * 1.5, 4.0)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.retryTask(context: context)
             }
