@@ -36,7 +36,45 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var navigationActionURL: URL?
     private var userScrolledDuringLoading = false
 
+    private var urlObservation: NSKeyValueObservation?
+    private var titleObservation: NSKeyValueObservation?
+
     weak var delegate: TabItemDelegate?
+
+    private static let coreHistoryScriptSource = """
+    (function() {
+        if (window.__simple_history_hooked__) return;
+        window.__simple_history_hooked__ = true;
+
+        function notifyUrlChange() {
+            try {
+                window.webkit.messageHandlers.HistoryBridge.postMessage({
+                    url: window.location.href,
+                    title: document.title || ''
+                });
+            } catch(e) {}
+        }
+
+        var origPush = history.pushState;
+        history.pushState = function() {
+            var ret = origPush.apply(this, arguments);
+            notifyUrlChange();
+            return ret;
+        };
+
+        var origReplace = history.replaceState;
+        history.replaceState = function() {
+            var ret = origReplace.apply(this, arguments);
+            notifyUrlChange();
+            return ret;
+        };
+
+        window.addEventListener('popstate', notifyUrlChange, true);
+        window.addEventListener('hashchange', notifyUrlChange, true);
+        document.addEventListener('turbo:load', notifyUrlChange, true);
+        document.addEventListener('turbolinks:load', notifyUrlChange, true);
+    })();
+    """
 
     private static let coreGMPolyfillScriptSource = """
     (function() {
@@ -415,6 +453,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         userContentController.add(self, name: "GM")
         userContentController.add(self, name: "DownloadBridge")
         userContentController.add(self, name: "ContextMenuBridge")
+        userContentController.add(self, name: "HistoryBridge")
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -438,6 +477,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         ])
 
         webView.scrollView.panGestureRecognizer.addTarget(self, action: #selector(handleScrollViewPan(_:)))
+
+        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] wv, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.handleURLChange(wv.url)
+            }
+        }
+
+        titleObservation = webView.observe(\.title, options: [.new]) { [weak self] wv, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.handleTitleChange(wv.title)
+            }
+        }
 
         NotificationCenter.default.addObserver(
             self,
@@ -498,6 +551,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private func ensureCoreScripts() {
         let controller = webView.configuration.userContentController
 
+        let hasHistory = controller.userScripts.contains { $0.source.contains("__simple_history_hooked__") }
+        if !hasHistory {
+            let script = WKUserScript(
+                source: Self.coreHistoryScriptSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(script)
+        }
+
         let hasGMPolyfill = controller.userScripts.contains { $0.source.contains("__gm_polyfilled__") }
         if !hasGMPolyfill {
             let script = WKUserScript(
@@ -535,6 +598,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         NotificationCenter.default.removeObserver(self)
         AdBlockManager.shared.detach(from: webView)
         delegate = nil
+        urlObservation?.invalidate()
+        urlObservation = nil
+        titleObservation?.invalidate()
+        titleObservation = nil
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         webView.stopLoading()
@@ -553,6 +620,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "GM")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "ContextMenuBridge")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "HistoryBridge")
         webView.load(URLRequest(url: URL(string: "about:blank")!))
         webView.removeFromSuperview()
         snapshot = nil
@@ -589,7 +657,44 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         return pendingRestoreURL ?? url
     }
 
+    func handleURLChange(_ newURL: URL?, explicitTitle: String? = nil) {
+        guard let newURL = newURL, !newURL.absoluteString.contains("about:blank") else { return }
+        if !isDisplayingFailurePage {
+            if url != newURL {
+                previousURL = url
+                url = newURL
+                if let t = explicitTitle, !t.isEmpty {
+                    title = t
+                } else if let t = webView.title, !t.isEmpty {
+                    title = t
+                } else {
+                    title = newURL.host ?? "新标签页"
+                }
+                delegate?.tabDidUpdate(self)
+            }
+        }
+    }
+
+    func handleTitleChange(_ newTitle: String?) {
+        guard let newTitle = newTitle, !newTitle.isEmpty else { return }
+        if !isDisplayingFailurePage {
+            if title != newTitle {
+                title = newTitle
+                delegate?.tabDidUpdate(self)
+            }
+        }
+    }
+
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "HistoryBridge",
+           let body = message.body as? [String: Any],
+           let urlStr = body["url"] as? String,
+           let newURL = URL(string: urlStr) {
+            let newTitle = body["title"] as? String
+            handleURLChange(newURL, explicitTitle: newTitle)
+            return
+        }
+
         if message.name == "ContextMenuBridge",
            let body = message.body as? [String: Any] {
             let linkStr = body["link"] as? String
@@ -1425,7 +1530,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         decisionHandler(.cancel, preferences)
 
         if scheme == "intent", let fallbackURL = fallbackURL(from: targetURL) {
-            webView.load(URLRequest(url: fallbackURL))
+            webView.load(URLRequest(fallbackURL))
             return
         }
 
