@@ -433,17 +433,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         alert.addAction(UIAlertAction(title: "分享", style: .default) { [weak self] _ in
             guard let self = self else { return }
-            let doc = UIDocumentInteractionController(url: fileURL)
-            doc.name = filename
-            let presenter = self.presentedViewController ?? self
-            if !doc.presentOptionsMenu(from: presenter.view.bounds, in: presenter.view, animated: true) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self = self else { return }
+                var topController: UIViewController = self
+                while let presented = topController.presentedViewController, !presented.isBeingDismissed {
+                    topController = presented
+                }
                 let activity = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
                 if let popover = activity.popoverPresentationController {
-                    popover.sourceView = presenter.view
-                    popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
+                    popover.sourceView = topController.view
+                    popover.sourceRect = CGRect(x: topController.view.bounds.midX, y: topController.view.bounds.midY, width: 0, height: 0)
                     popover.permittedArrowDirections = []
                 }
-                presenter.present(activity, animated: true)
+                topController.present(activity, animated: true)
             }
         })
 
