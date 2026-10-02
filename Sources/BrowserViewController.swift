@@ -1175,11 +1175,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     func handleCalloutCopy() {
         let currentText: String
-        if let url = activeTab.url {
-            let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-            currentText = (raw == "about:blank") ? "" : raw
+        if let text = addressField.text, !text.isEmpty {
+            currentText = text
+        } else if let url = activeTab.url {
+            currentText = formattedAddress(for: url)
         } else {
-            currentText = addressField.text ?? ""
+            currentText = ""
         }
         if !currentText.isEmpty {
             UIPasteboard.general.string = currentText
@@ -1197,8 +1198,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     func handleCalloutEdit() {
         if let url = activeTab.url {
-            let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-            addressField.text = (raw == "about:blank") ? "" : raw
+            addressField.text = formattedAddress(for: url)
         }
         addressField.becomeFirstResponder()
         addressField.selectAll(nil)
@@ -1659,7 +1659,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     @objc func handleExpandAddress() {
         dismissKeyboard()
-        let currentText = activeTab.url?.absoluteString ?? addressField.text ?? ""
+        let currentText: String
+        if let text = addressField.text, !text.isEmpty {
+            currentText = text
+        } else if let url = activeTab.url {
+            currentText = formattedAddress(for: url)
+        } else {
+            currentText = ""
+        }
         let editor = ExpandedURLEditorViewController(initialURL: currentText) { [weak self] newURLString in
             guard let self = self, let url = self.destinationURL(from: newURLString) else { return }
             self.load(url: url)
@@ -1896,8 +1903,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     func textFieldDidBeginEditing(_ textField: UITextField) {
         if textField == addressField {
             if let url = activeTab.url {
-                let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
-                textField.text = (raw == "about:blank") ? "" : raw
+                textField.text = formattedAddress(for: url)
             }
 
             navigationStack.isHidden = true
