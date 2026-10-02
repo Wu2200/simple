@@ -24,8 +24,7 @@ final class AdBlockManager {
     private let diagnosticKey = "adblock_unsupported_rules_v1"
 
     private let nativeRuleChunkSize = 8000
-    private let maximumCosmeticRulesPerSource = 25000
-    private let cosmeticScriptPayloadLimit = 180000
+    private let maximumCosmeticRulesPerSource = 10000
     private let maximumCompilationDuration: TimeInterval = 180
     private let autoUpdateInterval: TimeInterval = 86400
     private let autoUpdateRetryCooldown: TimeInterval = 1800
@@ -263,6 +262,7 @@ final class AdBlockManager {
         if activeSubs.isEmpty && activeCustom.isEmpty {
             cleanResidualData(completion: nil)
         } else {
+            purgeOrphanedRuleLists()
             relieveMemoryPressure()
         }
     }
@@ -653,15 +653,11 @@ final class AdBlockManager {
         }
     }
 
-    private func removeOldRuleLists(for sourceId: String) {
-        stateLock.lock()
-        let oldIdentifiers = metadataBySource[sourceId]?.ruleListIdentifiers ?? []
-        stateLock.unlock()
-
-        guard !oldIdentifiers.isEmpty else { return }
+    private func removeRuleLists(identifiers: [String]) {
+        guard !identifiers.isEmpty else { return }
 
         DispatchQueue.main.async {
-            for identifier in oldIdentifiers {
+            for identifier in identifiers {
                 WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier, completionHandler: { _ in })
             }
         }
@@ -685,7 +681,7 @@ final class AdBlockManager {
                 }
 
                 let toRemove = available.filter { id in
-                    id.contains("SimpleBrowserAdBlock") && !activeIdentifiers.contains(id)
+                    !activeIdentifiers.contains(id)
                 }
 
                 guard !toRemove.isEmpty else {
@@ -725,16 +721,22 @@ final class AdBlockManager {
         }
     }
 
-    private func cleanWebKitCacheDirectoriesOnDisk() {
+    private func cleanWebKitRuleFilesOnDisk() {
         let fileManager = FileManager.default
-        let cachesDir = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let webkitDir = cachesDir.appendingPathComponent("WebKit")
-        if fileManager.fileExists(atPath: webkitDir.path) {
-            if let items = try? fileManager.contentsOfDirectory(at: webkitDir, includingPropertiesForKeys: nil) {
-                for item in items {
-                    let name = item.lastPathComponent.lowercased()
-                    if name.contains("contentrule") || name.contains("contentextension") {
-                        try? fileManager.removeItem(at: item)
+        let baseDirs = [
+            fileManager.urls(for: .libraryDirectory, in: .userDomainMask)[0],
+            fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        ]
+
+        for base in baseDirs {
+            let webkitDir = base.appendingPathComponent("WebKit")
+            if fileManager.fileExists(atPath: webkitDir.path) {
+                if let enumerator = fileManager.enumerator(at: webkitDir, includingPropertiesForKeys: nil) {
+                    for case let fileURL as URL in enumerator {
+                        let name = fileURL.lastPathComponent.lowercased()
+                        if name.contains("contentrule") || name.contains("contentextension") {
+                            try? fileManager.removeItem(at: fileURL)
+                        }
                     }
                 }
             }
@@ -747,6 +749,9 @@ final class AdBlockManager {
             if let sym = dlsym(handle, "malloc_zone_pressure_relief") {
                 let fn = unsafeBitCast(sym, to: ReliefFn.self)
                 fn(nil, 0)
+                if let defZone = malloc_default_zone() {
+                    fn(UnsafeMutableRawPointer(defZone), 0)
+                }
             }
             dlclose(handle)
         }
@@ -793,7 +798,7 @@ final class AdBlockManager {
         ])
         WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: Date.distantPast) {}
 
-        cleanWebKitCacheDirectoriesOnDisk()
+        cleanWebKitRuleFilesOnDisk()
 
         purgeOrphanedRuleLists { [weak self] in
             guard let self = self else {
@@ -850,7 +855,7 @@ final class AdBlockManager {
                 }
                 self.stateLock.unlock()
 
-                let payload = self.buildSourcePayloadParallel(text: text)
+                let payload = self.buildSourcePayload(text: text)
 
                 self.setUpdateStatus(
                     sourceId: sourceId,
@@ -881,11 +886,12 @@ final class AdBlockManager {
             completion?(false, nil)
             return
         }
+        let previousIdentifiers = metadataBySource[sourceId]?.ruleListIdentifiers ?? []
         stateLock.unlock()
 
         let version = UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
-        let blockChunks: [[CompactNetworkRule]]
+        let blockChunks: [[CompactSerializedRule]]
         if !payload.blockRules.isEmpty {
             blockChunks = stride(from: 0, to: payload.blockRules.count, by: nativeRuleChunkSize).map { start in
                 Array(payload.blockRules[start..<min(start + nativeRuleChunkSize, payload.blockRules.count)])
@@ -897,7 +903,7 @@ final class AdBlockManager {
         }
 
         guard !blockChunks.isEmpty else {
-            removeOldRuleLists(for: sourceId)
+            removeRuleLists(identifiers: previousIdentifiers)
 
             let metadata = AdBlockCompiledSourceMetadata(
                 sourceId: sourceId,
@@ -944,16 +950,16 @@ final class AdBlockManager {
         unsupportedRulesBySource[sourceId] = []
         stateLock.unlock()
 
-        compileChunks(
+        let session = ChunkCompilationSession(
+            manager: self,
             blockChunks: blockChunks,
             exceptionRules: payload.exceptionRules,
             sourceId: sourceId,
             version: version,
-            index: 0,
-            lists: [],
-            identifiers: [],
             deadline: deadline
-        ) { [weak self] lists, identifiers in
+        )
+
+        session.start { [weak self] lists, identifiers in
             guard let self = self else { return }
 
             self.stateLock.lock()
@@ -981,7 +987,7 @@ final class AdBlockManager {
                 return
             }
 
-            self.removeOldRuleLists(for: sourceId)
+            self.removeRuleLists(identifiers: previousIdentifiers)
 
             let metadata = AdBlockCompiledSourceMetadata(
                 sourceId: sourceId,
@@ -1029,67 +1035,8 @@ final class AdBlockManager {
         }
     }
 
-    private func compileChunks(
-        blockChunks: [[CompactNetworkRule]],
-        exceptionRules: [CompactNetworkRule],
-        sourceId: String,
-        version: String,
-        index: Int,
-        lists: [WKContentRuleList],
-        identifiers: [String],
-        deadline: Date,
-        completion: @escaping ([WKContentRuleList], [String]) -> Void
-    ) {
-        stateLock.lock()
-        if cancelledSourceIds.contains(sourceId) {
-            stateLock.unlock()
-            completion([], [])
-            return
-        }
-        stateLock.unlock()
-
-        guard index < blockChunks.count else {
-            completion(lists, identifiers)
-            return
-        }
-
-        guard Date() < deadline else {
-            completion(lists, identifiers)
-            return
-        }
-
-        setUpdateStatus(
-            sourceId: sourceId,
-            status: "正在编译规则 \(index + 1)/\(blockChunks.count)…"
-        )
-
-        let currentGroupRules = blockChunks[index] + exceptionRules
-
-        compileRuleGroup(
-            currentGroupRules,
-            sourceId: sourceId,
-            version: version,
-            groupIdentifier: "\(index)",
-            deadline: deadline,
-            depth: 0
-        ) { [weak self] ruleLists, ruleIdentifiers in
-            guard let self = self else { return }
-            self.compileChunks(
-                blockChunks: blockChunks,
-                exceptionRules: exceptionRules,
-                sourceId: sourceId,
-                version: version,
-                index: index + 1,
-                lists: lists + ruleLists,
-                identifiers: identifiers + ruleIdentifiers,
-                deadline: deadline,
-                completion: completion
-            )
-        }
-    }
-
-    private func compileRuleGroup(
-        _ rules: [CompactNetworkRule],
+    fileprivate func compileRuleGroup(
+        _ rules: [CompactSerializedRule],
         sourceId: String,
         version: String,
         groupIdentifier: String,
@@ -1106,7 +1053,8 @@ final class AdBlockManager {
             for rule in rules.prefix(20) {
                 recordUnsupportedRule(
                     sourceId: sourceId,
-                    rule: rule,
+                    rawRule: rule.rawFilter,
+                    compiledJSON: rule.json,
                     error: "编译超时"
                 )
             }
@@ -1115,7 +1063,7 @@ final class AdBlockManager {
         }
 
         guard let json = autoreleasepool(invoking: { () -> String? in
-            let str = self.jsonString(from: rules)
+            let str = self.jsonArrayString(from: rules)
             return str.isEmpty ? nil : str
         }) else {
             completion([], [])
@@ -1132,7 +1080,8 @@ final class AdBlockManager {
                         for rule in rules.prefix(10) {
                             self.recordUnsupportedRule(
                                 sourceId: sourceId,
-                                rule: rule,
+                                rawRule: rule.rawFilter,
+                                compiledJSON: rule.json,
                                 error: self.compilerErrorDescription(error)
                             )
                         }
@@ -1188,6 +1137,7 @@ final class AdBlockManager {
         if let task = activeDataTasks.removeValue(forKey: sourceId) {
             task.cancel()
         }
+        let identifiersToRemove = metadataBySource[sourceId]?.ruleListIdentifiers ?? []
         metadataBySource.removeValue(forKey: sourceId)
         compiledListsBySource.removeValue(forKey: sourceId)
         cosmeticScriptsBySource.removeValue(forKey: sourceId)
@@ -1212,7 +1162,7 @@ final class AdBlockManager {
         stateLock.unlock()
 
         deleteSubscriptionFile(id: sourceId)
-        removeOldRuleLists(for: sourceId)
+        removeRuleLists(identifiers: identifiersToRemove)
         setUpdateStatus(sourceId: sourceId, status: nil)
         saveMetadata(metaCopy)
         saveUnsupportedRules(unsuppCopy)
@@ -1432,7 +1382,7 @@ final class AdBlockManager {
     private func cosmeticRuleBatches(
         _ rules: [AdBlockCosmeticRule]
     ) -> [[AdBlockCosmeticRule]] {
-        let chunkSize = 800
+        let chunkSize = 1000
         return stride(from: 0, to: rules.count, by: chunkSize).map {
             Array(rules[$0..<min($0 + chunkSize, rules.count)])
         }
@@ -1450,128 +1400,55 @@ final class AdBlockManager {
         )
     }
 
-    private func buildSourcePayloadParallel(text: String) -> AdBlockSourcePayload {
-        var lines: [String] = []
-        lines.reserveCapacity(30000)
-        text.enumerateLines { line, _ in
-            lines.append(line)
-        }
-        let totalLines = lines.count
-        guard totalLines > 0 else {
-            return AdBlockSourcePayload(
-                blockRules: [],
-                exceptionRules: [],
-                cosmeticRules: [],
-                cosmeticExceptions: [],
-                ruleCount: 0,
-                skippedRuleCount: 0
-            )
-        }
-
-        let sliceSize = 10000
-        let sliceCount = (totalLines + sliceSize - 1) / sliceSize
-
-        struct IntermediateResult {
-            var blockRules: [CompactNetworkRule]
-            var exceptionRules: [CompactNetworkRule]
-            var cosmeticRules: [AdBlockCosmeticRule]
-            var cosmeticExceptions: [AdBlockCosmeticException]
-            var ruleCount: Int
-            var skippedRuleCount: Int
-        }
-
-        var results = Array<IntermediateResult>(
-            repeating: IntermediateResult(
-                blockRules: [],
-                exceptionRules: [],
-                cosmeticRules: [],
-                cosmeticExceptions: [],
-                ruleCount: 0,
-                skippedRuleCount: 0
-            ),
-            count: sliceCount
-        )
-
-        DispatchQueue.concurrentPerform(iterations: sliceCount) { index in
-            autoreleasepool {
-                let start = index * sliceSize
-                let end = min(start + sliceSize, totalLines)
-                let subLines = lines[start..<end]
-
-                var blockRules: [CompactNetworkRule] = []
-                var exceptionRules: [CompactNetworkRule] = []
-                var cosmeticRules: [AdBlockCosmeticRule] = []
-                var cosmeticExceptions: [AdBlockCosmeticException] = []
-                var ruleCount = 0
-                var skippedRuleCount = 0
-
-                for line in subLines {
-                    let result = self.parseRule(line)
-                    if let networkRule = result.networkRule {
-                        if networkRule.isException {
-                            exceptionRules.append(networkRule)
-                        } else {
-                            blockRules.append(networkRule)
-                        }
-                        ruleCount += 1
-                    }
-
-                    if !result.cosmeticRules.isEmpty {
-                        for cosmeticRule in result.cosmeticRules {
-                            cosmeticRules.append(cosmeticRule)
-                            ruleCount += 1
-                        }
-                    }
-
-                    if !result.cosmeticExceptions.isEmpty {
-                        for cosmeticEx in result.cosmeticExceptions {
-                            cosmeticExceptions.append(cosmeticEx)
-                            ruleCount += 1
-                        }
-                    }
-
-                    if result.isUnsupported {
-                        skippedRuleCount += 1
-                    }
-                }
-
-                results[index] = IntermediateResult(
-                    blockRules: blockRules,
-                    exceptionRules: exceptionRules,
-                    cosmeticRules: cosmeticRules,
-                    cosmeticExceptions: cosmeticExceptions,
-                    ruleCount: ruleCount,
-                    skippedRuleCount: skippedRuleCount
-                )
-            }
-        }
-
-        var allBlockRules: [CompactNetworkRule] = []
-        var allExceptionRules: [CompactNetworkRule] = []
+    private func buildSourcePayload(text: String) -> AdBlockSourcePayload {
+        var allBlockRules: [CompactSerializedRule] = []
+        var allExceptionRules: [CompactSerializedRule] = []
         var allCosmeticRules: [AdBlockCosmeticRule] = []
         var allCosmeticExceptions: [AdBlockCosmeticException] = []
         var totalRuleCount = 0
         var totalSkipped = 0
 
-        for r in results {
-            allBlockRules.append(contentsOf: r.blockRules)
-            allExceptionRules.append(contentsOf: r.exceptionRules)
-            allCosmeticExceptions.append(contentsOf: r.cosmeticExceptions)
+        allBlockRules.reserveCapacity(20000)
+        allExceptionRules.reserveCapacity(2000)
+        allCosmeticRules.reserveCapacity(10000)
 
-            if allCosmeticRules.count < maximumCosmeticRulesPerSource {
-                let remainingSpace = maximumCosmeticRulesPerSource - allCosmeticRules.count
-                if r.cosmeticRules.count <= remainingSpace {
-                    allCosmeticRules.append(contentsOf: r.cosmeticRules)
-                } else {
-                    allCosmeticRules.append(contentsOf: r.cosmeticRules.prefix(remainingSpace))
-                    totalSkipped += (r.cosmeticRules.count - remainingSpace)
-                }
-            } else {
-                totalSkipped += r.cosmeticRules.count
+        var batchCount = 0
+
+        text.enumerateLines { line, _ in
+            batchCount += 1
+            if batchCount % 2000 == 0 {
+                self.relieveMemoryPressure()
             }
 
-            totalRuleCount += r.ruleCount
-            totalSkipped += r.skippedRuleCount
+            let result = self.parseRule(line)
+            if let networkRule = result.networkRule {
+                if networkRule.isException {
+                    allExceptionRules.append(networkRule)
+                } else {
+                    allBlockRules.append(networkRule)
+                }
+                totalRuleCount += 1
+            }
+
+            if !result.cosmeticRules.isEmpty {
+                for cosmeticRule in result.cosmeticRules {
+                    if allCosmeticRules.count < self.maximumCosmeticRulesPerSource {
+                        allCosmeticRules.append(cosmeticRule)
+                    } else {
+                        totalSkipped += 1
+                    }
+                    totalRuleCount += 1
+                }
+            }
+
+            if !result.cosmeticExceptions.isEmpty {
+                allCosmeticExceptions.append(contentsOf: result.cosmeticExceptions)
+                totalRuleCount += result.cosmeticExceptions.count
+            }
+
+            if result.isUnsupported {
+                totalSkipped += 1
+            }
         }
 
         return AdBlockSourcePayload(
@@ -1824,14 +1701,41 @@ final class AdBlockManager {
             )
         }
 
-        let rule = CompactNetworkRule(
-            filter: filter,
+        var triggerParts: [String] = []
+        triggerParts.append("\"url-filter\":\"\(escapeJSONString(filter))\"")
+        if isCaseSensitive {
+            triggerParts.append("\"url-filter-is-case-sensitive\":true")
+        }
+        if !includeDomains.isEmpty {
+            let unique = Array(Set(includeDomains)).sorted()
+            let items = unique.map { "\"\(escapeJSONString($0))\"" }.joined(separator: ",")
+            triggerParts.append("\"if-domain\":[\(items)]")
+        }
+        if !excludeDomains.isEmpty {
+            let unique = Array(Set(excludeDomains)).sorted()
+            let items = unique.map { "\"\(escapeJSONString($0))\"" }.joined(separator: ",")
+            triggerParts.append("\"unless-domain\":[\(items)]")
+        }
+        if !resourceTypes.isEmpty {
+            let unique = Array(Set(resourceTypes)).sorted()
+            let items = unique.map { "\"\(escapeJSONString($0))\"" }.joined(separator: ",")
+            triggerParts.append("\"resource-type\":[\(items)]")
+        }
+        if !loadTypes.isEmpty {
+            let unique = Array(Set(loadTypes)).sorted()
+            let items = unique.map { "\"\(escapeJSONString($0))\"" }.joined(separator: ",")
+            triggerParts.append("\"load-type\":[\(items)]")
+        }
+
+        let triggerStr = "{" + triggerParts.joined(separator: ",") + "}"
+        let actionType = isException ? "ignore-previous-rules" : "block"
+        let actionStr = "{\"type\":\"\(actionType)\"}"
+        let ruleJson = "{\"trigger\":\(triggerStr),\"action\":\(actionStr)}"
+
+        let rule = CompactSerializedRule(
+            json: ruleJson,
             isException: isException,
-            isCaseSensitive: isCaseSensitive,
-            includeDomains: Array(Set(includeDomains)).sorted(),
-            excludeDomains: Array(Set(excludeDomains)).sorted(),
-            resourceTypes: Array(Set(resourceTypes)).sorted(),
-            loadTypes: Array(Set(loadTypes)).sorted()
+            rawFilter: filter
         )
 
         return AdBlockParsedLine(
@@ -2040,37 +1944,17 @@ final class AdBlockManager {
         return result
     }
 
-    private func compactRuleToJSONString(_ rule: CompactNetworkRule) -> String {
-        var parts: [String] = []
-        parts.append("\"url-filter\":\"\(escapeJSONString(rule.filter))\"")
-        if rule.isCaseSensitive {
-            parts.append("\"url-filter-is-case-sensitive\":true")
+    private func jsonArrayString(from rules: [CompactSerializedRule]) -> String {
+        var result = "["
+        result.reserveCapacity(rules.count * 120 + 2)
+        for (index, rule) in rules.enumerated() {
+            if index > 0 {
+                result.append(",")
+            }
+            result.append(rule.json)
         }
-        if !rule.includeDomains.isEmpty {
-            let items = rule.includeDomains.map { "\"\(escapeJSONString($0))\"" }.joined(separator: ",")
-            parts.append("\"if-domain\":[\(items)]")
-        }
-        if !rule.excludeDomains.isEmpty {
-            let items = rule.excludeDomains.map { "\"\(escapeJSONString($0))\"" }.joined(separator: ",")
-            parts.append("\"unless-domain\":[\(items)]")
-        }
-        if !rule.resourceTypes.isEmpty {
-            let items = rule.resourceTypes.map { "\"\(escapeJSONString($0))\"" }.joined(separator: ",")
-            parts.append("\"resource-type\":[\(items)]")
-        }
-        if !rule.loadTypes.isEmpty {
-            let items = rule.loadTypes.map { "\"\(escapeJSONString($0))\"" }.joined(separator: ",")
-            parts.append("\"load-type\":[\(items)]")
-        }
-        let triggerStr = "{" + parts.joined(separator: ",") + "}"
-        let actionType = rule.isException ? "ignore-previous-rules" : "block"
-        let actionStr = "{\"type\":\"\(actionType)\"}"
-        return "{\"trigger\":\(triggerStr),\"action\":\(actionStr)}"
-    }
-
-    private func jsonString(from rules: [CompactNetworkRule]) -> String {
-        let body = rules.map { compactRuleToJSONString($0) }.joined(separator: ",")
-        return "[\(body)]"
+        result.append("]")
+        return result
     }
 
     private func subscriptionFileURL(id: String) -> URL {
@@ -2143,7 +2027,8 @@ final class AdBlockManager {
 
     private func recordUnsupportedRule(
         sourceId: String,
-        rule: CompactNetworkRule,
+        rawRule: String,
+        compiledJSON: String,
         error: String
     ) {
         stateLock.lock()
@@ -2151,8 +2036,8 @@ final class AdBlockManager {
 
         if items.count < 100 {
             let item = AdBlockUnsupportedRule(
-                rawRule: rule.filter,
-                compiledJSON: compactRuleToJSONString(rule),
+                rawRule: rawRule,
+                compiledJSON: compiledJSON,
                 errorDescription: error
             )
             items.append(item)
@@ -2210,6 +2095,85 @@ final class AdBlockManager {
     }
 }
 
+private final class ChunkCompilationSession {
+    private weak var manager: AdBlockManager?
+    private var blockChunks: [[CompactSerializedRule]]
+    private let exceptionRules: [CompactSerializedRule]
+    private let sourceId: String
+    private let version: String
+    private let deadline: Date
+    private var lists: [WKContentRuleList] = []
+    private var identifiers: [String] = []
+    private var onComplete: (([WKContentRuleList], [String]) -> Void)?
+
+    init(
+        manager: AdBlockManager,
+        blockChunks: [[CompactSerializedRule]],
+        exceptionRules: [CompactSerializedRule],
+        sourceId: String,
+        version: String,
+        deadline: Date
+    ) {
+        self.manager = manager
+        self.blockChunks = blockChunks
+        self.exceptionRules = exceptionRules
+        self.sourceId = sourceId
+        self.version = version
+        self.deadline = deadline
+    }
+
+    func start(completion: @escaping ([WKContentRuleList], [String]) -> Void) {
+        self.onComplete = completion
+        processNextChunk(index: 0)
+    }
+
+    private func processNextChunk(index: Int) {
+        guard let manager = manager else {
+            finish()
+            return
+        }
+
+        guard index < blockChunks.count else {
+            finish()
+            return
+        }
+
+        guard Date() < deadline else {
+            finish()
+            return
+        }
+
+        let chunk = blockChunks[index]
+        blockChunks[index] = []
+
+        let currentGroupRules = chunk + exceptionRules
+
+        manager.compileRuleGroup(
+            currentGroupRules,
+            sourceId: sourceId,
+            version: version,
+            groupIdentifier: "\(index)",
+            deadline: deadline,
+            depth: 0
+        ) { [weak self] ruleLists, ruleIdentifiers in
+            guard let self = self else { return }
+            self.lists.append(contentsOf: ruleLists)
+            self.identifiers.append(contentsOf: ruleIdentifiers)
+            self.processNextChunk(index: index + 1)
+        }
+    }
+
+    private func finish() {
+        blockChunks.removeAll()
+        let resultLists = lists
+        let resultIdentifiers = identifiers
+        lists.removeAll()
+        identifiers.removeAll()
+        onComplete?(resultLists, resultIdentifiers)
+        onComplete = nil
+    }
+}
+
 struct AdBlockCompiledSourceMetadata: Codable {
     var sourceId: String
     var ruleListIdentifiers: [String]
@@ -2249,19 +2213,15 @@ struct AdBlockCompiledSourceMetadata: Codable {
     }
 }
 
-private struct CompactNetworkRule {
-    var filter: String
+private struct CompactSerializedRule {
+    var json: String
     var isException: Bool
-    var isCaseSensitive: Bool
-    var includeDomains: [String]
-    var excludeDomains: [String]
-    var resourceTypes: [String]
-    var loadTypes: [String]
+    var rawFilter: String
 }
 
 private struct AdBlockSourcePayload {
-    var blockRules: [CompactNetworkRule]
-    var exceptionRules: [CompactNetworkRule]
+    var blockRules: [CompactSerializedRule]
+    var exceptionRules: [CompactSerializedRule]
     var cosmeticRules: [AdBlockCosmeticRule]
     var cosmeticExceptions: [AdBlockCosmeticException]
     var ruleCount: Int
@@ -2269,7 +2229,7 @@ private struct AdBlockSourcePayload {
 }
 
 private struct AdBlockParsedLine {
-    var networkRule: CompactNetworkRule?
+    var networkRule: CompactSerializedRule?
     var cosmeticRules: [AdBlockCosmeticRule]
     var cosmeticExceptions: [AdBlockCosmeticException]
     var isUnsupported: Bool
