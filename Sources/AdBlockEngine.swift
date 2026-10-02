@@ -22,7 +22,7 @@ final class AdBlockManager {
     private let identifierPrefix = "SimpleBrowserAdBlockV9"
     private let diagnosticKey = "adblock_unsupported_rules_v1"
 
-    private let nativeRuleChunkSize = 5000
+    private let nativeRuleChunkSize = 8000
     private let maximumCosmeticRulesPerSource = 100000
     private let cosmeticScriptPayloadLimit = 180000
     private let maximumCompilationDuration: TimeInterval = 180
@@ -693,9 +693,7 @@ final class AdBlockManager {
 
         stateLock.lock()
         unsupportedRulesBySource[sourceId] = []
-        let unsuppCopy = unsupportedRulesBySource
         stateLock.unlock()
-        saveUnsupportedRules(unsuppCopy)
 
         compileChunks(
             payload.networkChunks,
@@ -735,9 +733,11 @@ final class AdBlockManager {
             self.compiledListsBySource[sourceId] = lists
             self.updatingSourceIds.remove(sourceId)
             let metaCopy = self.metadataBySource
+            let unsuppCopy = self.unsupportedRulesBySource
             self.stateLock.unlock()
 
             self.saveMetadata(metaCopy)
+            self.saveUnsupportedRules(unsuppCopy)
 
             self.parseQueue.async { [weak self] in
                 self?.restoreCosmeticScripts(metadata: metadata)
@@ -780,7 +780,7 @@ final class AdBlockManager {
 
         guard Date() < deadline else {
             let remainingRules = chunks[index...].flatMap { $0 }
-            for rule in remainingRules {
+            for rule in remainingRules.prefix(50) {
                 recordUnsupportedRule(
                     sourceId: sourceId,
                     rule: rule,
@@ -801,7 +801,8 @@ final class AdBlockManager {
             sourceId: sourceId,
             version: version,
             groupIdentifier: "\(index)",
-            deadline: deadline
+            deadline: deadline,
+            depth: 0
         ) { [weak self] ruleLists, ruleIdentifiers in
             guard let self = self else { return }
             self.compileChunks(
@@ -823,6 +824,7 @@ final class AdBlockManager {
         version: String,
         groupIdentifier: String,
         deadline: Date,
+        depth: Int,
         completion: @escaping ([WKContentRuleList], [String]) -> Void
     ) {
         guard !rules.isEmpty else {
@@ -831,11 +833,11 @@ final class AdBlockManager {
         }
 
         guard Date() < deadline else {
-            for rule in rules {
+            for rule in rules.prefix(20) {
                 recordUnsupportedRule(
                     sourceId: sourceId,
                     rule: rule,
-                    error: "编译超时，未能定位"
+                    error: "编译超时"
                 )
             }
             completion([], [])
@@ -843,7 +845,7 @@ final class AdBlockManager {
         }
 
         guard let json = jsonString(from: rules.map(\.compiledRule)) else {
-            for rule in rules {
+            for rule in rules.prefix(20) {
                 recordUnsupportedRule(
                     sourceId: sourceId,
                     rule: rule,
@@ -860,12 +862,14 @@ final class AdBlockManager {
         func resolve(ruleList: WKContentRuleList?, error: Error?) {
             gate.resolve {
                 guard let ruleList = ruleList else {
-                    if rules.count == 1 {
-                        self.recordUnsupportedRule(
-                            sourceId: sourceId,
-                            rule: rules[0],
-                            error: self.compilerErrorDescription(error)
-                        )
+                    if rules.count == 1 || depth >= 6 {
+                        for rule in rules.prefix(10) {
+                            self.recordUnsupportedRule(
+                                sourceId: sourceId,
+                                rule: rule,
+                                error: self.compilerErrorDescription(error)
+                            )
+                        }
                         completion([], [])
                         return
                     }
@@ -879,14 +883,16 @@ final class AdBlockManager {
                         sourceId: sourceId,
                         version: version,
                         groupIdentifier: "\(groupIdentifier)L",
-                        deadline: deadline
+                        deadline: deadline,
+                        depth: depth + 1
                     ) { leftLists, leftIdentifiers in
                         self.compileRuleGroup(
                             right,
                             sourceId: sourceId,
                             version: version,
                             groupIdentifier: "\(groupIdentifier)R",
-                            deadline: deadline
+                            deadline: deadline,
+                            depth: depth + 1
                         ) { rightLists, rightIdentifiers in
                             completion(
                                 leftLists + rightLists,
@@ -1291,6 +1297,48 @@ final class AdBlockManager {
         )
     }
 
+    private func isValidWebKitPattern(_ pattern: String) -> Bool {
+        guard !pattern.isEmpty,
+              pattern.count < 1024,
+              pattern.allSatisfy({ $0.isASCII }),
+              !pattern.contains("(?"),
+              !pattern.contains("[:") else {
+            return false
+        }
+
+        var openParens = 0
+        var openBrackets = 0
+        var escaped = false
+
+        for ch in pattern {
+            if escaped {
+                escaped = false
+                continue
+            }
+            if ch == "\\" {
+                escaped = true
+                continue
+            }
+            if ch == "(" {
+                openParens += 1
+            } else if ch == ")" {
+                openParens -= 1
+                if openParens < 0 { return false }
+            } else if ch == "[" {
+                openBrackets += 1
+            } else if ch == "]" {
+                openBrackets -= 1
+                if openBrackets < 0 { return false }
+            }
+        }
+
+        if escaped || openParens != 0 || openBrackets != 0 {
+            return false
+        }
+
+        return (try? NSRegularExpression(pattern: pattern)) != nil
+    }
+
     private func parseRule(_ rawLine: String) -> AdBlockParsedLine {
         var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -1487,9 +1535,7 @@ final class AdBlockManager {
             filter = urlFilterPattern(from: rawPattern)
         }
 
-        guard !filter.isEmpty,
-              filter.count < 2048,
-              filter.allSatisfy({ $0.isASCII }) else {
+        guard isValidWebKitPattern(filter) else {
             return AdBlockParsedLine(
                 networkRule: nil,
                 isException: false,
@@ -1651,6 +1697,7 @@ final class AdBlockManager {
         var startsWithDomainAnchor = false
         var startsWithStartAnchor = false
         var endsWithEndAnchor = false
+        var hasTrailingSeparator = false
 
         if p.hasPrefix("||") {
             startsWithDomainAnchor = true
@@ -1665,13 +1712,18 @@ final class AdBlockManager {
             p = String(p.dropLast())
         }
 
+        if p.hasSuffix("^") {
+            hasTrailingSeparator = true
+            p = String(p.dropLast())
+        }
+
         let specialChars: Set<Character> = [".", "/", "?", "=", "-", "_", ":", "+", "$", "{", "}", "[", "]", "(", ")", "|", "\\"]
         var escaped = ""
         for char in p {
             if char == "*" {
                 escaped.append(".*")
             } else if char == "^" {
-                escaped.append("(?:[^a-zA-Z0-9_.-]|$)")
+                escaped.append("[^a-zA-Z0-9_.-]")
             } else if specialChars.contains(char) {
                 escaped.append("\\\(char)")
             } else {
@@ -1685,11 +1737,15 @@ final class AdBlockManager {
 
         var result = ""
         if startsWithDomainAnchor {
-            result = "^(?:https?|wss?)://([a-zA-Z0-9_-]+\\.)*" + escaped
+            result = "^[a-z]+://([^/:]+\\.)?" + escaped
         } else if startsWithStartAnchor {
             result = "^" + escaped
         } else {
             result = escaped
+        }
+
+        if hasTrailingSeparator {
+            result.append("[^a-zA-Z0-9_.-]")
         }
 
         if endsWithEndAnchor {
@@ -1745,26 +1801,20 @@ final class AdBlockManager {
         rule: AdBlockNetworkRule,
         error: String
     ) {
-        let compiledJSON = jsonString(from: [rule.compiledRule]) ?? ""
-
-        let item = AdBlockUnsupportedRule(
-            rawRule: rule.rawRule,
-            compiledJSON: compiledJSON,
-            errorDescription: error
-        )
-
         stateLock.lock()
         var items = unsupportedRulesBySource[sourceId] ?? []
 
-        if !items.contains(where: { $0.rawRule == item.rawRule }) {
+        if items.count < 200 && !items.contains(where: { $0.rawRule == rule.rawRule }) {
+            let compiledJSON = jsonString(from: [rule.compiledRule]) ?? ""
+            let item = AdBlockUnsupportedRule(
+                rawRule: rule.rawRule,
+                compiledJSON: compiledJSON,
+                errorDescription: error
+            )
             items.append(item)
             unsupportedRulesBySource[sourceId] = items
-            let copy = unsupportedRulesBySource
-            stateLock.unlock()
-            saveUnsupportedRules(copy)
-        } else {
-            stateLock.unlock()
         }
+        stateLock.unlock()
     }
 
     private func compilerErrorDescription(_ error: Error?) -> String {
