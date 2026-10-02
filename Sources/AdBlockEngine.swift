@@ -1,542 +1,1970 @@
-import Foundation
+import UIKit
 import WebKit
 
-struct AdBlockSubscription: Identifiable, Codable, Equatable {
-    var id: UUID
+struct AdBlockSubscription: Codable, Equatable {
+    var id: String
     var name: String
-    var url: String
+    var urlString: String
     var isEnabled: Bool
-    var rulesCount: Int
     var lastUpdated: Date?
-    var chunkCount: Int
-
-    init(id: UUID = UUID(), name: String, url: String, isEnabled: Bool = true, rulesCount: Int = 0, lastUpdated: Date? = nil, chunkCount: Int = 0) {
-        self.id = id
-        self.name = name
-        self.url = url
-        self.isEnabled = isEnabled
-        self.rulesCount = rulesCount
-        self.lastUpdated = lastUpdated
-        self.chunkCount = chunkCount
-    }
+    var ruleCount: Int
 }
 
-struct IncompatibleRuleRecord: Identifiable, Codable, Equatable {
-    var id: UUID
-    var originalRule: String
-    var reason: String
+final class AdBlockManager {
+    static let shared = AdBlockManager()
 
-    init(id: UUID = UUID(), originalRule: String, reason: String) {
-        self.id = id
-        self.originalRule = originalRule
-        self.reason = reason
-    }
-}
+    static let customSourceId = "__custom_rules__"
 
-final class AdBlockEngine: NSObject {
-    static let shared = AdBlockEngine()
+    private let enabledKey = "adblock_enabled_v2"
+    private let subscriptionsKey = "adblock_subscriptions_v2"
+    private let customRulesKey = "adblock_custom_rules_v2"
+    private let metadataKey = "adblock_compiled_metadata_v9"
+    private let identifierPrefix = "SimpleBrowserAdBlockV9"
+    private let diagnosticKey = "adblock_unsupported_rules_v1"
 
-    private(set) var subscriptions: [AdBlockSubscription] = []
-    private(set) var incompatibleRules: [IncompatibleRuleRecord] = []
-    private(set) var isCompiling: Bool = false
+    private let nativeRuleChunkSize = 8000
+    private let maximumCosmeticRulesPerSource = 100000
+    private let cosmeticScriptPayloadLimit = 180000
+    private let maximumCompilationDuration: TimeInterval = 180
+    private let maximumSingleChunkDuration: TimeInterval = 45
+    private let autoUpdateInterval: TimeInterval = 86400
+    private let autoUpdateRetryCooldown: TimeInterval = 1800
 
-    var onProgressUpdate: ((String, Int, Int) -> Void)?
-    var onSubscriptionsChanged: (() -> Void)?
-    var onIncompatibleRulesChanged: (() -> Void)?
+    private var attachedWebViews = NSHashTable<WKWebView>.weakObjects()
+    private var compiledListsBySource: [String: [WKContentRuleList]] = [:]
+    private var cosmeticScriptsBySource: [String: [WKUserScript]] = [:]
+    private var metadataBySource: [String: AdBlockCompiledSourceMetadata] = [:]
+    private var unsupportedRulesBySource: [String: [AdBlockUnsupportedRule]] = [:]
+    private var updatingSourceIds = Set<String>()
+    private var updateStatusBySource: [String: String] = [:]
+    private var lastAutoUpdateAttemptBySource: [String: Date] = [:]
+    private let parseQueue = DispatchQueue(label: "SimpleBrowser.AdBlockParser", qos: .userInitiated)
+    private let stateLock = NSLock()
 
-    private override init() {
-        super.init()
-        loadSubscriptions()
-        loadIncompatibleRules()
-        if subscriptions.isEmpty {
-            purgeAllDiskStorage()
-        } else {
-            purgeOrphanedStorage()
+    var isEnabled: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: enabledKey)
         }
-    }
-
-    private func getBaseDirectory() -> URL {
-        let fileManager = FileManager.default
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = appSupport.appendingPathComponent("AdBlock", isDirectory: true)
-        if !fileManager.fileExists(atPath: dir.path) {
-            try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        }
-        return dir
-    }
-
-    private func loadSubscriptions() {
-        let file = getBaseDirectory().appendingPathComponent("subscriptions.json")
-        guard let data = try? Data(contentsOf: file),
-              let list = try? JSONDecoder().decode([AdBlockSubscription].self, from: data) else {
-            subscriptions = []
-            return
-        }
-        subscriptions = list
-    }
-
-    func saveSubscriptions() {
-        let file = getBaseDirectory().appendingPathComponent("subscriptions.json")
-        if let data = try? JSONEncoder().encode(subscriptions) {
-            try? data.write(to: file)
-        }
-    }
-
-    private func loadIncompatibleRules() {
-        let file = getBaseDirectory().appendingPathComponent("incompatible.json")
-        guard let data = try? Data(contentsOf: file),
-              let list = try? JSONDecoder().decode([IncompatibleRuleRecord].self, from: data) else {
-            incompatibleRules = []
-            return
-        }
-        incompatibleRules = list
-    }
-
-    func saveIncompatibleRules() {
-        let file = getBaseDirectory().appendingPathComponent("incompatible.json")
-        if let data = try? JSONEncoder().encode(incompatibleRules) {
-            try? data.write(to: file)
-        }
-    }
-
-    func addSubscription(name: String, url: String, completion: (() -> Void)? = nil) {
-        let sub = AdBlockSubscription(name: name, url: url)
-        subscriptions.append(sub)
-        saveSubscriptions()
-        onSubscriptionsChanged?()
-        completion?()
-    }
-
-    func deleteSubscription(at index: Int, completion: (() -> Void)? = nil) {
-        guard subscriptions.indices.contains(index) else {
-            completion?()
-            return
-        }
-        let sub = subscriptions.remove(at: index)
-        saveSubscriptions()
-        onSubscriptionsChanged?()
-        removeSubscriptionChunks(sub) { [weak self] in
-            guard let self = self else {
-                completion?()
-                return
+        set {
+            UserDefaults.standard.set(newValue, forKey: enabledKey)
+            applyRulesToAttachedWebViews()
+            if newValue {
+                checkAndAutoUpdateSubscriptions()
             }
-            if self.subscriptions.isEmpty {
-                self.incompatibleRules.removeAll()
-                self.saveIncompatibleRules()
-                self.onIncompatibleRulesChanged?()
-                self.purgeAllDiskStorage(completion: completion)
+        }
+    }
+
+    private init() {
+        if UserDefaults.standard.object(forKey: enabledKey) == nil {
+            UserDefaults.standard.set(true, forKey: enabledKey)
+        }
+
+        metadataBySource = loadMetadata()
+        unsupportedRulesBySource = loadUnsupportedRules()
+        restorePersistedRules()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.checkAndAutoUpdateSubscriptions()
+        }
+    }
+
+    @objc private func handleAppDidBecomeActive() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.checkAndAutoUpdateSubscriptions()
+        }
+    }
+
+    func checkAndAutoUpdateSubscriptions() {
+        guard isEnabled else { return }
+
+        let now = Date()
+        let subscriptions = loadSubscriptions()
+
+        let dueSubscriptions = subscriptions.filter { sub in
+            guard sub.isEnabled else { return false }
+
+            stateLock.lock()
+            let isCurrentlyUpdating = updatingSourceIds.contains(sub.id)
+            let lastAttempt = lastAutoUpdateAttemptBySource[sub.id]
+            stateLock.unlock()
+
+            if isCurrentlyUpdating {
+                return false
+            }
+
+            if let lastAttempt = lastAttempt, now.timeIntervalSince(lastAttempt) < autoUpdateRetryCooldown {
+                return false
+            }
+
+            guard let lastUpdated = sub.lastUpdated else {
+                return true
+            }
+
+            return now.timeIntervalSince(lastUpdated) >= autoUpdateInterval
+        }
+
+        guard !dueSubscriptions.isEmpty else { return }
+        autoUpdateSequentially(subscriptions: dueSubscriptions, index: 0)
+    }
+
+    private func autoUpdateSequentially(subscriptions: [AdBlockSubscription], index: Int) {
+        guard index < subscriptions.count, isEnabled else { return }
+
+        let sub = subscriptions[index]
+        let now = Date()
+
+        stateLock.lock()
+        let isCurrentlyUpdating = updatingSourceIds.contains(sub.id)
+        if !isCurrentlyUpdating {
+            lastAutoUpdateAttemptBySource[sub.id] = now
+        }
+        stateLock.unlock()
+
+        if isCurrentlyUpdating {
+            autoUpdateSequentially(subscriptions: subscriptions, index: index + 1)
+            return
+        }
+
+        fetchSubscription(sub) { [weak self] _, _, _ in
+            self?.autoUpdateSequentially(subscriptions: subscriptions, index: index + 1)
+        }
+    }
+
+    func loadSubscriptions() -> [AdBlockSubscription] {
+        guard let data = UserDefaults.standard.data(forKey: subscriptionsKey),
+              let items = try? JSONDecoder().decode([AdBlockSubscription].self, from: data) else {
+            return []
+        }
+
+        return items
+    }
+
+    func saveSubscriptions(_ subscriptions: [AdBlockSubscription]) {
+        guard let data = try? JSONEncoder().encode(subscriptions) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: subscriptionsKey)
+    }
+
+    func toggleSubscription(id: String, isEnabled: Bool) {
+        var subscriptions = loadSubscriptions()
+        if let idx = subscriptions.firstIndex(where: { $0.id == id }) {
+            subscriptions[idx].isEnabled = isEnabled
+            saveSubscriptions(subscriptions)
+            if isEnabled {
+                compileSource(id: id, completion: nil)
+                checkAndAutoUpdateSubscriptions()
             } else {
-                self.purgeOrphanedStorage(completion: completion)
+                deactivateSource(id: id)
             }
         }
     }
 
-    func deleteSubscription(id: UUID, completion: (() -> Void)? = nil) {
-        if let index = subscriptions.firstIndex(where: { $0.id == id }) {
-            deleteSubscription(at: index, completion: completion)
+    func getCustomRules() -> String {
+        UserDefaults.standard.string(forKey: customRulesKey) ?? ""
+    }
+
+    func saveCustomRules(
+        _ rules: String,
+        completion: ((Bool, String?) -> Void)? = nil
+    ) {
+        stateLock.lock()
+        let isUpdating = updatingSourceIds.contains(Self.customSourceId)
+        stateLock.unlock()
+
+        guard !isUpdating else {
+            completion?(false, "自定义规则正在保存")
+            return
+        }
+
+        UserDefaults.standard.set(rules, forKey: customRulesKey)
+        setUpdateStatus(
+            sourceId: Self.customSourceId,
+            status: "正在解析自定义规则…"
+        )
+
+        compileSource(id: Self.customSourceId) { [weak self] success, message in
+            self?.setUpdateStatus(
+                sourceId: Self.customSourceId,
+                status: nil
+            )
+            completion?(success, message)
+        }
+    }
+
+    func updateSubscription(id: String, name: String, urlString: String) {
+        var subscriptions = loadSubscriptions()
+
+        guard let index = subscriptions.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        subscriptions[index].name = name
+        subscriptions[index].urlString = urlString
+        saveSubscriptions(subscriptions)
+    }
+
+    func addSubscription(name: String, urlString: String) -> AdBlockSubscription {
+        let subscription = AdBlockSubscription(
+            id: UUID().uuidString,
+            name: name,
+            urlString: urlString,
+            isEnabled: true,
+            lastUpdated: nil,
+            ruleCount: 0
+        )
+
+        var subscriptions = loadSubscriptions()
+        subscriptions.append(subscription)
+        saveSubscriptions(subscriptions)
+
+        return subscription
+    }
+
+    func deleteSubscription(id: String) {
+        var subscriptions = loadSubscriptions()
+        subscriptions.removeAll { $0.id == id }
+        saveSubscriptions(subscriptions)
+        deactivateSource(id: id)
+    }
+
+    func isUpdating(sourceId: String) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return updatingSourceIds.contains(sourceId)
+    }
+
+    func ruleCount(sourceId: String) -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return metadataBySource[sourceId]?.ruleCount ?? 0
+    }
+
+    func unsupportedRuleCount(sourceId: String) -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return unsupportedRulesBySource[sourceId]?.count ?? 0
+    }
+
+    func unsupportedRulesText(sourceId: String) -> String {
+        stateLock.lock()
+        let rules = unsupportedRulesBySource[sourceId] ?? []
+        stateLock.unlock()
+
+        guard !rules.isEmpty else {
+            return "没有检测到不兼容规则。"
+        }
+
+        return rules.enumerated().map { index, item in
+            let errorText = item.errorDescription.isEmpty ? "未返回具体错误" : item.errorDescription
+
+            return """
+            [\(index + 1)]
+            原始规则:
+            \(item.rawRule)
+
+            转换后的 WebKit 规则:
+            \(item.compiledJSON)
+
+            编译错误:
+            \(errorText)
+            """
+        }.joined(separator: "\n\n--------------------\n\n")
+    }
+
+    func clearUnsupportedRules(sourceId: String) {
+        stateLock.lock()
+        unsupportedRulesBySource.removeValue(forKey: sourceId)
+        let copy = unsupportedRulesBySource
+        stateLock.unlock()
+        saveUnsupportedRules(copy)
+    }
+
+    func updateStatus(sourceId: String) -> String? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return updateStatusBySource[sourceId]
+    }
+
+    private func setUpdateStatus(
+        sourceId: String,
+        status: String?
+    ) {
+        stateLock.lock()
+        if let status = status {
+            updateStatusBySource[sourceId] = status
         } else {
-            completion?()
+            updateStatusBySource.removeValue(forKey: sourceId)
         }
+        stateLock.unlock()
     }
 
-    func removeSubscription(_ subscription: AdBlockSubscription, completion: (() -> Void)? = nil) {
-        deleteSubscription(id: subscription.id, completion: completion)
+    func attach(to webView: WKWebView) {
+        attachedWebViews.add(webView)
+        applyRules(to: webView)
     }
 
-    func deleteAllSubscriptions(completion: (() -> Void)? = nil) {
-        subscriptions.removeAll()
-        incompatibleRules.removeAll()
-        saveSubscriptions()
-        saveIncompatibleRules()
-        onSubscriptionsChanged?()
-        onIncompatibleRulesChanged?()
-        purgeAllDiskStorage(completion: completion)
+    func detach(from webView: WKWebView) {
+        attachedWebViews.remove(webView)
     }
 
-    func clearAllRuleStorage(completion: (() -> Void)? = nil) {
-        deleteAllSubscriptions(completion: completion)
-    }
+    func applyRules(to webView: WKWebView) {
+        let controller = webView.configuration.userContentController
 
-    private func removeSubscriptionChunks(_ subscription: AdBlockSubscription, completion: @escaping () -> Void) {
-        let store = WKContentRuleListStore.default()
-        let prefix = "simple_ab_\(subscription.id.uuidString)_"
-        store.getAvailableContentRuleListIdentifiers { allIds in
-            guard let allIds = allIds else {
-                completion()
-                return
-            }
-            let targets = allIds.filter { $0.hasPrefix(prefix) }
-            if targets.isEmpty {
-                completion()
-                return
-            }
-            let group = DispatchGroup()
-            for id in targets {
-                group.enter()
-                store.removeContentRuleList(forIdentifier: id) { _ in
-                    group.leave()
-                }
-            }
-            group.notify(queue: .main) {
-                completion()
-            }
+        controller.removeAllContentRuleLists()
+        controller.removeAllUserScripts()
+
+        defer {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("SimpleAdBlockRulesApplied"),
+                object: webView
+            )
         }
-    }
 
-    func purgeOrphanedStorage(completion: (() -> Void)? = nil) {
-        var validIdentifiers = Set<String>()
-        for sub in subscriptions {
-            for i in 0..<sub.chunkCount {
-                validIdentifiers.insert("simple_ab_\(sub.id.uuidString)_\(i)")
-            }
-        }
-        let store = WKContentRuleListStore.default()
-        store.getAvailableContentRuleListIdentifiers { [weak self] allIds in
-            guard let allIds = allIds else {
-                completion?()
-                return
-            }
-            let group = DispatchGroup()
-            for id in allIds where id.hasPrefix("simple_ab_") {
-                if !validIdentifiers.contains(id) {
-                    group.enter()
-                    store.removeContentRuleList(forIdentifier: id) { _ in
-                        group.leave()
-                    }
-                }
-            }
-            group.notify(queue: .main) {
-                self?.cleanCacheFiles()
-                completion?()
-            }
-        }
-    }
-
-    func purgeAllDiskStorage(completion: (() -> Void)? = nil) {
-        let store = WKContentRuleListStore.default()
-        store.getAvailableContentRuleListIdentifiers { [weak self] allIds in
-            let group = DispatchGroup()
-            if let allIds = allIds {
-                for id in allIds {
-                    group.enter()
-                    store.removeContentRuleList(forIdentifier: id) { _ in
-                        group.leave()
-                    }
-                }
-            }
-            group.notify(queue: .global(qos: .utility)) {
-                self?.deepCleanDirectories()
-                DispatchQueue.main.async {
-                    completion?()
-                }
-            }
-        }
-    }
-
-    private func cleanCacheFiles() {
-        let fileManager = FileManager.default
-        if let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
-            let adblockCache = cachesURL.appendingPathComponent("AdBlockCache")
-            try? fileManager.removeItem(at: adblockCache)
-        }
-    }
-
-    private func deepCleanDirectories() {
-        let fileManager = FileManager.default
-        if let libraryURL = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first {
-            if let enumerator = fileManager.enumerator(at: libraryURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
-                var targets: [URL] = []
-                for case let url as URL in enumerator {
-                    if url.lastPathComponent == "ContentRuleLists" {
-                        targets.append(url)
-                    }
-                }
-                for url in targets {
-                    try? fileManager.removeItem(at: url)
-                }
-            }
-        }
-        if let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
-            let adblockCache = cachesURL.appendingPathComponent("AdBlockCache")
-            try? fileManager.removeItem(at: adblockCache)
-        }
-        let cacheDir = getBaseDirectory().appendingPathComponent("Cache")
-        try? fileManager.removeItem(at: cacheDir)
-    }
-
-    func updateSubscription(_ subscription: AdBlockSubscription, completion: @escaping (Bool) -> Void) {
-        guard let url = URL(string: subscription.url) else {
-            completion(false)
+        guard isEnabled else {
             return
         }
-        isCompiling = true
-        let task = URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
-            guard let self = self, let data = data, error == nil, let text = String(data: data, encoding: .utf8) else {
-                DispatchQueue.main.async {
-                    self?.isCompiling = false
-                    completion(false)
-                }
-                return
-            }
-            self.compileSubscription(subscription, rawText: text) { success in
-                DispatchQueue.main.async {
-                    self.isCompiling = false
-                    completion(success)
-                }
-            }
-        }
-        task.resume()
-    }
 
-    func updateAllSubscriptions(completion: @escaping () -> Void) {
-        let items = subscriptions
-        guard !items.isEmpty else {
-            completion()
+        if let host = webView.url?.host, !DomainSettingsStore.shared.getBool(domain: host, setting: "adBlock", defaultVal: true) {
             return
         }
-        var index = 0
-        func next() {
-            if index >= items.count {
-                completion()
-                return
-            }
-            let item = items[index]
-            index += 1
-            updateSubscription(item) { _ in
-                next()
-            }
-        }
-        next()
-    }
 
-    func compileSubscription(_ subscription: AdBlockSubscription, rawText: String, completion: @escaping (Bool) -> Void) {
-        let lines = rawText.components(separatedBy: .newlines)
-        var parsedRules: [[String: Any]] = []
-        var detectedIncompatible: [IncompatibleRuleRecord] = []
+        let enabledSubs = Set(loadSubscriptions().filter { $0.isEnabled }.map { $0.id })
 
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("!") || trimmed.hasPrefix("[") {
+        stateLock.lock()
+        let compiledListsCopy = compiledListsBySource
+        let cosmeticScriptsCopy = cosmeticScriptsBySource
+        stateLock.unlock()
+
+        for sourceId in compiledListsCopy.keys.sorted() {
+            if sourceId != Self.customSourceId && !enabledSubs.contains(sourceId) {
                 continue
             }
-            if let ruleDict = convertLineToRule(trimmed) {
-                parsedRules.append(ruleDict)
-            } else {
-                if detectedIncompatible.count < 300 {
-                    detectedIncompatible.append(IncompatibleRuleRecord(originalRule: trimmed, reason: "语法暂不支持"))
+            for ruleList in compiledListsCopy[sourceId] ?? [] {
+                controller.add(ruleList)
+            }
+        }
+
+        for sourceId in cosmeticScriptsCopy.keys.sorted() {
+            if sourceId != Self.customSourceId && !enabledSubs.contains(sourceId) {
+                continue
+            }
+            for script in cosmeticScriptsCopy[sourceId] ?? [] {
+                controller.addUserScript(script)
+            }
+        }
+    }
+
+    private func applyRulesToAttachedWebViews() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            for webView in self.attachedWebViews.allObjects {
+                self.applyRules(to: webView)
+            }
+        }
+    }
+
+    func fetchSubscription(
+        _ subscription: AdBlockSubscription,
+        completion: @escaping (Bool, Int, String?) -> Void
+    ) {
+        stateLock.lock()
+        if updatingSourceIds.contains(subscription.id) {
+            stateLock.unlock()
+            completion(false, 0, "该订阅正在更新，请等待当前任务结束")
+            return
+        }
+        updatingSourceIds.insert(subscription.id)
+        lastAutoUpdateAttemptBySource[subscription.id] = Date()
+        stateLock.unlock()
+
+        guard let url = URL(string: subscription.urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http" else {
+            stateLock.lock()
+            updatingSourceIds.remove(subscription.id)
+            stateLock.unlock()
+            completion(false, 0, "订阅地址无效")
+            return
+        }
+
+        setUpdateStatus(
+            sourceId: subscription.id,
+            status: "正在下载订阅…"
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 120
+        configuration.timeoutIntervalForResource = 1800
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
+            timeoutInterval: 120
+        )
+
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Version/17.5 Mobile/15E148 Safari/604.1",
+            forHTTPHeaderField: "User-Agent"
+        )
+
+        URLSession(configuration: configuration).dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                DispatchQueue.main.async {
+                    self.stateLock.lock()
+                    self.updatingSourceIds.remove(subscription.id)
+                    self.stateLock.unlock()
+                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                    completion(false, 0, error.localizedDescription)
                 }
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                DispatchQueue.main.async {
+                    self.stateLock.lock()
+                    self.updatingSourceIds.remove(subscription.id)
+                    self.stateLock.unlock()
+                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                    completion(false, 0, "服务器未返回 HTTP 响应")
+                }
+                return
+            }
+
+            guard (200...299).contains(httpResponse.statusCode) else {
+                DispatchQueue.main.async {
+                    self.stateLock.lock()
+                    self.updatingSourceIds.remove(subscription.id)
+                    self.stateLock.unlock()
+                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                    completion(false, 0, "服务器返回 HTTP \(httpResponse.statusCode)")
+                }
+                return
+            }
+
+            guard let data = data, !data.isEmpty else {
+                DispatchQueue.main.async {
+                    self.stateLock.lock()
+                    self.updatingSourceIds.remove(subscription.id)
+                    self.stateLock.unlock()
+                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                    completion(false, 0, "订阅内容为空")
+                }
+                return
+            }
+
+            let text = String(decoding: data, as: UTF8.self)
+
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                DispatchQueue.main.async {
+                    self.stateLock.lock()
+                    self.updatingSourceIds.remove(subscription.id)
+                    self.stateLock.unlock()
+                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                    completion(false, 0, "订阅内容不是有效文本")
+                }
+                return
+            }
+
+            do {
+                try text.write(
+                    to: self.subscriptionFileURL(id: subscription.id),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            } catch {
+                DispatchQueue.main.async {
+                    self.stateLock.lock()
+                    self.updatingSourceIds.remove(subscription.id)
+                    self.stateLock.unlock()
+                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                    completion(false, 0, "订阅文件保存失败：\(error.localizedDescription)")
+                }
+                return
+            }
+
+            self.setUpdateStatus(
+                sourceId: subscription.id,
+                status: "正在解析规则…"
+            )
+
+            self.compileSource(id: subscription.id, isAlreadyUpdating: true) { success, message in
+                DispatchQueue.main.async {
+                    self.stateLock.lock()
+                    self.updatingSourceIds.remove(subscription.id)
+                    self.stateLock.unlock()
+                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
+
+                    let count = self.ruleCount(sourceId: subscription.id)
+
+                    if success {
+                        var subscriptions = self.loadSubscriptions()
+                        if let index = subscriptions.firstIndex(where: { $0.id == subscription.id }) {
+                            subscriptions[index].lastUpdated = Date()
+                            subscriptions[index].ruleCount = count
+                            self.saveSubscriptions(subscriptions)
+                        }
+                    }
+
+                    completion(success, count, message)
+                }
+            }
+        }.resume()
+    }
+
+    private func restorePersistedRules() {
+        parseQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            self.stateLock.lock()
+            let metadataCopy = self.metadataBySource
+            self.stateLock.unlock()
+
+            for sourceId in metadataCopy.keys.sorted() {
+                guard let metadata = metadataCopy[sourceId] else {
+                    continue
+                }
+
+                if metadata.ruleListIdentifiers.isEmpty {
+                    self.restoreCosmeticScripts(metadata: metadata)
+                    continue
+                }
+
+                self.loadRuleListsSequentially(identifiers: metadata.ruleListIdentifiers, index: 0, loaded: []) { [weak self] lists in
+                    guard let self = self else { return }
+
+                    if lists.count == metadata.ruleListIdentifiers.count {
+                        self.stateLock.lock()
+                        self.compiledListsBySource[sourceId] = lists
+                        self.stateLock.unlock()
+                        self.restoreCosmeticScripts(metadata: metadata)
+                        self.applyRulesToAttachedWebViews()
+                    } else {
+                        self.compileSource(id: sourceId, completion: nil)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadRuleListsSequentially(
+        identifiers: [String],
+        index: Int,
+        loaded: [WKContentRuleList],
+        completion: @escaping ([WKContentRuleList]) -> Void
+    ) {
+        guard index < identifiers.count else {
+            completion(loaded)
+            return
+        }
+
+        DispatchQueue.main.async {
+            WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: identifiers[index]) { [weak self] ruleList, _ in
+                self?.parseQueue.async {
+                    var nextLoaded = loaded
+                    if let rl = ruleList {
+                        nextLoaded.append(rl)
+                    }
+                    self?.loadRuleListsSequentially(
+                        identifiers: identifiers,
+                        index: index + 1,
+                        loaded: nextLoaded,
+                        completion: completion
+                    )
+                }
+            }
+        }
+    }
+
+    private func removeOldRuleLists(for sourceId: String) {
+        stateLock.lock()
+        let oldIdentifiers = metadataBySource[sourceId]?.ruleListIdentifiers ?? []
+        stateLock.unlock()
+
+        for identifier in oldIdentifiers {
+            WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier, completionHandler: { _ in })
+        }
+    }
+
+    private func compileSource(
+        id sourceId: String,
+        isAlreadyUpdating: Bool = false,
+        completion: ((Bool, String?) -> Void)?
+    ) {
+        stateLock.lock()
+        if !isAlreadyUpdating && updatingSourceIds.contains(sourceId) {
+            stateLock.unlock()
+            completion?(false, "该规则源正在更新")
+            return
+        }
+        updatingSourceIds.insert(sourceId)
+        stateLock.unlock()
+
+        guard let text = sourceText(id: sourceId) else {
+            deactivateSource(id: sourceId)
+            completion?(true, nil)
+            return
+        }
+
+        if updateStatus(sourceId: sourceId) == nil {
+            setUpdateStatus(
+                sourceId: sourceId,
+                status: "正在解析规则…"
+            )
+        }
+
+        parseQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            let payload = self.buildSourcePayloadParallel(text: text)
+
+            self.setUpdateStatus(
+                sourceId: sourceId,
+                status: "正在编译规则…"
+            )
+
+            self.compilePayload(
+                payload,
+                sourceId: sourceId,
+                completion: completion
+            )
+        }
+    }
+
+    private func compilePayload(
+        _ payload: AdBlockSourcePayload,
+        sourceId: String,
+        completion: ((Bool, String?) -> Void)?
+    ) {
+        let version = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+
+        guard !payload.networkChunks.isEmpty else {
+            removeOldRuleLists(for: sourceId)
+
+            let metadata = AdBlockCompiledSourceMetadata(
+                sourceId: sourceId,
+                ruleListIdentifiers: [],
+                ruleCount: payload.ruleCount,
+                skippedRuleCount: payload.skippedRuleCount,
+                cosmeticRules: payload.cosmeticRules,
+                cosmeticExceptions: payload.cosmeticExceptions
+            )
+
+            stateLock.lock()
+            metadataBySource[sourceId] = metadata
+            compiledListsBySource.removeValue(forKey: sourceId)
+            unsupportedRulesBySource[sourceId] = []
+            let metaCopy = metadataBySource
+            let unsuppCopy = unsupportedRulesBySource
+            updatingSourceIds.remove(sourceId)
+            stateLock.unlock()
+
+            saveMetadata(metaCopy)
+            saveUnsupportedRules(unsuppCopy)
+
+            parseQueue.async { [weak self] in
+                self?.restoreCosmeticScripts(metadata: metadata)
+                DispatchQueue.main.async {
+                    self?.setUpdateStatus(sourceId: sourceId, status: nil)
+                    self?.applyRulesToAttachedWebViews()
+
+                    let message = payload.skippedRuleCount > 0
+                        ? "已更新，跳过 \(payload.skippedRuleCount) 条不兼容规则"
+                        : nil
+
+                    completion?(true, message)
+                }
+            }
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(maximumCompilationDuration)
+
+        stateLock.lock()
+        unsupportedRulesBySource[sourceId] = []
+        stateLock.unlock()
+
+        compileChunks(
+            payload.networkChunks,
+            sourceId: sourceId,
+            version: version,
+            index: 0,
+            lists: [],
+            identifiers: [],
+            deadline: deadline
+        ) { [weak self] lists, identifiers in
+            guard let self = self else { return }
+
+            if lists.isEmpty && payload.cosmeticRules.isEmpty && payload.cosmeticExceptions.isEmpty {
+                self.stateLock.lock()
+                self.updatingSourceIds.remove(sourceId)
+                self.stateLock.unlock()
+                self.setUpdateStatus(sourceId: sourceId, status: nil)
+                DispatchQueue.main.async {
+                    completion?(false, "规则编译超时或所有规则块均不兼容")
+                }
+                return
+            }
+
+            self.removeOldRuleLists(for: sourceId)
+
+            let metadata = AdBlockCompiledSourceMetadata(
+                sourceId: sourceId,
+                ruleListIdentifiers: identifiers,
+                ruleCount: payload.ruleCount,
+                skippedRuleCount: payload.skippedRuleCount + self.unsupportedRuleCount(sourceId: sourceId),
+                cosmeticRules: payload.cosmeticRules,
+                cosmeticExceptions: payload.cosmeticExceptions
+            )
+
+            self.stateLock.lock()
+            self.metadataBySource[sourceId] = metadata
+            self.compiledListsBySource[sourceId] = lists
+            self.updatingSourceIds.remove(sourceId)
+            let metaCopy = self.metadataBySource
+            let unsuppCopy = self.unsupportedRulesBySource
+            self.stateLock.unlock()
+
+            self.saveMetadata(metaCopy)
+            self.saveUnsupportedRules(unsuppCopy)
+
+            self.parseQueue.async { [weak self] in
+                self?.restoreCosmeticScripts(metadata: metadata)
+                DispatchQueue.main.async {
+                    self?.setUpdateStatus(sourceId: sourceId, status: nil)
+                    self?.applyRulesToAttachedWebViews()
+
+                    let unsupportedCount = self?.unsupportedRuleCount(sourceId: sourceId) ?? 0
+                    let skipped = metadata.skippedRuleCount
+
+                    let message: String?
+                    if unsupportedCount > 0 {
+                        message = "已更新，\(unsupportedCount) 条规则未通过 WebKit 编译，可在规则管理页查看详情。"
+                    } else if skipped > 0 {
+                        message = "已更新，跳过 \(skipped) 条无法转换的规则。"
+                    } else {
+                        message = nil
+                    }
+
+                    completion?(true, message)
+                }
+            }
+        }
+    }
+
+    private func compileChunks(
+        _ chunks: [[AdBlockNetworkRule]],
+        sourceId: String,
+        version: String,
+        index: Int,
+        lists: [WKContentRuleList],
+        identifiers: [String],
+        deadline: Date,
+        completion: @escaping ([WKContentRuleList], [String]) -> Void
+    ) {
+        guard index < chunks.count else {
+            completion(lists, identifiers)
+            return
+        }
+
+        guard Date() < deadline else {
+            let remainingRules = chunks[index...].flatMap { $0 }
+            for rule in remainingRules.prefix(50) {
+                recordUnsupportedRule(
+                    sourceId: sourceId,
+                    rule: rule,
+                    error: "总编译超时，未提交给 WebKit 编译"
+                )
+            }
+            completion(lists, identifiers)
+            return
+        }
+
+        setUpdateStatus(
+            sourceId: sourceId,
+            status: "正在编译规则 \(index + 1)/\(chunks.count)…"
+        )
+
+        compileRuleGroup(
+            chunks[index],
+            sourceId: sourceId,
+            version: version,
+            groupIdentifier: "\(index)",
+            deadline: deadline,
+            depth: 0
+        ) { [weak self] ruleLists, ruleIdentifiers in
+            guard let self = self else { return }
+            self.compileChunks(
+                chunks,
+                sourceId: sourceId,
+                version: version,
+                index: index + 1,
+                lists: lists + ruleLists,
+                identifiers: identifiers + ruleIdentifiers,
+                deadline: deadline,
+                completion: completion
+            )
+        }
+    }
+
+    private func compileRuleGroup(
+        _ rules: [AdBlockNetworkRule],
+        sourceId: String,
+        version: String,
+        groupIdentifier: String,
+        deadline: Date,
+        depth: Int,
+        completion: @escaping ([WKContentRuleList], [String]) -> Void
+    ) {
+        guard !rules.isEmpty else {
+            completion([], [])
+            return
+        }
+
+        guard Date() < deadline else {
+            for rule in rules.prefix(20) {
+                recordUnsupportedRule(
+                    sourceId: sourceId,
+                    rule: rule,
+                    error: "编译超时"
+                )
+            }
+            completion([], [])
+            return
+        }
+
+        guard let json = jsonString(from: rules.map(\.compiledRule)) else {
+            for rule in rules.prefix(20) {
+                recordUnsupportedRule(
+                    sourceId: sourceId,
+                    rule: rule,
+                    error: "无法生成 JSON"
+                )
+            }
+            completion([], [])
+            return
+        }
+
+        let identifier = "\(identifierPrefix).\(sourceId.replacingOccurrences(of: "-", with: "")).\(version).\(groupIdentifier)"
+        let gate = AdBlockChunkCompilationGate()
+
+        func resolve(ruleList: WKContentRuleList?, error: Error?) {
+            gate.resolve {
+                guard let ruleList = ruleList else {
+                    if rules.count == 1 || depth >= 6 {
+                        for rule in rules.prefix(10) {
+                            self.recordUnsupportedRule(
+                                sourceId: sourceId,
+                                rule: rule,
+                                error: self.compilerErrorDescription(error)
+                            )
+                        }
+                        completion([], [])
+                        return
+                    }
+
+                    let middle = rules.count / 2
+                    let left = Array(rules[..<middle])
+                    let right = Array(rules[middle...])
+
+                    self.compileRuleGroup(
+                        left,
+                        sourceId: sourceId,
+                        version: version,
+                        groupIdentifier: "\(groupIdentifier)L",
+                        deadline: deadline,
+                        depth: depth + 1
+                    ) { leftLists, leftIdentifiers in
+                        self.compileRuleGroup(
+                            right,
+                            sourceId: sourceId,
+                            version: version,
+                            groupIdentifier: "\(groupIdentifier)R",
+                            deadline: deadline,
+                            depth: depth + 1
+                        ) { rightLists, rightIdentifiers in
+                            completion(
+                                leftLists + rightLists,
+                                leftIdentifiers + rightIdentifiers
+                            )
+                        }
+                    }
+                    return
+                }
+                completion([ruleList], [identifier])
             }
         }
 
         DispatchQueue.main.async {
-            self.incompatibleRules = detectedIncompatible
-            self.saveIncompatibleRules()
-            self.onIncompatibleRulesChanged?()
-        }
-
-        let chunkSize = 8000
-        var chunks: [[[String: Any]]] = []
-        var currentChunk: [[String: Any]] = []
-
-        for rule in parsedRules {
-            currentChunk.append(rule)
-            if currentChunk.count >= chunkSize {
-                chunks.append(currentChunk)
-                currentChunk = []
+            WKContentRuleListStore.default().compileContentRuleList(
+                forIdentifier: identifier,
+                encodedContentRuleList: json
+            ) { ruleList, error in
+                resolve(ruleList: ruleList, error: error)
             }
         }
-        if !currentChunk.isEmpty || chunks.isEmpty {
-            chunks.append(currentChunk)
-        }
-
-        let totalChunks = chunks.count
-        var compiledChunks = 0
-        let store = WKContentRuleListStore.default()
-
-        func compileNext(chunkIndex: Int) {
-            if chunkIndex >= totalChunks {
-                DispatchQueue.main.async {
-                    if let idx = self.subscriptions.firstIndex(where: { $0.id == subscription.id }) {
-                        self.subscriptions[idx].rulesCount = parsedRules.count
-                        self.subscriptions[idx].lastUpdated = Date()
-                        self.subscriptions[idx].chunkCount = totalChunks
-                        self.saveSubscriptions()
-                        self.onSubscriptionsChanged?()
-                    }
-                    self.purgeOrphanedStorage {
-                        completion(true)
-                    }
-                }
-                return
-            }
-
-            DispatchQueue.main.async {
-                self.onProgressUpdate?(subscription.name, chunkIndex + 1, totalChunks)
-            }
-
-            let chunkData = chunks[chunkIndex]
-            guard let jsonData = try? JSONSerialization.data(withJSONObject: chunkData, options: []),
-                  let jsonString = String(data: jsonData, encoding: .utf8) else {
-                completion(false)
-                return
-            }
-
-            let chunkId = "simple_ab_\(subscription.id.uuidString)_\(chunkIndex)"
-            store.compileContentRuleList(forIdentifier: chunkId, encodedContentRuleList: jsonString) { _, error in
-                if error != nil {
-                    DispatchQueue.main.async {
-                        completion(false)
-                    }
-                    return
-                }
-                compiledChunks += 1
-                compileNext(chunkIndex: chunkIndex + 1)
-            }
-        }
-
-        compileNext(chunkIndex: 0)
     }
 
-    private func convertLineToRule(_ line: String) -> [String: Any]? {
-        if line.contains("##") {
-            let parts = line.components(separatedBy: "##")
-            guard parts.count == 2 else { return nil }
-            let domainPart = parts[0].trimmingCharacters(in: .whitespaces)
-            let selector = parts[1].trimmingCharacters(in: .whitespaces)
-            guard !selector.isEmpty else { return nil }
-            var trigger: [String: Any] = ["url-filter": ".*"]
-            if !domainPart.isEmpty {
-                let domains = domainPart.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                let positiveDomains = domains.filter { !$0.hasPrefix("~") }
-                let negativeDomains = domains.filter { $0.hasPrefix("~") }.map { String($0.dropFirst()) }
-                if !positiveDomains.isEmpty {
-                    trigger["if-domain"] = positiveDomains
-                } else if !negativeDomains.isEmpty {
-                    trigger["unless-domain"] = negativeDomains
+    private func deactivateSource(id sourceId: String) {
+        removeOldRuleLists(for: sourceId)
+        stateLock.lock()
+        metadataBySource.removeValue(forKey: sourceId)
+        compiledListsBySource.removeValue(forKey: sourceId)
+        cosmeticScriptsBySource.removeValue(forKey: sourceId)
+        unsupportedRulesBySource.removeValue(forKey: sourceId)
+        updatingSourceIds.remove(sourceId)
+        let metaCopy = metadataBySource
+        let unsuppCopy = unsupportedRulesBySource
+        stateLock.unlock()
+
+        setUpdateStatus(sourceId: sourceId, status: nil)
+        saveMetadata(metaCopy)
+        saveUnsupportedRules(unsuppCopy)
+        applyRulesToAttachedWebViews()
+    }
+
+    private func restoreCosmeticScripts(metadata: AdBlockCompiledSourceMetadata) {
+        guard !metadata.cosmeticRules.isEmpty || !metadata.cosmeticExceptions.isEmpty else {
+            stateLock.lock()
+            cosmeticScriptsBySource.removeValue(forKey: metadata.sourceId)
+            stateLock.unlock()
+            return
+        }
+
+        let batches = cosmeticRuleBatches(metadata.cosmeticRules)
+        let exceptionsData = (try? JSONEncoder().encode(metadata.cosmeticExceptions)) ?? Data()
+        let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
+
+        let scripts = batches.compactMap { rules -> WKUserScript? in
+            guard let data = try? JSONEncoder().encode(rules),
+                  let json = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+
+            let source = """
+            (function() {
+                var rules = \(json);
+                var exceptions = \(exceptionsJson);
+                var fallbackRules = [];
+                var styleId = '__simple_browser_adblock_style__';
+                var host = (location.hostname || '').toLowerCase();
+
+                function matchesDomain(rule) {
+                    if (rule.excludedDomains && rule.excludedDomains.length > 0) {
+                        for (var j = 0; j < rule.excludedDomains.length; j++) {
+                            var ex = rule.excludedDomains[j];
+                            if (host === ex || host.endsWith('.' + ex)) {
+                                return false;
+                            }
+                        }
+                    }
+                    if (!rule.domains || rule.domains.length === 0) {
+                        return true;
+                    }
+                    for (var i = 0; i < rule.domains.length; i++) {
+                        var domain = rule.domains[i];
+                        if (host === domain || host.endsWith('.' + domain)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                function isSelectorWhitelisted(selector) {
+                    if (!exceptions || exceptions.length === 0) {
+                        return false;
+                    }
+                    for (var i = 0; i < exceptions.length; i++) {
+                        var ex = exceptions[i];
+                        if (ex.selector === selector && matchesDomain(ex)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                function hideElement(element) {
+                    if (!element) {
+                        return;
+                    }
+                    element.style.setProperty('display', 'none', 'important');
+                    element.style.setProperty('visibility', 'hidden', 'important');
+                    element.style.setProperty('pointer-events', 'none', 'important');
+                }
+
+                function hideBySelector(selector) {
+                    try {
+                        var elements = document.querySelectorAll(selector);
+                        for (var i = 0; i < elements.length; i++) {
+                            hideElement(elements[i]);
+                        }
+                        return true;
+                    } catch (_) {
+                        return false;
+                    }
+                }
+
+                function hideByHasFallback(selector) {
+                    var hasIndex = selector.indexOf(':has(');
+                    if (hasIndex < 0 || !selector.endsWith(')')) {
+                        return;
+                    }
+                    var outerSelector = selector.substring(0, hasIndex).trim() || '*';
+                    var innerSelector = selector.substring(hasIndex + 5, selector.length - 1).trim();
+                    if (!innerSelector) {
+                        return;
+                    }
+                    var outerElements;
+                    try {
+                        outerElements = document.querySelectorAll(outerSelector);
+                    } catch (_) {
+                        return;
+                    }
+                    for (var i = 0; i < outerElements.length; i++) {
+                        var outerElement = outerElements[i];
+                        var matched = false;
+                        try {
+                            if (innerSelector.startsWith('>')) {
+                                matched = outerElement.querySelector(':scope ' + innerSelector) !== null;
+                            } else {
+                                matched = outerElement.querySelector(innerSelector) !== null;
+                            }
+                        } catch (_) {
+                            matched = false;
+                        }
+                        if (matched) {
+                            hideElement(outerElement);
+                        }
+                    }
+                }
+
+                function applyFallbackRules() {
+                    for (var i = 0; i < fallbackRules.length; i++) {
+                        var rule = fallbackRules[i];
+                        if (!matchesDomain(rule) || isSelectorWhitelisted(rule.selector)) {
+                            continue;
+                        }
+                        if (!hideBySelector(rule.selector)) {
+                            hideByHasFallback(rule.selector);
+                        }
+                    }
+                }
+
+                function insertRules() {
+                    var style = document.getElementById(styleId);
+                    if (!style) {
+                        style = document.createElement('style');
+                        style.id = styleId;
+                        style.type = 'text/css';
+                        (document.head || document.documentElement).appendChild(style);
+                    }
+                    var sheet = style.sheet;
+                    if (!sheet) {
+                        return;
+                    }
+                    for (var i = 0; i < rules.length; i++) {
+                        var rule = rules[i];
+                        if (!matchesDomain(rule) || isSelectorWhitelisted(rule.selector)) {
+                            continue;
+                        }
+                        try {
+                            sheet.insertRule(
+                                rule.selector + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}',
+                                sheet.cssRules.length
+                            );
+                        } catch (_) {
+                            fallbackRules.push(rule);
+                        }
+                    }
+                    applyFallbackRules();
+                }
+
+                function scheduleFallbackApply() {
+                    var timer = null;
+                    var observer = new MutationObserver(function() {
+                        if (timer !== null) {
+                            return;
+                        }
+                        timer = setTimeout(function() {
+                            timer = null;
+                            applyFallbackRules();
+                        }, 300);
+                    });
+                    observer.observe(document.documentElement, {
+                        childList: true,
+                        subtree: true
+                    });
+                }
+
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', function() {
+                        insertRules();
+                        if (fallbackRules.length > 0) {
+                            scheduleFallbackApply();
+                        }
+                    }, { once: true });
+                } else {
+                    insertRules();
+                    if (fallbackRules.length > 0) {
+                        scheduleFallbackApply();
+                    }
+                }
+            })();
+            """
+
+            return WKUserScript(
+                source: source,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        }
+
+        stateLock.lock()
+        cosmeticScriptsBySource[metadata.sourceId] = scripts
+        stateLock.unlock()
+    }
+
+    private func cosmeticRuleBatches(
+        _ rules: [AdBlockCosmeticRule]
+    ) -> [[AdBlockCosmeticRule]] {
+        let chunkSize = 800
+        return stride(from: 0, to: rules.count, by: chunkSize).map {
+            Array(rules[$0..<min($0 + chunkSize, rules.count)])
+        }
+    }
+
+    private func sourceText(id sourceId: String) -> String? {
+        if sourceId == Self.customSourceId {
+            let text = getCustomRules()
+            return text.isEmpty ? nil : text
+        }
+
+        return try? String(
+            contentsOf: subscriptionFileURL(id: sourceId),
+            encoding: .utf8
+        )
+    }
+
+    private func buildSourcePayloadParallel(text: String) -> AdBlockSourcePayload {
+        let lines = text.components(separatedBy: .newlines)
+        let totalLines = lines.count
+        guard totalLines > 0 else {
+            return AdBlockSourcePayload(
+                networkChunks: [],
+                cosmeticRules: [],
+                cosmeticExceptions: [],
+                ruleCount: 0,
+                skippedRuleCount: 0
+            )
+        }
+
+        let sliceSize = 10000
+        let sliceCount = (totalLines + sliceSize - 1) / sliceSize
+
+        struct IntermediateResult {
+            var blockRules: [AdBlockNetworkRule]
+            var exceptionRules: [AdBlockNetworkRule]
+            var cosmeticRules: [AdBlockCosmeticRule]
+            var cosmeticExceptions: [AdBlockCosmeticException]
+            var ruleCount: Int
+            var skippedRuleCount: Int
+        }
+
+        var results = Array<IntermediateResult>(
+            repeating: IntermediateResult(
+                blockRules: [],
+                exceptionRules: [],
+                cosmeticRules: [],
+                cosmeticExceptions: [],
+                ruleCount: 0,
+                skippedRuleCount: 0
+            ),
+            count: sliceCount
+        )
+
+        DispatchQueue.concurrentPerform(iterations: sliceCount) { index in
+            let start = index * sliceSize
+            let end = min(start + sliceSize, totalLines)
+            let subLines = lines[start..<end]
+
+            var blockRules: [AdBlockNetworkRule] = []
+            var exceptionRules: [AdBlockNetworkRule] = []
+            var cosmeticRules: [AdBlockCosmeticRule] = []
+            var cosmeticExceptions: [AdBlockCosmeticException] = []
+            var ruleCount = 0
+            var skippedRuleCount = 0
+
+            for line in subLines {
+                let result = self.parseRule(line)
+                if let networkRule = result.networkRule {
+                    let ruleItem = AdBlockNetworkRule(
+                        rawRule: line,
+                        compiledRule: networkRule,
+                        isException: result.isException
+                    )
+                    if result.isException {
+                        exceptionRules.append(ruleItem)
+                    } else {
+                        blockRules.append(ruleItem)
+                    }
+                    ruleCount += 1
+                }
+
+                if !result.cosmeticRules.isEmpty {
+                    for cosmeticRule in result.cosmeticRules {
+                        cosmeticRules.append(cosmeticRule)
+                        ruleCount += 1
+                    }
+                }
+
+                if !result.cosmeticExceptions.isEmpty {
+                    for cosmeticEx in result.cosmeticExceptions {
+                        cosmeticExceptions.append(cosmeticEx)
+                        ruleCount += 1
+                    }
+                }
+
+                if result.isUnsupported {
+                    skippedRuleCount += 1
                 }
             }
-            return [
-                "action": ["type": "css-display-none", "selector": selector],
-                "trigger": trigger
-            ]
+
+            results[index] = IntermediateResult(
+                blockRules: blockRules,
+                exceptionRules: exceptionRules,
+                cosmeticRules: cosmeticRules,
+                cosmeticExceptions: cosmeticExceptions,
+                ruleCount: ruleCount,
+                skippedRuleCount: skippedRuleCount
+            )
         }
 
-        var isWhitelist = false
-        var ruleBody = line
-        if ruleBody.hasPrefix("@@") {
-            isWhitelist = true
-            ruleBody = String(ruleBody.dropFirst(2))
-        }
+        var allBlockRules: [AdBlockNetworkRule] = []
+        var allExceptionRules: [AdBlockNetworkRule] = []
+        var allCosmeticRules: [AdBlockCosmeticRule] = []
+        var allCosmeticExceptions: [AdBlockCosmeticException] = []
+        var totalRuleCount = 0
+        var totalSkipped = 0
 
-        var options: [String] = []
-        if let optIndex = ruleBody.firstIndex(of: "$") {
-            let optString = String(ruleBody[ruleBody.index(after: optIndex)...])
-            options = optString.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            ruleBody = String(ruleBody[..<optIndex])
-        }
+        for r in results {
+            allBlockRules.append(contentsOf: r.blockRules)
+            allExceptionRules.append(contentsOf: r.exceptionRules)
+            allCosmeticExceptions.append(contentsOf: r.cosmeticExceptions)
 
-        var urlFilter = ""
-        if ruleBody.hasPrefix("||") {
-            var domain = String(ruleBody.dropFirst(2))
-            if domain.hasSuffix("^") {
-                domain = String(domain.dropLast())
+            if allCosmeticRules.count < maximumCosmeticRulesPerSource {
+                let remainingSpace = maximumCosmeticRulesPerSource - allCosmeticRules.count
+                if r.cosmeticRules.count <= remainingSpace {
+                    allCosmeticRules.append(contentsOf: r.cosmeticRules)
+                } else {
+                    allCosmeticRules.append(contentsOf: r.cosmeticRules.prefix(remainingSpace))
+                    totalSkipped += (r.cosmeticRules.count - remainingSpace)
+                }
+            } else {
+                totalSkipped += r.cosmeticRules.count
             }
-            let escapedDomain = NSRegularExpression.escapedPattern(for: domain)
-            urlFilter = "^[htpsw]+:\\/\\/([a-z0-9-]+\\.)?" + escapedDomain + "([\\/:&\\?].*)?$"
-        } else if ruleBody.hasPrefix("|") && ruleBody.hasSuffix("|") {
-            let raw = String(ruleBody.dropFirst().dropLast())
-            urlFilter = "^" + NSRegularExpression.escapedPattern(for: raw) + "$"
-        } else if ruleBody.hasPrefix("|") {
-            let raw = String(ruleBody.dropFirst())
-            urlFilter = "^" + NSRegularExpression.escapedPattern(for: raw)
-        } else if ruleBody.hasSuffix("|") {
-            let raw = String(ruleBody.dropLast())
-            urlFilter = NSRegularExpression.escapedPattern(for: raw) + "$"
-        } else {
-            let cleaned = ruleBody.replacingOccurrences(of: "^", with: "")
-            urlFilter = NSRegularExpression.escapedPattern(for: cleaned)
+
+            totalRuleCount += r.ruleCount
+            totalSkipped += r.skippedRuleCount
         }
 
-        guard !urlFilter.isEmpty else { return nil }
+        var allNetworkChunks: [[AdBlockNetworkRule]] = []
+        if !allBlockRules.isEmpty {
+            allNetworkChunks = stride(from: 0, to: allBlockRules.count, by: nativeRuleChunkSize).map { start in
+                let blockChunk = Array(allBlockRules[start..<min(start + nativeRuleChunkSize, allBlockRules.count)])
+                return blockChunk + allExceptionRules
+            }
+        } else if !allExceptionRules.isEmpty {
+            allNetworkChunks = [allExceptionRules]
+        }
+
+        return AdBlockSourcePayload(
+            networkChunks: allNetworkChunks,
+            cosmeticRules: allCosmeticRules,
+            cosmeticExceptions: allCosmeticExceptions,
+            ruleCount: totalRuleCount,
+            skippedRuleCount: totalSkipped
+        )
+    }
+
+    private func isValidWebKitPattern(_ pattern: String) -> Bool {
+        guard !pattern.isEmpty,
+              pattern.count < 1024,
+              pattern.allSatisfy({ $0.isASCII }),
+              !pattern.contains("(?"),
+              !pattern.contains("[:") else {
+            return false
+        }
+
+        var openParens = 0
+        var openBrackets = 0
+        var escaped = false
+
+        for ch in pattern {
+            if escaped {
+                escaped = false
+                continue
+            }
+            if ch == "\\" {
+                escaped = true
+                continue
+            }
+            if ch == "(" {
+                openParens += 1
+            } else if ch == ")" {
+                openParens -= 1
+                if openParens < 0 { return false }
+            } else if ch == "[" {
+                openBrackets += 1
+            } else if ch == "]" {
+                openBrackets -= 1
+                if openBrackets < 0 { return false }
+            }
+        }
+
+        if escaped || openParens != 0 || openBrackets != 0 {
+            return false
+        }
+
+        return (try? NSRegularExpression(pattern: pattern)) != nil
+    }
+
+    private func parseRule(_ rawLine: String) -> AdBlockParsedLine {
+        var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !line.isEmpty,
+              !line.hasPrefix("!"),
+              !line.hasPrefix("！"),
+              !line.hasPrefix("[") else {
+            return AdBlockParsedLine(
+                networkRule: nil,
+                isException: false,
+                cosmeticRules: [],
+                cosmeticExceptions: [],
+                isUnsupported: false
+            )
+        }
+
+        if line.contains("##+js") || line.contains("#%#") {
+            return AdBlockParsedLine(
+                networkRule: nil,
+                isException: false,
+                cosmeticRules: [],
+                cosmeticExceptions: [],
+                isUnsupported: true
+            )
+        }
+
+        if line.contains("#@#") {
+            guard let range = line.range(of: "#@#") else {
+                return AdBlockParsedLine(
+                    networkRule: nil,
+                    isException: false,
+                    cosmeticRules: [],
+                    cosmeticExceptions: [],
+                    isUnsupported: true
+                )
+            }
+            let domainsText = String(line[..<range.lowerBound])
+            let selectorsText = String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let parsedDomains = normalizedDomains(from: domainsText)
+            let selectors = splitSelectorList(selectorsText)
+            let exceptions = selectors.compactMap { sel -> AdBlockCosmeticException? in
+                let val = sel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !val.isEmpty else { return nil }
+                return AdBlockCosmeticException(domains: parsedDomains.include, selector: val)
+            }
+            return AdBlockParsedLine(
+                networkRule: nil,
+                isException: false,
+                cosmeticRules: [],
+                cosmeticExceptions: exceptions,
+                isUnsupported: exceptions.isEmpty
+            )
+        }
+
+        let cosmeticSeparator: String?
+        if line.contains("##") {
+            cosmeticSeparator = "##"
+        } else if line.contains("#?#") {
+            cosmeticSeparator = "#?#"
+        } else {
+            cosmeticSeparator = nil
+        }
+
+        if let sep = cosmeticSeparator, let range = line.range(of: sep) {
+            let domainsText = String(line[..<range.lowerBound])
+            let selectorsText = String(line[range.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let parsedDomains = normalizedDomains(from: domainsText)
+            let selectors = splitSelectorList(selectorsText)
+
+            let cosmeticRules = selectors.compactMap { selector in
+                parseCosmeticRule(selector: selector, domains: parsedDomains.include, excludedDomains: parsedDomains.exclude)
+            }
+
+            return AdBlockParsedLine(
+                networkRule: nil,
+                isException: false,
+                cosmeticRules: cosmeticRules,
+                cosmeticExceptions: [],
+                isUnsupported: cosmeticRules.count != selectors.count
+            )
+        }
+
+        let isException = line.hasPrefix("@@")
+
+        if isException {
+            line = String(line.dropFirst(2))
+        }
+
+        let parts = line.split(
+            separator: "$",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+
+        let rawPattern = String(parts[0])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !rawPattern.isEmpty else {
+            return AdBlockParsedLine(
+                networkRule: nil,
+                isException: false,
+                cosmeticRules: [],
+                cosmeticExceptions: [],
+                isUnsupported: true
+            )
+        }
+
+        let options = parts.count > 1
+            ? String(parts[1]).split(separator: ",").map(String.init)
+            : []
+
+        var includeDomains: [String] = []
+        var excludeDomains: [String] = []
+        var resourceTypes: [String] = []
+        var loadTypes: [String] = []
+        var isCaseSensitive = false
+
+        let allResourceTypes = ["document", "image", "style-sheet", "script", "font", "raw", "media", "popup"]
+
+        for rawOption in options {
+            let option = rawOption.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if option.hasPrefix("domain=") {
+                let domainStr = String(option.dropFirst(7))
+                if domainStr.contains("/") {
+                    return AdBlockParsedLine(networkRule: nil, isException: false, cosmeticRules: [], cosmeticExceptions: [], isUnsupported: true)
+                }
+                let domains = normalizedDomains(from: domainStr, separator: "|")
+                includeDomains.append(contentsOf: domains.include)
+                excludeDomains.append(contentsOf: domains.exclude)
+            } else if option.hasPrefix("denyallow=") {
+                let domainStr = String(option.dropFirst(10))
+                if domainStr.contains("/") {
+                    return AdBlockParsedLine(networkRule: nil, isException: false, cosmeticRules: [], cosmeticExceptions: [], isUnsupported: true)
+                }
+                let domains = normalizedDomains(from: domainStr, separator: "|")
+                excludeDomains.append(contentsOf: domains.include)
+            } else if option == "script" {
+                resourceTypes.append("script")
+            } else if option == "image" {
+                resourceTypes.append("image")
+            } else if option == "stylesheet" || option == "css" {
+                resourceTypes.append("style-sheet")
+            } else if option == "font" {
+                resourceTypes.append("font")
+            } else if option == "media" {
+                resourceTypes.append("media")
+            } else if option == "xmlhttprequest" || option == "xhr" || option == "fetch" || option == "ping" {
+                resourceTypes.append("raw")
+            } else if option == "subdocument" || option == "frame" || option == "document" || option == "doc" {
+                resourceTypes.append("document")
+            } else if option == "popup" {
+                resourceTypes.append("popup")
+            } else if option == "third-party" || option == "3p" {
+                loadTypes.append("third-party")
+            } else if option == "~third-party" || option == "1p" || option == "first-party" {
+                loadTypes.append("first-party")
+            } else if option == "~first-party" {
+                loadTypes.append("third-party")
+            } else if option == "match-case" {
+                isCaseSensitive = true
+            } else if option == "important" || option.hasPrefix("redirect") || option.hasPrefix("rewrite") {
+                continue
+            } else if option.hasPrefix("~") {
+                let negatedType = String(option.dropFirst())
+                if negatedType == "image" {
+                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "image" })
+                } else if negatedType == "script" {
+                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "script" })
+                } else if negatedType == "stylesheet" || negatedType == "css" {
+                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "style-sheet" })
+                } else {
+                    continue
+                }
+            } else if option == "badfilter" ||
+                        option.hasPrefix("removeparam") ||
+                        option.hasPrefix("csp") {
+                return AdBlockParsedLine(
+                    networkRule: nil,
+                    isException: false,
+                    cosmeticRules: [],
+                    cosmeticExceptions: [],
+                    isUnsupported: true
+                )
+            }
+        }
+
+        let filter: String
+        if rawPattern.hasPrefix("/") && rawPattern.hasSuffix("/") && rawPattern.count > 2 {
+            filter = String(rawPattern.dropFirst().dropLast())
+        } else {
+            filter = urlFilterPattern(from: rawPattern)
+        }
+
+        guard isValidWebKitPattern(filter) else {
+            return AdBlockParsedLine(
+                networkRule: nil,
+                isException: false,
+                cosmeticRules: [],
+                cosmeticExceptions: [],
+                isUnsupported: true
+            )
+        }
 
         var trigger: [String: Any] = [
-            "url-filter": urlFilter,
-            "url-filter-is-case-sensitive": false
+            "url-filter": filter,
+            "url-filter-is-case-sensitive": isCaseSensitive
         ]
 
-        var resourceTypes: [String] = []
-        for opt in options {
-            if opt.hasPrefix("domain=") {
-                let domStr = String(opt.dropFirst(7))
-                let domList = domStr.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                let positive = domList.filter { !$0.hasPrefix("~") }
-                let negative = domList.filter { $0.hasPrefix("~") }.map { String($0.dropFirst()) }
-                if !positive.isEmpty {
-                    trigger["if-domain"] = positive
-                } else if !negative.isEmpty {
-                    trigger["unless-domain"] = negative
-                }
-            } else if opt == "third-party" || opt == "3p" {
-                trigger["load-type"] = ["third-party"]
-            } else if opt == "~third-party" || opt == "~3p" {
-                trigger["load-type"] = ["first-party"]
-            } else if opt == "script" {
-                resourceTypes.append("script")
-            } else if opt == "image" {
-                resourceTypes.append("image")
-            } else if opt == "stylesheet" || opt == "css" {
-                resourceTypes.append("style-sheet")
-            } else if opt == "xmlhttprequest" || opt == "xhr" {
-                resourceTypes.append("raw")
-            } else if opt == "media" {
-                resourceTypes.append("media")
-            } else if opt == "subdocument" {
-                resourceTypes.append("document")
-            } else if opt == "font" {
-                resourceTypes.append("font")
-            }
+        if !includeDomains.isEmpty {
+            trigger["if-domain"] = Array(Set(includeDomains)).sorted()
+        }
+        if !excludeDomains.isEmpty {
+            trigger["unless-domain"] = Array(Set(excludeDomains)).sorted()
         }
 
         if !resourceTypes.isEmpty {
-            trigger["resource-type"] = resourceTypes
+            trigger["resource-type"] = Array(Set(resourceTypes)).sorted()
         }
 
-        let actionType = isWhitelist ? "ignore-previous-rules" : "block"
-        return [
-            "action": ["type": actionType],
-            "trigger": trigger
-        ]
+        if !loadTypes.isEmpty {
+            trigger["load-type"] = Array(Set(loadTypes)).sorted()
+        }
+
+        return AdBlockParsedLine(
+            networkRule: [
+                "trigger": trigger,
+                "action": [
+                    "type": isException ? "ignore-previous-rules" : "block"
+                ]
+            ],
+            isException: isException,
+            cosmeticRules: [],
+            cosmeticExceptions: [],
+            isUnsupported: false
+        )
     }
 
-    func applyRules(to userContentController: WKUserContentController, completion: (() -> Void)? = nil) {
-        userContentController.removeAllContentRuleLists()
-        let enabledList = subscriptions.filter { $0.isEnabled }
-        if enabledList.isEmpty {
-            completion?()
-            return
+    private func parseCosmeticRule(
+        selector: String,
+        domains: [String],
+        excludedDomains: [String] = []
+    ) -> AdBlockCosmeticRule? {
+        let value = selector.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !value.isEmpty,
+              value.count <= 4096,
+              !value.contains("\u{0000}"),
+              !value.contains("{"),
+              !value.contains("}"),
+              !value.contains("<"),
+              !value.contains(">style") else {
+            return nil
         }
-        let store = WKContentRuleListStore.default()
-        let group = DispatchGroup()
-        for sub in enabledList {
-            for i in 0..<sub.chunkCount {
-                let chunkId = "simple_ab_\(sub.id.uuidString)_\(i)"
-                group.enter()
-                store.lookUpContentRuleList(forIdentifier: chunkId) { ruleList, _ in
-                    if let ruleList = ruleList {
-                        DispatchQueue.main.async {
-                            userContentController.add(ruleList)
-                        }
-                    }
-                    group.leave()
+
+        return AdBlockCosmeticRule(
+            domains: domains,
+            excludedDomains: excludedDomains,
+            selector: value
+        )
+    }
+
+    private func splitSelectorList(_ text: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var parenthesesDepth = 0
+        var bracketsDepth = 0
+        var quote: Character?
+
+        for character in text {
+            if let currentQuote = quote {
+                current.append(character)
+
+                if character == currentQuote {
+                    quote = nil
                 }
+
+                continue
+            }
+
+            if character == "\"" || character == "'" {
+                quote = character
+                current.append(character)
+                continue
+            }
+
+            if character == "(" {
+                parenthesesDepth += 1
+            } else if character == ")" {
+                parenthesesDepth = max(0, parenthesesDepth - 1)
+            } else if character == "[" {
+                bracketsDepth += 1
+            } else if character == "]" {
+                bracketsDepth = max(0, bracketsDepth - 1)
+            }
+
+            if character == "," && parenthesesDepth == 0 && bracketsDepth == 0 {
+                let value = current.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if !value.isEmpty {
+                    result.append(value)
+                }
+
+                current = ""
+            } else {
+                current.append(character)
             }
         }
-        group.notify(queue: .main) {
-            completion?()
+
+        let value = current.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !value.isEmpty {
+            result.append(value)
         }
+
+        return result
     }
 
-    func removeAllRules(from userContentController: WKUserContentController) {
-        userContentController.removeAllContentRuleLists()
+    private func normalizedDomains(
+        from text: String,
+        separator: Character = ","
+    ) -> (include: [String], exclude: [String]) {
+        var include: [String] = []
+        var exclude: [String] = []
+
+        for rawValue in text.split(separator: separator) {
+            let value = rawValue
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+
+            guard !value.isEmpty, value != "*" else {
+                continue
+            }
+
+            if value.hasPrefix("~") {
+                let domain = String(value.dropFirst())
+
+                if !domain.isEmpty {
+                    exclude.append(domain)
+                }
+            } else {
+                include.append(value)
+            }
+        }
+
+        return (include, exclude)
     }
+
+    private func urlFilterPattern(from pattern: String) -> String {
+        var p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return "" }
+
+        var startsWithDomainAnchor = false
+        var startsWithStartAnchor = false
+        var endsWithEndAnchor = false
+        var hasTrailingSeparator = false
+
+        if p.hasPrefix("||") {
+            startsWithDomainAnchor = true
+            p = String(p.dropFirst(2))
+        } else if p.hasPrefix("|") {
+            startsWithStartAnchor = true
+            p = String(p.dropFirst())
+        }
+
+        if p.hasSuffix("|") {
+            endsWithEndAnchor = true
+            p = String(p.dropLast())
+        }
+
+        if p.hasSuffix("^") {
+            hasTrailingSeparator = true
+            p = String(p.dropLast())
+        }
+
+        let specialChars: Set<Character> = [".", "/", "?", "=", "-", "_", ":", "+", "$", "{", "}", "[", "]", "(", ")", "|", "\\"]
+        var escaped = ""
+        for char in p {
+            if char == "*" {
+                escaped.append(".*")
+            } else if char == "^" {
+                escaped.append("[^a-zA-Z0-9_.-]")
+            } else if specialChars.contains(char) {
+                escaped.append("\\\(char)")
+            } else {
+                escaped.append(char)
+            }
+        }
+
+        while escaped.contains(".*.*") {
+            escaped = escaped.replacingOccurrences(of: ".*.*", with: ".*")
+        }
+
+        var result = ""
+        if startsWithDomainAnchor {
+            result = "^[a-z]+://([^/:]+\\.)?" + escaped
+        } else if startsWithStartAnchor {
+            result = "^" + escaped
+        } else {
+            result = escaped
+        }
+
+        if hasTrailingSeparator {
+            result.append("[^a-zA-Z0-9_.-]")
+        }
+
+        if endsWithEndAnchor {
+            result.append("$")
+        }
+
+        return result
+    }
+
+    private func jsonString(from rules: [[String: Any]]) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: rules) else {
+            return nil
+        }
+
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func subscriptionFileURL(id: String) -> URL {
+        let directory = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+
+        return directory.appendingPathComponent(
+            "adblock_subscription_\(id).txt"
+        )
+    }
+
+    private func loadMetadata() -> [String: AdBlockCompiledSourceMetadata] {
+        guard let data = UserDefaults.standard.data(forKey: metadataKey),
+              let metadata = try? JSONDecoder().decode(
+                [String: AdBlockCompiledSourceMetadata].self,
+                from: data
+              ) else {
+            return [:]
+        }
+
+        return metadata
+    }
+
+    private func saveMetadata(
+        _ metadata: [String: AdBlockCompiledSourceMetadata]
+    ) {
+        guard let data = try? JSONEncoder().encode(metadata) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: metadataKey)
+    }
+
+    private func recordUnsupportedRule(
+        sourceId: String,
+        rule: AdBlockNetworkRule,
+        error: String
+    ) {
+        stateLock.lock()
+        var items = unsupportedRulesBySource[sourceId] ?? []
+
+        if items.count < 200 && !items.contains(where: { $0.rawRule == rule.rawRule }) {
+            let compiledJSON = jsonString(from: [rule.compiledRule]) ?? ""
+            let item = AdBlockUnsupportedRule(
+                rawRule: rule.rawRule,
+                compiledJSON: compiledJSON,
+                errorDescription: error
+            )
+            items.append(item)
+            unsupportedRulesBySource[sourceId] = items
+        }
+        stateLock.unlock()
+    }
+
+    private func compilerErrorDescription(_ error: Error?) -> String {
+        guard let error = error else {
+            return "WebKit 未返回具体错误"
+        }
+
+        let nsError = error as NSError
+        var parts: [String] = [nsError.localizedDescription]
+
+        if !nsError.userInfo.isEmpty {
+            parts.append("userInfo: \(nsError.userInfo)")
+        }
+
+        return parts.joined(separator: "\n")
+    }
+
+    private func loadUnsupportedRules() -> [String: [AdBlockUnsupportedRule]] {
+        guard let data = UserDefaults.standard.data(forKey: diagnosticKey),
+              let items = try? JSONDecoder().decode(
+                [String: [AdBlockUnsupportedRule]].self,
+                from: data
+              ) else {
+            return [:]
+        }
+
+        return items
+    }
+
+    private func saveUnsupportedRules(
+        _ rules: [String: [AdBlockUnsupportedRule]]
+    ) {
+        guard let data = try? JSONEncoder().encode(rules) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: diagnosticKey)
+    }
+}
+
+struct AdBlockCompiledSourceMetadata: Codable {
+    var sourceId: String
+    var ruleListIdentifiers: [String]
+    var ruleCount: Int
+    var skippedRuleCount: Int
+    var cosmeticRules: [AdBlockCosmeticRule]
+    var cosmeticExceptions: [AdBlockCosmeticException]
+
+    enum CodingKeys: String, CodingKey {
+        case sourceId, ruleListIdentifiers, ruleCount, skippedRuleCount, cosmeticRules, cosmeticExceptions
+    }
+
+    init(
+        sourceId: String,
+        ruleListIdentifiers: [String],
+        ruleCount: Int,
+        skippedRuleCount: Int,
+        cosmeticRules: [AdBlockCosmeticRule],
+        cosmeticExceptions: [AdBlockCosmeticException] = []
+    ) {
+        self.sourceId = sourceId
+        self.ruleListIdentifiers = ruleListIdentifiers
+        self.ruleCount = ruleCount
+        self.skippedRuleCount = skippedRuleCount
+        self.cosmeticRules = cosmeticRules
+        self.cosmeticExceptions = cosmeticExceptions
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.sourceId = try container.decode(String.self, forKey: .sourceId)
+        self.ruleListIdentifiers = try container.decode([String].self, forKey: .ruleListIdentifiers)
+        self.ruleCount = try container.decode(Int.self, forKey: .ruleCount)
+        self.skippedRuleCount = try container.decode(Int.self, forKey: .skippedRuleCount)
+        self.cosmeticRules = try container.decode([AdBlockCosmeticRule].self, forKey: .cosmeticRules)
+        self.cosmeticExceptions = try container.decodeIfPresent([AdBlockCosmeticException].self, forKey: .cosmeticExceptions) ?? []
+    }
+}
+
+private struct AdBlockSourcePayload {
+    var networkChunks: [[AdBlockNetworkRule]]
+    var cosmeticRules: [AdBlockCosmeticRule]
+    var cosmeticExceptions: [AdBlockCosmeticException]
+    var ruleCount: Int
+    var skippedRuleCount: Int
+}
+
+private struct AdBlockParsedLine {
+    var networkRule: [String: Any]?
+    var isException: Bool
+    var cosmeticRules: [AdBlockCosmeticRule]
+    var cosmeticExceptions: [AdBlockCosmeticException]
+    var isUnsupported: Bool
+}
+
+private struct AdBlockNetworkRule {
+    var rawRule: String
+    var compiledRule: [String: Any]
+    var isException: Bool
+}
+
+private struct AdBlockUnsupportedRule: Codable {
+    var rawRule: String
+    var compiledJSON: String
+    var errorDescription: String
+}
+
+private final class AdBlockChunkCompilationGate {
+    private let lock = NSLock()
+    private var resolved = false
+
+    func resolve(_ handler: () -> Void) {
+        lock.lock()
+
+        guard !resolved else {
+            lock.unlock()
+            return
+        }
+
+        resolved = true
+        lock.unlock()
+
+        handler()
+    }
+}
+
+struct AdBlockCosmeticRule: Codable {
+    var domains: [String]
+    var excludedDomains: [String]
+    var selector: String
+
+    enum CodingKeys: String, CodingKey {
+        case domains, excludedDomains, selector
+    }
+
+    init(domains: [String], excludedDomains: [String] = [], selector: String) {
+        self.domains = domains
+        self.excludedDomains = excludedDomains
+        self.selector = selector
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.domains = try container.decode([String].self, forKey: .domains)
+        self.excludedDomains = try container.decodeIfPresent([String].self, forKey: .excludedDomains) ?? []
+        self.selector = try container.decode(String.self, forKey: .selector)
+    }
+}
+
+struct AdBlockCosmeticException: Codable {
+    var domains: [String]
+    var selector: String
 }
