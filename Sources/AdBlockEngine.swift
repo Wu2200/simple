@@ -125,7 +125,7 @@ final class AdBlockManager {
                 DispatchQueue.main.async {
                     self.applyRulesToAttachedWebViews()
                     self.performDeepMemoryRelief()
-                    completion?( )
+                    completion?()
                 }
                 return
             }
@@ -323,15 +323,11 @@ final class AdBlockManager {
     private func performDeepMemoryRelief() {
         URLCache.shared.removeAllCachedResponses()
         malloc_zone_pressure_relief(nil, 0)
-
-        var zones: UnsafeMutablePointer<vm_address_t>?
-        var count: UInt32 = 0
-        if malloc_get_all_zones(mach_task_self_, nil, &zones, &count) == KERN_SUCCESS, let zones = zones {
-            for i in 0..<Int(count) {
-                let z = UnsafeMutableRawPointer(bitPattern: zones[i])
-                malloc_zone_pressure_relief(OpaquePointer(z), 0)
-            }
-        }
+        WKWebsiteDataStore.default().removeData(
+            ofTypes: [WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeDiskCache],
+            modifiedSince: .distantPast,
+            completionHandler: {}
+        )
     }
 
     private func isSourceActive(_ sourceId: String) -> Bool {
@@ -1277,7 +1273,7 @@ final class AdBlockManager {
         func resolve(ruleList: WKContentRuleList?, error: Error?) {
             gate.resolve {
                 guard self.isSourceActive(sourceId) else {
-                    if let ruleList = ruleList {
+                    if ruleList != nil {
                         WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier, completionHandler: { _ in })
                     }
                     completion([], [])
