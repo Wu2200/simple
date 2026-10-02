@@ -110,8 +110,10 @@ final class AdBlockManager {
         UserDefaults.standard.removeObject(forKey: metadataKey)
         UserDefaults.standard.removeObject(forKey: diagnosticKey)
         UserDefaults.standard.removeObject(forKey: customRulesKey)
+        UserDefaults.standard.synchronize()
 
         cleanupAllLocalFiles()
+        deleteAllPhysicalRuleStores()
 
         WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { [weak self] identifiers in
             guard let self = self else {
@@ -122,9 +124,8 @@ final class AdBlockManager {
             guard let available = identifiers, !available.isEmpty else {
                 DispatchQueue.main.async {
                     self.applyRulesToAttachedWebViews()
-                    URLCache.shared.removeAllCachedResponses()
-                    malloc_zone_pressure_relief(nil, 0)
-                    completion?()
+                    self.performDeepMemoryRelief()
+                    completion?( )
                 }
                 return
             }
@@ -138,9 +139,9 @@ final class AdBlockManager {
             }
 
             group.notify(queue: .main) {
+                self.deleteAllPhysicalRuleStores()
                 self.applyRulesToAttachedWebViews()
-                URLCache.shared.removeAllCachedResponses()
-                malloc_zone_pressure_relief(nil, 0)
+                self.performDeepMemoryRelief()
                 completion?()
             }
         }
@@ -162,7 +163,7 @@ final class AdBlockManager {
                 if let ids = metadataBySource[id]?.ruleListIdentifiers {
                     identifiersToRemove.append(contentsOf: ids)
                 }
-                removeSourceFiles(id: id)
+                removePhysicalFiles(for: id)
                 metadataBySource.removeValue(forKey: id)
                 compiledListsBySource.removeValue(forKey: id)
                 cosmeticScriptsBySource.removeValue(forKey: id)
@@ -181,6 +182,7 @@ final class AdBlockManager {
         if changed {
             saveMetadata(metaCopy)
             saveUnsupportedRules(unsuppCopy)
+            performDeepMemoryRelief()
         }
     }
 
@@ -194,25 +196,85 @@ final class AdBlockManager {
     }
 
     private func cleanupAllLocalFiles() {
-        let directories = [
+        let rootDirectories = [
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
             FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+            FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first,
             URL(fileURLWithPath: NSTemporaryDirectory())
         ].compactMap { $0 }
 
-        for directory in directories {
-            guard let fileURLs = try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil
-            ) else {
+        for root in rootDirectories {
+            guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
                 continue
             }
 
-            for fileURL in fileURLs {
+            var urlsToDelete: [URL] = []
+            for case let fileURL as URL in enumerator {
                 let name = fileURL.lastPathComponent
-                if name.hasPrefix("adblock_") || name.contains("SimpleBrowserAdBlock") || name.contains("simple_ab_") {
-                    try? FileManager.default.removeItem(at: fileURL)
+                if name.hasPrefix("adblock_") ||
+                    name.contains("SimpleBrowserAdBlock") ||
+                    name.contains("simple_ab_") ||
+                    name.contains("ContentRuleList") ||
+                    name.contains("ContentExtension") {
+                    urlsToDelete.append(fileURL)
                 }
+            }
+
+            for url in urlsToDelete {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    private func deleteAllPhysicalRuleStores() {
+        let libraryURL = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
+        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+
+        let possiblePaths = [
+            libraryURL?.appendingPathComponent("WebKit"),
+            cachesURL?.appendingPathComponent("WebKit"),
+            cachesURL?.appendingPathComponent("WKContentRuleListStore"),
+            libraryURL?.appendingPathComponent("WKContentRuleListStore")
+        ].compactMap { $0 }
+
+        for folder in possiblePaths {
+            guard let subURLs = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else {
+                continue
+            }
+            for url in subURLs {
+                let name = url.lastPathComponent
+                if name.contains("ContentRuleList") || name.contains("ContentExtension") || name.contains("RuleList") {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+        }
+    }
+
+    private func removePhysicalFiles(for sourceId: String) {
+        try? FileManager.default.removeItem(at: subscriptionFileURL(id: sourceId))
+        try? FileManager.default.removeItem(at: cosmeticFileURL(id: sourceId))
+
+        let cleanId = sourceId.replacingOccurrences(of: "-", with: "")
+        let searchDirectories = [
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+            FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first,
+            URL(fileURLWithPath: NSTemporaryDirectory())
+        ].compactMap { $0 }
+
+        for directory in searchDirectories {
+            guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil) else {
+                continue
+            }
+            var toRemove: [URL] = []
+            for case let fileURL as URL in enumerator {
+                let filename = fileURL.lastPathComponent
+                if filename.contains(cleanId) || filename.contains(sourceId) {
+                    toRemove.append(fileURL)
+                }
+            }
+            for url in toRemove {
+                try? FileManager.default.removeItem(at: url)
             }
         }
     }
@@ -234,7 +296,7 @@ final class AdBlockManager {
         }
         stateLock.unlock()
 
-        WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { identifiers in
+        WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { [weak self] identifiers in
             guard let available = identifiers else {
                 completion?()
                 return
@@ -252,7 +314,22 @@ final class AdBlockManager {
             }
 
             group.notify(queue: .main) {
+                self?.performDeepMemoryRelief()
                 completion?()
+            }
+        }
+    }
+
+    private func performDeepMemoryRelief() {
+        URLCache.shared.removeAllCachedResponses()
+        malloc_zone_pressure_relief(nil, 0)
+
+        var zones: UnsafeMutablePointer<vm_address_t>?
+        var count: UInt32 = 0
+        if malloc_get_all_zones(mach_task_self_, nil, &zones, &count) == KERN_SUCCESS, let zones = zones {
+            for i in 0..<Int(count) {
+                let z = UnsafeMutableRawPointer(bitPattern: zones[i])
+                malloc_zone_pressure_relief(OpaquePointer(z), 0)
             }
         }
     }
@@ -345,6 +422,7 @@ final class AdBlockManager {
         }
 
         UserDefaults.standard.set(data, forKey: subscriptionsKey)
+        UserDefaults.standard.synchronize()
     }
 
     func toggleSubscription(id: String, isEnabled: Bool) {
@@ -381,12 +459,14 @@ final class AdBlockManager {
         let trimmed = rules.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             UserDefaults.standard.removeObject(forKey: customRulesKey)
+            UserDefaults.standard.synchronize()
             deactivateSource(id: Self.customSourceId)
             completion?(true, nil)
             return
         }
 
         UserDefaults.standard.set(rules, forKey: customRulesKey)
+        UserDefaults.standard.synchronize()
         stateLock.lock()
         cancelledSourceIds.remove(Self.customSourceId)
         stateLock.unlock()
@@ -850,11 +930,6 @@ final class AdBlockManager {
         }
     }
 
-    private func removeSourceFiles(id sourceId: String) {
-        try? FileManager.default.removeItem(at: subscriptionFileURL(id: sourceId))
-        try? FileManager.default.removeItem(at: cosmeticFileURL(id: sourceId))
-    }
-
     private func compileSource(
         id sourceId: String,
         isAlreadyUpdating: Bool = false,
@@ -967,7 +1042,7 @@ final class AdBlockManager {
             saveMetadata(metaCopy)
             saveUnsupportedRules(unsuppCopy)
             cleanupOrphanedRuleLists()
-            malloc_zone_pressure_relief(nil, 0)
+            performDeepMemoryRelief()
 
             parseQueue.async { [weak self] in
                 guard let self = self else { return }
@@ -1055,7 +1130,7 @@ final class AdBlockManager {
             self.saveMetadata(metaCopy)
             self.saveUnsupportedRules(unsuppCopy)
             self.cleanupOrphanedRuleLists()
-            malloc_zone_pressure_relief(nil, 0)
+            self.performDeepMemoryRelief()
 
             self.parseQueue.async { [weak self] in
                 guard let self = self else { return }
@@ -1299,14 +1374,25 @@ final class AdBlockManager {
         for identifier in identifiersToRemove {
             WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier) { _ in }
         }
-        removeSourceFiles(id: sourceId)
+
+        let cleanId = sourceId.replacingOccurrences(of: "-", with: "")
+        WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { identifiers in
+            guard let available = identifiers else { return }
+            for id in available {
+                if id.contains(cleanId) {
+                    WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in }
+                }
+            }
+        }
+
+        removePhysicalFiles(for: sourceId)
 
         saveMetadata(metaCopy)
         saveUnsupportedRules(unsuppCopy)
         cleanupOrphanedRuleLists()
         applyRulesToAttachedWebViews()
         purgeIfNoRulesRemaining()
-        malloc_zone_pressure_relief(nil, 0)
+        performDeepMemoryRelief()
     }
 
     private func saveCosmeticCache(
@@ -2135,6 +2221,7 @@ final class AdBlockManager {
         }
 
         UserDefaults.standard.set(data, forKey: metadataKey)
+        UserDefaults.standard.synchronize()
     }
 
     private func recordUnsupportedRule(
@@ -2194,6 +2281,7 @@ final class AdBlockManager {
         }
 
         UserDefaults.standard.set(data, forKey: diagnosticKey)
+        UserDefaults.standard.synchronize()
     }
 }
 
