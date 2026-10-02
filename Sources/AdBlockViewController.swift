@@ -67,6 +67,7 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
         title = "广告拦截"
         view.backgroundColor = .systemGroupedBackground
 
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "清理残留", style: .plain, target: self, action: #selector(handleCleanResidual))
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleDone))
 
         setupInterface()
@@ -82,6 +83,16 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
 
     deinit {
         statusRefreshTimer?.invalidate()
+    }
+
+    @objc private func handleCleanResidual() {
+        AdBlockManager.shared.cleanResidualData { [weak self] in
+            self?.loadData()
+            self?.onRulesChanged?()
+            let alert = UIAlertController(title: "清理完成", message: "规则缓存与内存残留已彻底清理", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "确定", style: .default))
+            self?.present(alert, animated: true)
+        }
     }
 
     private func setupInterface() {
@@ -305,6 +316,8 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
             tableView.deleteRows(at: [indexPath], with: .automatic)
 
             AdBlockManager.shared.deleteSubscription(id: subscription.id)
+            self.loadData()
+            self.onRulesChanged?()
             completion(true)
         }
 
