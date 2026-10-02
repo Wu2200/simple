@@ -16,10 +16,27 @@ final class UnsupportedRulesViewController: UIViewController {
         title = "不兼容规则诊断"
         view.backgroundColor = .systemBackground
 
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "复制全部",
+            style: .plain,
+            target: self,
+            action: #selector(handleCopyAll)
+        )
+
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isEditable = false
         textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.text = text
+        textView.layoutManager.allowsNonContiguousLayout = true
+
+        let maxDisplayLength = 30000
+        if text.count > maxDisplayLength {
+            let endIndex = text.index(text.startIndex, offsetBy: maxDisplayLength)
+            let preview = String(text[..<endIndex])
+            textView.text = "提示：内容较多，当前仅预览部分规则。可点击右上角复制全部获取完整内容。\n\n" + preview + "\n\n更多内容请点击右上角复制全部"
+        } else {
+            textView.text = text
+        }
+
         view.addSubview(textView)
 
         NSLayoutConstraint.activate([
@@ -28,6 +45,13 @@ final class UnsupportedRulesViewController: UIViewController {
             textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
             textView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+    }
+
+    @objc private func handleCopyAll() {
+        UIPasteboard.general.string = text
+        let alert = UIAlertController(title: "已复制", message: "不兼容规则已全部复制到剪贴板", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "确定", style: .default))
+        present(alert, animated: true)
     }
 }
 
