@@ -1,4 +1,5 @@
 import UIKit
+import ImageIO
 
 final class FaviconLoader {
     static let shared = FaviconLoader()
@@ -28,6 +29,34 @@ final class FaviconLoader {
         return diskCacheURL.appendingPathComponent("\(safeName).png")
     }
 
+    private func decodeImage(from data: Data) -> UIImage? {
+        if let img = UIImage(data: data) {
+            return img
+        }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+        let count = CGImageSourceGetCount(source)
+        guard count > 0 else { return nil }
+
+        var bestCGImage: CGImage?
+        var maxWidth = 0
+
+        for i in 0..<count {
+            if let cgImg = CGImageSourceCreateImageAtIndex(source, i, nil) {
+                if cgImg.width > maxWidth {
+                    maxWidth = cgImg.width
+                    bestCGImage = cgImg
+                }
+            }
+        }
+
+        if let best = bestCGImage {
+            return UIImage(cgImage: best)
+        }
+        return nil
+    }
+
     private func generateLookupKeys(from rawTarget: String) -> (primaryKey: String, candidateKeys: [String], targetInfo: TargetInfo) {
         let trimmed = rawTarget.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
@@ -45,7 +74,7 @@ final class FaviconLoader {
             } else {
                 hostWithPort = host
             }
-        } else if trimmed.contains(":") {
+        } else if trimmed.contains(":") && !trimmed.contains("://") {
             let parts = trimmed.components(separatedBy: ":")
             if parts.count == 2, let p = Int(parts[1]) {
                 host = parts[0]
@@ -144,7 +173,7 @@ final class FaviconLoader {
             return cached
         }
         let fileURL = diskPath(for: key)
-        if let data = try? Data(contentsOf: fileURL), let image = UIImage(data: data) {
+        if let data = try? Data(contentsOf: fileURL), let image = decodeImage(from: data) {
             cache.setObject(image, forKey: key as NSString)
             return image
         }
@@ -153,12 +182,14 @@ final class FaviconLoader {
 
     func saveHighResIcon(data: Data, for target: String) {
         let (_, candidateKeys, _) = generateLookupKeys(from: target)
-        guard let image = UIImage(data: data), image.size.width >= 12 else { return }
+        guard let image = decodeImage(from: data), image.size.width >= 12 else { return }
+
+        let pngData = image.pngData() ?? data
 
         for key in candidateKeys {
             cache.setObject(image, forKey: key as NSString)
             let fileURL = diskPath(for: key)
-            try? data.write(to: fileURL)
+            try? pngData.write(to: fileURL)
         }
 
         DispatchQueue.main.async {
@@ -200,7 +231,10 @@ final class FaviconLoader {
         candidateURLs.append("\(info.origin)/apple-touch-icon-precomposed.png")
         candidateURLs.append("\(info.origin)/img/apple-touch-icon.png")
         candidateURLs.append("\(info.origin)/img/favicon.png")
+        candidateURLs.append("\(info.origin)/img/favicon.ico")
         candidateURLs.append("\(info.origin)/img/logo.png")
+        candidateURLs.append("\(info.origin)/public/favicon.ico")
+        candidateURLs.append("\(info.origin)/public/favicon.png")
         candidateURLs.append("\(info.origin)/favicon.ico")
         candidateURLs.append("\(info.origin)/favicon.png")
 
@@ -241,11 +275,14 @@ final class FaviconLoader {
             isFinished = true
             lock.unlock()
 
-            if let data = data, image != nil {
+            if let img = image {
+                let writeData = img.pngData() ?? data
                 for key in candidateKeys {
-                    self.cache.setObject(image!, forKey: key as NSString)
-                    let fileURL = self.diskPath(for: key)
-                    try? data.write(to: fileURL)
+                    self.cache.setObject(img, forKey: key as NSString)
+                    if let writeData = writeData {
+                        let fileURL = self.diskPath(for: key)
+                        try? writeData.write(to: fileURL)
+                    }
                 }
             }
 
@@ -276,8 +313,9 @@ final class FaviconLoader {
                 forHTTPHeaderField: "User-Agent"
             )
 
-            session.dataTask(with: req) { data, response, _ in
+            session.dataTask(with: req) { [weak self] data, response, _ in
                 defer { group.leave() }
+                guard let self = self else { return }
 
                 lock.lock()
                 if isFinished {
@@ -287,8 +325,8 @@ final class FaviconLoader {
                 lock.unlock()
 
                 guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-                      let data = data, data.count > 40,
-                      let img = UIImage(data: data), img.size.width >= 12 else {
+                      let data = data, data.count > 16,
+                      let img = self.decodeImage(from: data), img.size.width >= 12 else {
                     return
                 }
 
