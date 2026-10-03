@@ -130,7 +130,7 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
         case 2:
             return 2
         case 3:
-            return 4
+            return 5
         case 4:
             return report?.largeArtifacts.count ?? 0
         default:
@@ -157,7 +157,7 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
 
     func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         if section == 2 {
-            return "旧版本错误拆分会导致产生上百个碎片规则库，点击右上角深度清理可彻底清空并重新压缩为规范库。"
+            return "规则库已按紧凑规范合并编译。点击右上角深度清理可清空旧残留并重新优化。"
         }
         if section == 3 {
             return "系统设置中的文稿与数据由以上目录大小总和构成。"
@@ -189,11 +189,11 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
                 cell.textLabel?.text = "内存规则列表对象"
                 cell.detailTextLabel?.text = "\(r.inMemoryRuleListCount) 组"
             } else if indexPath.row == 1 {
-                cell.textLabel?.text = "美化脚本数量"
-                cell.detailTextLabel?.text = "\(r.inMemoryUserScriptCount) 个"
+                cell.textLabel?.text = "已加载规则总数"
+                cell.detailTextLabel?.text = "\(r.metadataRuleCount) 条"
             } else {
-                cell.textLabel?.text = "美化脚本注入字符数"
-                cell.detailTextLabel?.text = "\(r.inMemoryUserScriptChars) 字"
+                cell.textLabel?.text = "启用规则订阅"
+                cell.detailTextLabel?.text = "\(r.activeSubscriptionCount) 个"
             }
         case 2:
             if indexPath.row == 0 {
@@ -207,17 +207,20 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
             }
         case 3:
             if indexPath.row == 0 {
-                cell.textLabel?.text = "文稿目录大小"
-                cell.detailTextLabel?.text = r.documentsSizeString
+                cell.textLabel?.text = "沙盒总大小"
+                cell.detailTextLabel?.text = r.totalSandboxSizeString
             } else if indexPath.row == 1 {
-                cell.textLabel?.text = "缓存目录大小"
-                cell.detailTextLabel?.text = r.cachesSizeString
+                cell.textLabel?.text = "文稿目录"
+                cell.detailTextLabel?.text = r.documentsSizeString
             } else if indexPath.row == 2 {
-                cell.textLabel?.text = "临时目录大小"
-                cell.detailTextLabel?.text = r.tmpSizeString
+                cell.textLabel?.text = "网页离线与规则数据"
+                cell.detailTextLabel?.text = r.webKitSizeString
+            } else if indexPath.row == 3 {
+                cell.textLabel?.text = "缓存目录"
+                cell.detailTextLabel?.text = r.cachesSizeString
             } else {
-                cell.textLabel?.text = "网络缓存占用"
-                cell.detailTextLabel?.text = r.urlCacheDiskString
+                cell.textLabel?.text = "临时目录"
+                cell.detailTextLabel?.text = r.tmpSizeString
             }
         case 4:
             let item = r.largeArtifacts[indexPath.row]
