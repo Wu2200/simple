@@ -55,10 +55,163 @@ final class UnsupportedRulesViewController: UIViewController {
     }
 }
 
+final class AdBlockMemoryDetailViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private var report: AdBlockMemoryReport?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "内存诊断详情"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "深度清理",
+            style: .plain,
+            target: self,
+            action: #selector(handleDeepClean)
+        )
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "MemoryDetailCell")
+
+        view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        fetchData()
+    }
+
+    private func fetchData() {
+        AdBlockManager.shared.scanMemoryUsage { [weak self] rep in
+            self?.report = rep
+            self?.tableView.reloadData()
+        }
+    }
+
+    @objc private func handleDeepClean() {
+        AdBlockManager.shared.cleanMemoryResidue { [weak self] rep in
+            self?.report = rep
+            self?.tableView.reloadData()
+
+            let alert = UIAlertController(
+                title: "清理完成",
+                message: "已清理规则与底层内存残留，当前物理内存: \(rep.physicalFootprintString)",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "确定", style: .default))
+            self?.present(alert, animated: true)
+        }
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 4
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        switch section {
+        case 0:
+            return 2
+        case 1:
+            return 4
+        case 2:
+            return 2
+        case 3:
+            return 4
+        default:
+            return 0
+        }
+    }
+
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        switch section {
+        case 0:
+            return "系统内存"
+        case 1:
+            return "广告拦截引擎"
+        case 2:
+            return "底层规则库"
+        case 3:
+            return "本地存储与缓存"
+        default:
+            return nil
+        }
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .value1, reuseIdentifier: "MemoryDetailCell")
+        cell.selectionStyle = .none
+
+        guard let r = report else {
+            cell.textLabel?.text = "正在扫描内存…"
+            cell.detailTextLabel?.text = nil
+            return cell
+        }
+
+        switch indexPath.section {
+        case 0:
+            if indexPath.row == 0 {
+                cell.textLabel?.text = "物理内存占用"
+                cell.detailTextLabel?.text = r.physicalFootprintString
+            } else {
+                cell.textLabel?.text = "常驻内存"
+                cell.detailTextLabel?.text = r.residentSizeString
+            }
+        case 1:
+            if indexPath.row == 0 {
+                cell.textLabel?.text = "内存规则列表对象"
+                cell.detailTextLabel?.text = "\(r.inMemoryRuleListCount) 组"
+            } else if indexPath.row == 1 {
+                cell.textLabel?.text = "美化脚本数量"
+                cell.detailTextLabel?.text = "\(r.inMemoryUserScriptCount) 个"
+            } else if indexPath.row == 2 {
+                cell.textLabel?.text = "美化脚本字符数"
+                cell.detailTextLabel?.text = "\(r.inMemoryUserScriptChars) 字"
+            } else {
+                cell.textLabel?.text = "美化脚本内存估算"
+                cell.detailTextLabel?.text = r.userScriptsEstimatedSizeString
+            }
+        case 2:
+            if indexPath.row == 0 {
+                cell.textLabel?.text = "已注册底层规则库"
+                cell.detailTextLabel?.text = "\(r.diskStoreIdentifiers.count) 个"
+            } else {
+                cell.textLabel?.text = "孤儿规则库"
+                cell.detailTextLabel?.text = "\(r.orphanStoreIdentifiers.count) 个"
+                cell.detailTextLabel?.textColor = r.orphanStoreIdentifiers.isEmpty ? .secondaryLabel : .systemRed
+            }
+        case 3:
+            if indexPath.row == 0 {
+                cell.textLabel?.text = "订阅源原始文件"
+                cell.detailTextLabel?.text = "\(r.subscriptionFilesCount) 个"
+            } else if indexPath.row == 1 {
+                cell.textLabel?.text = "订阅文件磁盘大小"
+                cell.detailTextLabel?.text = r.subscriptionFilesSizeString
+            } else if indexPath.row == 2 {
+                cell.textLabel?.text = "网络缓存内存"
+                cell.detailTextLabel?.text = r.urlCacheMemoryString
+            } else {
+                cell.textLabel?.text = "网络缓存磁盘"
+                cell.detailTextLabel?.text = r.urlCacheDiskString
+            }
+        default:
+            break
+        }
+
+        return cell
+    }
+}
+
 final class AdBlockManagerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private var subscriptions: [AdBlockSubscription] = []
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private var statusRefreshTimer: Timer?
+    private var currentMemoryFootprintString = "检测中…"
 
     var onRulesChanged: (() -> Void)?
 
@@ -71,6 +224,7 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
 
         setupInterface()
         loadData()
+        refreshMemoryStatus()
 
         statusRefreshTimer = Timer.scheduledTimer(
             withTimeInterval: 0.8,
@@ -102,6 +256,13 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
     private func loadData() {
         subscriptions = AdBlockManager.shared.loadSubscriptions()
         tableView.reloadData()
+    }
+
+    private func refreshMemoryStatus() {
+        AdBlockManager.shared.scanMemoryUsage { [weak self] rep in
+            self?.currentMemoryFootprintString = rep.physicalFootprintString
+            self?.tableView.reloadSections(IndexSet(integer: 3), with: .none)
+        }
     }
 
     private func refreshVisibleStatus() {
@@ -146,24 +307,26 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
     }
 
     func numberOfSections(in tableView: UITableView) -> Int {
-        return 3
+        return 4
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         if section == 0 { return 1 }
         if section == 1 { return subscriptions.count + 1 }
-        return 1
+        if section == 2 { return 1 }
+        return 2
     }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         if section == 0 { return "总开关" }
         if section == 1 { return "规则订阅" }
         if section == 2 { return "自定义规则" }
+        if section == 3 { return "内存诊断与清理" }
         return nil
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "AdBlockCell")
+        let cell = UITableViewCell(style: .value1, reuseIdentifier: "AdBlockCell")
 
         if indexPath.section == 0 {
             cell.textLabel?.text = "启用广告拦截"
@@ -178,51 +341,66 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
         }
 
         if indexPath.section == 1 {
+            let subCell = UITableViewCell(style: .subtitle, reuseIdentifier: "AdBlockCell")
             if indexPath.row < subscriptions.count {
                 let subscription = subscriptions[indexPath.row]
-                cell.textLabel?.text = subscription.name
+                subCell.textLabel?.text = subscription.name
 
                 let toggle = UISwitch()
                 toggle.isOn = subscription.isEnabled
                 toggle.tag = indexPath.row
                 toggle.addTarget(self, action: #selector(handleSubscriptionToggle(_:)), for: .valueChanged)
-                cell.accessoryView = toggle
+                subCell.accessoryView = toggle
 
                 if AdBlockManager.shared.isUpdating(sourceId: subscription.id) {
-                    cell.detailTextLabel?.text = AdBlockManager.shared.updateStatus(
+                    subCell.detailTextLabel?.text = AdBlockManager.shared.updateStatus(
                         sourceId: subscription.id
                     ) ?? "更新中…"
                 } else if let date = subscription.lastUpdated {
                     let formatter = DateFormatter()
                     formatter.dateFormat = "MM-dd HH:mm"
-                    cell.detailTextLabel?.text = "\(subscription.ruleCount) 条 | \(formatter.string(from: date))"
+                    subCell.detailTextLabel?.text = "\(subscription.ruleCount) 条 | \(formatter.string(from: date))"
                 } else {
-                    cell.detailTextLabel?.text = "尚未更新"
+                    subCell.detailTextLabel?.text = "尚未更新"
                 }
             } else {
-                cell.textLabel?.text = "添加新订阅链接…"
-                cell.textLabel?.textColor = .systemBlue
-                cell.detailTextLabel?.text = nil
-                cell.accessoryView = nil
+                subCell.textLabel?.text = "添加新订阅链接"
+                subCell.textLabel?.textColor = .systemBlue
+                subCell.detailTextLabel?.text = nil
+                subCell.accessoryView = nil
             }
 
+            return subCell
+        }
+
+        if indexPath.section == 2 {
+            let sourceId = AdBlockManager.customSourceId
+            let count = AdBlockManager.shared.ruleCount(sourceId: sourceId)
+
+            cell.textLabel?.text = "编辑自定义过滤规则"
+
+            if AdBlockManager.shared.isUpdating(sourceId: sourceId) {
+                cell.detailTextLabel?.text = AdBlockManager.shared.updateStatus(
+                    sourceId: sourceId
+                ) ?? "自定义规则更新中…"
+            } else {
+                cell.detailTextLabel?.text = "自定义规则：\(count) 条"
+            }
+
+            cell.accessoryType = .disclosureIndicator
             return cell
         }
 
-        let sourceId = AdBlockManager.customSourceId
-        let count = AdBlockManager.shared.ruleCount(sourceId: sourceId)
-
-        cell.textLabel?.text = "编辑自定义过滤规则"
-
-        if AdBlockManager.shared.isUpdating(sourceId: sourceId) {
-            cell.detailTextLabel?.text = AdBlockManager.shared.updateStatus(
-                sourceId: sourceId
-            ) ?? "自定义规则更新中…"
+        if indexPath.row == 0 {
+            cell.textLabel?.text = "应用物理内存"
+            cell.detailTextLabel?.text = currentMemoryFootprintString
+            cell.selectionStyle = .none
         } else {
-            cell.detailTextLabel?.text = "自定义规则：\(count) 条"
+            cell.textLabel?.text = "深度清理内存残留"
+            cell.textLabel?.textColor = .systemBlue
+            cell.accessoryType = .disclosureIndicator
         }
 
-        cell.accessoryType = .disclosureIndicator
         return cell
     }
 
@@ -268,6 +446,11 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
             } else {
                 openCustomRuleEditor()
             }
+        } else if indexPath.section == 3 {
+            if indexPath.row == 1 {
+                let detailVC = AdBlockMemoryDetailViewController()
+                navigationController?.pushViewController(detailVC, animated: true)
+            }
         }
     }
 
@@ -276,6 +459,7 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
         customVC.onSaved = { [weak self] in
             self?.loadData()
             self?.onRulesChanged?()
+            self?.refreshMemoryStatus()
         }
         navigationController?.pushViewController(customVC, animated: true)
     }
@@ -305,6 +489,7 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
             tableView.deleteRows(at: [indexPath], with: .automatic)
 
             AdBlockManager.shared.deleteSubscription(id: subscription.id)
+            self.refreshMemoryStatus()
             completion(true)
         }
 
@@ -336,6 +521,7 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
             AdBlockManager.shared.updateSubscription(id: subscription.id, name: name, urlString: urlStr)
             self?.loadData()
             self?.onRulesChanged?()
+            self?.refreshMemoryStatus()
         })
 
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -358,6 +544,7 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
                 }
 
                 self.loadData()
+                self.refreshMemoryStatus()
 
                 let message: String
 
@@ -397,6 +584,7 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
             self.subscriptions.removeAll { $0.id == subscription.id }
             AdBlockManager.shared.deleteSubscription(id: subscription.id)
             self.loadData()
+            self.refreshMemoryStatus()
             self.onRulesChanged?()
         })
 
@@ -422,6 +610,7 @@ final class AdBlockManagerViewController: UIViewController, UITableViewDataSourc
                 }
 
                 self.loadData()
+                self.refreshMemoryStatus()
 
                 let message: String
 
