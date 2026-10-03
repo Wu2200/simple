@@ -70,6 +70,11 @@ struct AdBlockMemoryReport {
     }
 }
 
+private struct AdBlockRuleEntry {
+    var raw: String
+    var dict: [String: Any]
+}
+
 private func releaseSystemHeapPressure() {
     typealias PressureReliefFunction = @convention(c) (UnsafeMutableRawPointer?, Int) -> Int32
     if let handle = dlopen(nil, RTLD_NOW) {
@@ -645,7 +650,7 @@ final class AdBlockManager {
     }
 
     private func restorePersistedRules() {
-        parseQueue.async { [weak self] in
+        parseQueue.async { [weak self] () -> Void in
             guard let self = self else { return }
 
             self.stateLock.lock()
@@ -739,12 +744,10 @@ final class AdBlockManager {
             )
         }
 
-        parseQueue.async { [weak self] in
+        parseQueue.async { [weak self] () -> Void in
             guard let self = self else { return }
 
-            let (chunks, totalCount, skippedCount) = autoreleasepool {
-                self.parseRulesAndChunk(text: text, sourceId: sourceId)
-            }
+            let parsed = self.parseRulesAndChunk(text: text, sourceId: sourceId)
 
             self.setUpdateStatus(
                 sourceId: sourceId,
@@ -752,10 +755,10 @@ final class AdBlockManager {
             )
 
             self.compileChunksFaultTolerant(
-                chunks: chunks,
+                chunks: parsed.chunks,
                 sourceId: sourceId,
-                totalCount: totalCount,
-                skippedCount: skippedCount,
+                totalCount: parsed.totalCount,
+                skippedCount: parsed.skippedCount,
                 completion: completion
             )
         }
@@ -764,32 +767,30 @@ final class AdBlockManager {
     private func parseRulesAndChunk(
         text: String,
         sourceId: String
-    ) -> (chunks: [[(raw: String, dict: [String: Any])]], totalCount: Int, skippedCount: Int) {
-        var validRules: [(raw: String, dict: [String: Any])] = []
+    ) -> (chunks: [[AdBlockRuleEntry]], totalCount: Int, skippedCount: Int) {
+        var validRules: [AdBlockRuleEntry] = []
         var totalCount = 0
         var skippedCount = 0
 
         text.enumerateLines { line, _ in
-            autoreleasepool {
-                let parsedList = self.parseLineRules(line)
-                if parsedList.isEmpty {
-                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty &&
-                        !trimmed.hasPrefix("!") &&
-                        !trimmed.hasPrefix("！") &&
-                        !trimmed.hasPrefix("[") {
-                        skippedCount += 1
-                    }
-                } else {
-                    for item in parsedList {
-                        validRules.append(item)
-                        totalCount += 1
-                    }
+            let parsedList = self.parseLineRules(line)
+            if parsedList.isEmpty {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty &&
+                    !trimmed.hasPrefix("!") &&
+                    !trimmed.hasPrefix("！") &&
+                    !trimmed.hasPrefix("[") {
+                    skippedCount += 1
+                }
+            } else {
+                for item in parsedList {
+                    validRules.append(item)
+                    totalCount += 1
                 }
             }
         }
 
-        var chunks: [[(raw: String, dict: [String: Any])]] = []
+        var chunks: [[AdBlockRuleEntry]] = []
         if validRules.isEmpty {
             return (chunks, totalCount, skippedCount)
         }
@@ -803,7 +804,7 @@ final class AdBlockManager {
     }
 
     private func compileChunksFaultTolerant(
-        chunks: [[(raw: String, dict: [String: Any])]],
+        chunks: [[AdBlockRuleEntry]],
         sourceId: String,
         totalCount: Int,
         skippedCount: Int,
@@ -914,7 +915,7 @@ final class AdBlockManager {
     }
 
     private func compileRuleSliceSafely(
-        rules: [(raw: String, dict: [String: Any])],
+        rules: [AdBlockRuleEntry],
         identifier: String,
         sourceId: String,
         completion: @escaping (WKContentRuleList?, Int) -> Void
@@ -924,7 +925,8 @@ final class AdBlockManager {
             return
         }
 
-        guard let json = autoreleasepool(invoking: { self.jsonString(from: rules.map(\.dict)) }) else {
+        let dicts = rules.map { $0.dict }
+        guard let json = self.jsonString(from: dicts) else {
             completion(nil, rules.count)
             return
         }
@@ -954,7 +956,8 @@ final class AdBlockManager {
                         return
                     }
 
-                    guard let recoveredJson = self.jsonString(from: recoveredRules.map(\.dict)) else {
+                    let recoveredDicts = recoveredRules.map { $0.dict }
+                    guard let recoveredJson = self.jsonString(from: recoveredDicts) else {
                         self.parseQueue.async {
                             completion(nil, discardedCount + recoveredRules.count)
                         }
@@ -977,14 +980,14 @@ final class AdBlockManager {
     }
 
     private func isolateAndRecoverValidRules(
-        rules: [(raw: String, dict: [String: Any])],
+        rules: [AdBlockRuleEntry],
         sourceId: String,
-        completion: @escaping ([(raw: String, dict: [String: Any])], Int) -> Void
+        completion: @escaping ([AdBlockRuleEntry], Int) -> Void
     ) {
         func filterSlice(
-            slice: [(raw: String, dict: [String: Any])],
+            slice: [AdBlockRuleEntry],
             depth: Int,
-            finish: @escaping ([(raw: String, dict: [String: Any])], Int) -> Void
+            finish: @escaping ([AdBlockRuleEntry], Int) -> Void
         ) {
             guard !slice.isEmpty else {
                 finish([], 0)
@@ -1004,7 +1007,8 @@ final class AdBlockManager {
                 return
             }
 
-            guard let json = self.jsonString(from: slice.map(\.dict)) else {
+            let dicts = slice.map { $0.dict }
+            guard let json = self.jsonString(from: dicts) else {
                 finish([], slice.count)
                 return
             }
@@ -1147,7 +1151,7 @@ final class AdBlockManager {
         return true
     }
 
-    private func parseLineRules(_ rawLine: String) -> [(raw: String, dict: [String: Any])] {
+    private func parseLineRules(_ rawLine: String) -> [AdBlockRuleEntry] {
         var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !line.isEmpty,
@@ -1181,7 +1185,7 @@ final class AdBlockManager {
             let parsedDomains = normalizedDomains(from: domainsText)
             let individualSelectors = splitSelectorList(selectorsText)
 
-            var results: [(raw: String, dict: [String: Any])] = []
+            var results: [AdBlockRuleEntry] = []
 
             for sel in individualSelectors {
                 guard isValidCssSelector(sel) else { continue }
@@ -1205,7 +1209,7 @@ final class AdBlockManager {
                     ]
                 ]
 
-                results.append((raw: rawLine, dict: ruleDict))
+                results.append(AdBlockRuleEntry(raw: rawLine, dict: ruleDict))
             }
 
             return results
@@ -1331,7 +1335,7 @@ final class AdBlockManager {
             ]
         ]
 
-        return [(raw: rawLine, dict: rule)]
+        return [AdBlockRuleEntry(raw: rawLine, dict: rule)]
     }
 
     private func splitSelectorList(_ text: String) -> [String] {
@@ -1752,6 +1756,19 @@ final class AdBlockManager {
 
     private func recompileAllActiveSubscriptions(completion: @escaping () -> Void) {
         let subscriptions = loadSubscriptions().filter { $0.isEnabled }
+        let customRules = getCustomRules().trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasCustom = !customRules.isEmpty
+
+        let total = subscriptions.count + (hasCustom ? 1 : 0)
+        guard total > 0 else {
+            DispatchQueue.main.async { [weak self] in
+                self?.applyRulesToAttachedWebViews()
+                releaseSystemHeapPressure()
+                completion()
+            }
+            return
+        }
+
         let group = DispatchGroup()
 
         for sub in subscriptions {
@@ -1761,8 +1778,7 @@ final class AdBlockManager {
             }
         }
 
-        let customRules = getCustomRules()
-        if !customRules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if hasCustom {
             group.enter()
             compileSource(id: Self.customSourceId) { _, _ in
                 group.leave()
