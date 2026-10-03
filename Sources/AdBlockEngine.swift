@@ -97,6 +97,19 @@ final class AdBlockManager {
         return "\(identifierPrefix)_\(cleanId)_\(slotIndex)"
     }
 
+    private func chunkDirectoryURL(for sourceId: String) -> URL {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let cleanId = sourceId.replacingOccurrences(of: "-", with: "")
+        let dir = base.appendingPathComponent("adblock_chunks_\(cleanId)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func removeChunkDirectory(for sourceId: String) {
+        let dir = chunkDirectoryURL(for: sourceId)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
     func purgeAllResidualData(completion: (() -> Void)? = nil) {
         stateLock.lock()
         metadataBySource.removeAll()
@@ -168,6 +181,7 @@ final class AdBlockManager {
                 if let ids = metadataBySource[id]?.ruleListIdentifiers {
                     identifiersToRemove.append(contentsOf: ids)
                 }
+                removeChunkDirectory(for: id)
                 removePhysicalFiles(for: id)
                 metadataBySource.removeValue(forKey: id)
                 compiledListsBySource.removeValue(forKey: id)
@@ -918,9 +932,10 @@ final class AdBlockManager {
                 return
             }
 
-            let payload = self.buildSourcePayload(text: text)
+            let payload = self.buildSourcePayload(sourceId: sourceId, text: text)
 
             guard self.isSourceActive(sourceId) else {
+                self.removeChunkDirectory(for: sourceId)
                 self.stateLock.lock()
                 self.updatingSourceIds.remove(sourceId)
                 self.updateStatusBySource.removeValue(forKey: sourceId)
@@ -947,6 +962,7 @@ final class AdBlockManager {
         completion: ((Bool, String?) -> Void)?
     ) {
         guard isSourceActive(sourceId) else {
+            removeChunkDirectory(for: sourceId)
             stateLock.lock()
             updatingSourceIds.remove(sourceId)
             updateStatusBySource.removeValue(forKey: sourceId)
@@ -954,7 +970,7 @@ final class AdBlockManager {
             return
         }
 
-        guard !payload.networkChunks.isEmpty else {
+        guard !payload.chunkFiles.isEmpty else {
             stateLock.lock()
             let oldIdentifiers = metadataBySource[sourceId]?.ruleListIdentifiers ?? []
             stateLock.unlock()
@@ -1012,11 +1028,11 @@ final class AdBlockManager {
         stateLock.unlock()
 
         compileChunks(
-            payload.networkChunks,
+            chunkFiles: payload.chunkFiles,
             sourceId: sourceId,
             index: 0,
-            lists: [],
-            identifiers: [],
+            compiledLists: [],
+            compiledIdentifiers: [],
             deadline: deadline
         ) { [weak self] lists, identifiers in
             guard let self = self else { return }
@@ -1101,164 +1117,103 @@ final class AdBlockManager {
     }
 
     private func compileChunks(
-        _ chunks: [[String]],
+        chunkFiles: [URL],
         sourceId: String,
         index: Int,
-        lists: [WKContentRuleList],
-        identifiers: [String],
+        compiledLists: [WKContentRuleList],
+        compiledIdentifiers: [String],
         deadline: Date,
         completion: @escaping ([WKContentRuleList], [String]) -> Void
     ) {
         guard isSourceActive(sourceId) else {
+            removeChunkDirectory(for: sourceId)
             completion([], [])
             return
         }
 
-        guard index < chunks.count else {
-            completion(lists, identifiers)
+        guard index < chunkFiles.count else {
+            removeChunkDirectory(for: sourceId)
+            completion(compiledLists, compiledIdentifiers)
             return
         }
 
         guard Date() < deadline else {
-            completion(lists, identifiers)
+            removeChunkDirectory(for: sourceId)
+            completion(compiledLists, compiledIdentifiers)
             return
         }
 
         setUpdateStatus(
             sourceId: sourceId,
-            status: "正在编译规则 \(index + 1)/\(chunks.count)…"
+            status: "正在编译规则 \(index + 1)/\(chunkFiles.count)…"
         )
 
-        let targetIdentifier = slotIdentifier(sourceId: sourceId, slotIndex: index)
-        let chunkRules = chunks[index]
-
-        compileRuleGroup(
-            chunkRules,
-            sourceId: sourceId,
-            identifier: targetIdentifier,
-            deadline: deadline,
-            depth: 0
-        ) { [weak self] ruleLists, ruleIdentifiers in
-            guard let self = self else { return }
-            guard self.isSourceActive(sourceId) else {
-                for id in ruleIdentifiers {
-                    WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id, completionHandler: { _ in })
-                }
-                completion([], [])
-                return
-            }
-            self.compileChunks(
-                chunks,
+        let fileURL = chunkFiles[index]
+        guard let jsonString = try? String(contentsOf: fileURL, encoding: .utf8) else {
+            compileChunks(
+                chunkFiles: chunkFiles,
                 sourceId: sourceId,
                 index: index + 1,
-                lists: lists + ruleLists,
-                identifiers: identifiers + ruleIdentifiers,
+                compiledLists: compiledLists,
+                compiledIdentifiers: compiledIdentifiers,
                 deadline: deadline,
                 completion: completion
             )
-        }
-    }
-
-    private func compileRuleGroup(
-        _ rules: [String],
-        sourceId: String,
-        identifier: String,
-        deadline: Date,
-        depth: Int,
-        completion: @escaping ([WKContentRuleList], [String]) -> Void
-    ) {
-        guard isSourceActive(sourceId) else {
-            completion([], [])
             return
         }
 
-        guard !rules.isEmpty else {
-            completion([], [])
-            return
-        }
+        let targetIdentifier = slotIdentifier(sourceId: sourceId, slotIndex: index)
 
-        guard Date() < deadline else {
-            completion([], [])
-            return
-        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
 
-        let json = "[" + rules.joined(separator: ",") + "]"
-        let gate = AdBlockChunkCompilationGate()
+            guard self.isSourceActive(sourceId) else {
+                self.removeChunkDirectory(for: sourceId)
+                completion([], [])
+                return
+            }
 
-        func resolve(ruleList: WKContentRuleList?, error: Error?) {
-            gate.resolve {
-                guard self.isSourceActive(sourceId) else {
-                    if ruleList != nil {
-                        WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier, completionHandler: { _ in })
-                    }
-                    completion([], [])
-                    return
-                }
+            WKContentRuleListStore.default().compileContentRuleList(
+                forIdentifier: targetIdentifier,
+                encodedContentRuleList: jsonString
+            ) { ruleList, error in
+                try? FileManager.default.removeItem(at: fileURL)
 
-                guard let ruleList = ruleList else {
-                    if rules.count == 1 || depth >= 5 {
-                        for rule in rules.prefix(3) {
-                            self.recordUnsupportedRule(
-                                sourceId: sourceId,
-                                rawFilter: rule,
-                                compiledJSON: rule,
-                                error: self.compilerErrorDescription(error)
-                            )
+                self.parseQueue.async {
+                    guard self.isSourceActive(sourceId) else {
+                        self.removeChunkDirectory(for: sourceId)
+                        if ruleList != nil {
+                            WKContentRuleListStore.default().removeContentRuleList(forIdentifier: targetIdentifier) { _ in }
                         }
                         completion([], [])
                         return
                     }
 
-                    let middle = rules.count / 2
-                    let left = Array(rules[..<middle])
-                    let right = Array(rules[middle...])
+                    var nextLists = compiledLists
+                    var nextIdentifiers = compiledIdentifiers
 
-                    self.compileRuleGroup(
-                        left,
-                        sourceId: sourceId,
-                        identifier: "\(identifier)L",
-                        deadline: deadline,
-                        depth: depth + 1
-                    ) { leftLists, leftIdentifiers in
-                        guard self.isSourceActive(sourceId) else {
-                            for id in leftIdentifiers {
-                                WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id, completionHandler: { _ in })
-                            }
-                            completion([], [])
-                            return
-                        }
-                        self.compileRuleGroup(
-                            right,
+                    if let rl = ruleList {
+                        nextLists.append(rl)
+                        nextIdentifiers.append(targetIdentifier)
+                    } else {
+                        self.recordUnsupportedRule(
                             sourceId: sourceId,
-                            identifier: "\(identifier)R",
-                            deadline: deadline,
-                            depth: depth + 1
-                        ) { rightLists, rightIdentifiers in
-                            guard self.isSourceActive(sourceId) else {
-                                for id in leftIdentifiers + rightIdentifiers {
-                                    WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id, completionHandler: { _ in })
-                                }
-                                completion([], [])
-                                return
-                            }
-                            completion(
-                                leftLists + rightLists,
-                                leftIdentifiers + rightIdentifiers
-                            )
-                        }
+                            rawFilter: targetIdentifier,
+                            compiledJSON: "",
+                            error: self.compilerErrorDescription(error)
+                        )
                     }
-                    return
-                }
-                completion([ruleList], [identifier])
-            }
-        }
 
-        DispatchQueue.main.async {
-            WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: identifier,
-                encodedContentRuleList: json
-            ) { ruleList, error in
-                resolve(ruleList: ruleList, error: error)
+                    self.compileChunks(
+                        chunkFiles: chunkFiles,
+                        sourceId: sourceId,
+                        index: index + 1,
+                        compiledLists: nextLists,
+                        compiledIdentifiers: nextIdentifiers,
+                        deadline: deadline,
+                        completion: completion
+                    )
+                }
             }
         }
     }
@@ -1281,6 +1236,7 @@ final class AdBlockManager {
         let unsuppCopy = unsupportedRulesBySource
         stateLock.unlock()
 
+        removeChunkDirectory(for: sourceId)
         removePhysicalFiles(for: sourceId)
         saveMetadata(metaCopy)
         saveUnsupportedRules(unsuppCopy)
@@ -1382,24 +1338,37 @@ final class AdBlockManager {
         )
     }
 
-    private func buildSourcePayload(text: String) -> AdBlockSourcePayload {
-        var allBlockRules: [String] = []
-        var allExceptionRules: [String] = []
+    private func buildSourcePayload(sourceId: String, text: String) -> AdBlockSourcePayload {
+        removeChunkDirectory(for: sourceId)
+        let dir = chunkDirectoryURL(for: sourceId)
+
+        var chunkIndex = 0
+        var currentChunkRules: [String] = []
+        currentChunkRules.reserveCapacity(nativeRuleChunkSize)
+        var chunkFiles: [URL] = []
         var cosmeticSelectors: [String] = []
         var ruleCount = 0
         var skippedRuleCount = 0
-        var lineCount = 0
+
+        func flushCurrentChunk() {
+            guard !currentChunkRules.isEmpty else { return }
+            let fileURL = dir.appendingPathComponent("chunk_\(chunkIndex).json")
+            let json = "[" + currentChunkRules.joined(separator: ",") + "]"
+            try? json.write(to: fileURL, atomically: true, encoding: .utf8)
+            chunkFiles.append(fileURL)
+            chunkIndex += 1
+            currentChunkRules.removeAll(keepingCapacity: true)
+        }
 
         text.enumerateLines { line, _ in
             autoreleasepool {
                 let parsed = self.parseRuleToJSON(line)
                 if let json = parsed.networkJSON {
-                    if parsed.isException {
-                        allExceptionRules.append(json)
-                    } else {
-                        allBlockRules.append(json)
-                    }
+                    currentChunkRules.append(json)
                     ruleCount += 1
+                    if currentChunkRules.count >= self.nativeRuleChunkSize {
+                        flushCurrentChunk()
+                    }
                 }
 
                 if !parsed.cosmeticSelectors.isEmpty {
@@ -1421,36 +1390,25 @@ final class AdBlockManager {
                     skippedRuleCount += 1
                 }
             }
-
-            lineCount += 1
-            if lineCount >= 10000 {
-                lineCount = 0
-                malloc_zone_pressure_relief(nil, 0)
-            }
         }
 
-        var allNetworkChunks: [[String]] = []
-
-        if !allBlockRules.isEmpty {
-            for start in stride(from: 0, to: allBlockRules.count, by: nativeRuleChunkSize) {
-                let chunk = Array(allBlockRules[start..<min(start + nativeRuleChunkSize, allBlockRules.count)])
-                allNetworkChunks.append(chunk)
-            }
-        }
-
-        if !allExceptionRules.isEmpty {
-            for start in stride(from: 0, to: allExceptionRules.count, by: nativeRuleChunkSize) {
-                let chunk = Array(allExceptionRules[start..<min(start + nativeRuleChunkSize, allExceptionRules.count)])
-                allNetworkChunks.append(chunk)
-            }
-        }
+        flushCurrentChunk()
 
         return AdBlockSourcePayload(
-            networkChunks: allNetworkChunks,
+            chunkFiles: chunkFiles,
             cosmeticSelectors: cosmeticSelectors,
             ruleCount: ruleCount,
             skippedRuleCount: skippedRuleCount
         )
+    }
+
+    private func isValidDomain(_ domain: String) -> Bool {
+        guard !domain.isEmpty, domain.count <= 253, !domain.hasPrefix("."), !domain.hasSuffix(".") else {
+            return false
+        }
+        return domain.allSatisfy { ch in
+            (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9") || ch == "-" || ch == "."
+        }
     }
 
     private func parseRuleToJSON(_ rawLine: String) -> AdBlockParsedLineResult {
@@ -1574,7 +1532,11 @@ final class AdBlockManager {
 
         let filter: String
         if rawPattern.hasPrefix("/") && rawPattern.hasSuffix("/") && rawPattern.count > 2 {
-            filter = String(rawPattern.dropFirst().dropLast())
+            let inside = String(rawPattern.dropFirst().dropLast())
+            if inside.contains("(?") || inside.contains("\\1") || inside.contains("\\2") {
+                return AdBlockParsedLineResult(networkJSON: nil, isException: false, cosmeticSelectors: [], isUnsupported: true)
+            }
+            filter = inside
         } else {
             filter = urlFilterPattern(from: rawPattern)
         }
@@ -1583,12 +1545,15 @@ final class AdBlockManager {
             return AdBlockParsedLineResult(networkJSON: nil, isException: false, cosmeticSelectors: [], isUnsupported: true)
         }
 
+        let validInclude = includeDomains.filter(isValidDomain)
+        let validExclude = excludeDomains.filter(isValidDomain)
+
         let json = formatNetworkRuleJSON(
             filter: filter,
             isCaseSensitive: isCaseSensitive,
             isException: isException,
-            includeDomains: includeDomains,
-            excludeDomains: excludeDomains,
+            includeDomains: validInclude,
+            excludeDomains: validExclude,
             resourceTypes: resourceTypes,
             loadTypes: loadTypes
         )
@@ -1664,10 +1629,13 @@ final class AdBlockManager {
 
     private func isValidWebKitPattern(_ pattern: String) -> Bool {
         guard !pattern.isEmpty,
-              pattern.count < 1024,
-              pattern.allSatisfy({ $0.isASCII }),
+              pattern.count < 512,
+              pattern.allSatisfy({ $0.isASCII && $0 >= " " && $0.asciiValue! < 127 }),
               !pattern.contains("(?"),
-              !pattern.contains("[:") else {
+              !pattern.contains("[:"),
+              !pattern.contains("\\1"),
+              !pattern.contains("\\2"),
+              !pattern.contains("\\3") else {
             return false
         }
 
@@ -1967,7 +1935,7 @@ struct AdBlockCompiledSourceMetadata: Codable {
 }
 
 private struct AdBlockSourcePayload {
-    var networkChunks: [[String]]
+    var chunkFiles: [URL]
     var cosmeticSelectors: [String]
     var ruleCount: Int
     var skippedRuleCount: Int
@@ -1984,23 +1952,4 @@ private struct AdBlockUnsupportedRule: Codable {
     var rawRule: String
     var compiledJSON: String
     var errorDescription: String
-}
-
-private final class AdBlockChunkCompilationGate {
-    private let lock = NSLock()
-    private var resolved = false
-
-    func resolve(_ handler: () -> Void) {
-        lock.lock()
-
-        guard !resolved else {
-            lock.unlock()
-            return
-        }
-
-        resolved = true
-        lock.unlock()
-
-        handler()
-    }
 }
