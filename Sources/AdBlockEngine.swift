@@ -118,38 +118,36 @@ final class AdBlockManager {
         UserDefaults.standard.synchronize()
 
         cleanupAllLocalFiles()
-        deleteAllPhysicalRuleStores()
 
-        WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { [weak self] identifiers in
+        DispatchQueue.main.async { [weak self] in
             guard let self = self else {
                 completion?()
                 return
             }
 
-            guard let available = identifiers, !available.isEmpty else {
-                DispatchQueue.main.async {
-                    self.applyRulesToAttachedWebViews()
+            self.applyRulesToAttachedWebViews()
+
+            WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { identifiers in
+                guard let available = identifiers, !available.isEmpty else {
+                    self.performDeepMemoryRelief()
+                    completion?()
+                    return
+                }
+
+                let group = DispatchGroup()
+                for identifier in available {
+                    if identifier.hasPrefix("SimpleBrowserAdBlock") || identifier.hasPrefix("simple_ab_") {
+                        group.enter()
+                        WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier) { _ in
+                            group.leave()
+                        }
+                    }
+                }
+
+                group.notify(queue: .main) {
                     self.performDeepMemoryRelief()
                     completion?()
                 }
-                return
-            }
-
-            let group = DispatchGroup()
-            for identifier in available {
-                if identifier.hasPrefix("SimpleBrowserAdBlock") || identifier.hasPrefix("simple_ab_") {
-                    group.enter()
-                    WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier) { _ in
-                        group.leave()
-                    }
-                }
-            }
-
-            group.notify(queue: .main) {
-                self.deleteAllPhysicalRuleStores()
-                self.applyRulesToAttachedWebViews()
-                self.performDeepMemoryRelief()
-                completion?()
             }
         }
     }
@@ -206,52 +204,18 @@ final class AdBlockManager {
         let rootDirectories = [
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
             FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
-            FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first,
             URL(fileURLWithPath: NSTemporaryDirectory())
         ].compactMap { $0 }
 
         for root in rootDirectories {
-            guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+            guard let fileURLs = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
                 continue
             }
 
-            var urlsToDelete: [URL] = []
-            for case let fileURL as URL in enumerator {
+            for fileURL in fileURLs {
                 let name = fileURL.lastPathComponent
-                if name.hasPrefix("adblock_") ||
-                    name.contains("SimpleBrowserAdBlock") ||
-                    name.contains("simple_ab_") ||
-                    name.contains("ContentRuleList") ||
-                    name.contains("ContentExtension") {
-                    urlsToDelete.append(fileURL)
-                }
-            }
-
-            for url in urlsToDelete {
-                try? FileManager.default.removeItem(at: url)
-            }
-        }
-    }
-
-    private func deleteAllPhysicalRuleStores() {
-        let libraryURL = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
-        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-
-        let possiblePaths = [
-            libraryURL?.appendingPathComponent("WebKit"),
-            cachesURL?.appendingPathComponent("WebKit"),
-            cachesURL?.appendingPathComponent("WKContentRuleListStore"),
-            libraryURL?.appendingPathComponent("WKContentRuleListStore")
-        ].compactMap { $0 }
-
-        for folder in possiblePaths {
-            guard let subURLs = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else {
-                continue
-            }
-            for url in subURLs {
-                let name = url.lastPathComponent
-                if name.contains("ContentRuleList") || name.contains("ContentExtension") || name.contains("RuleList") {
-                    try? FileManager.default.removeItem(at: url)
+                if name.hasPrefix("adblock_") || name.contains("SimpleBrowserAdBlock") || name.contains("simple_ab_") {
+                    try? FileManager.default.removeItem(at: fileURL)
                 }
             }
         }
@@ -265,23 +229,18 @@ final class AdBlockManager {
         let searchDirectories = [
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
             FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
-            FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first,
             URL(fileURLWithPath: NSTemporaryDirectory())
         ].compactMap { $0 }
 
         for directory in searchDirectories {
-            guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil) else {
+            guard let fileURLs = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
                 continue
             }
-            var toRemove: [URL] = []
-            for case let fileURL as URL in enumerator {
+            for fileURL in fileURLs {
                 let filename = fileURL.lastPathComponent
                 if filename.contains(cleanId) || filename.contains(sourceId) {
-                    toRemove.append(fileURL)
+                    try? FileManager.default.removeItem(at: fileURL)
                 }
-            }
-            for url in toRemove {
-                try? FileManager.default.removeItem(at: url)
             }
         }
     }
@@ -522,7 +481,6 @@ final class AdBlockManager {
         subscriptions.removeAll { $0.id == id }
         saveSubscriptions(subscriptions)
         deactivateSource(id: id)
-        purgeIfNoRulesRemaining()
     }
 
     func isUpdating(sourceId: String) -> Bool {
@@ -1001,45 +959,47 @@ final class AdBlockManager {
             let oldIdentifiers = metadataBySource[sourceId]?.ruleListIdentifiers ?? []
             stateLock.unlock()
 
-            for id in oldIdentifiers {
-                WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in }
-            }
-
-            saveCosmeticCache(sourceId: sourceId, selectors: payload.cosmeticSelectors)
-
-            let metadata = AdBlockCompiledSourceMetadata(
-                sourceId: sourceId,
-                ruleListIdentifiers: [],
-                ruleCount: payload.ruleCount,
-                skippedRuleCount: payload.skippedRuleCount
-            )
-
-            stateLock.lock()
-            metadataBySource[sourceId] = metadata
-            compiledListsBySource.removeValue(forKey: sourceId)
-            unsupportedRulesBySource[sourceId] = []
-            let metaCopy = metadataBySource
-            let unsuppCopy = unsupportedRulesBySource
-            updatingSourceIds.remove(sourceId)
-            stateLock.unlock()
-
-            saveMetadata(metaCopy)
-            saveUnsupportedRules(unsuppCopy)
-            cleanupOrphanedRuleLists()
-            performDeepMemoryRelief()
-
-            parseQueue.async { [weak self] in
+            DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                self.restoreCosmeticScripts(metadata: metadata)
-                DispatchQueue.main.async {
-                    self.setUpdateStatus(sourceId: sourceId, status: nil)
-                    self.applyRulesToAttachedWebViews()
+                for id in oldIdentifiers {
+                    WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in }
+                }
 
-                    let message = payload.skippedRuleCount > 0
-                        ? "已更新，跳过 \(payload.skippedRuleCount) 条不兼容规则"
-                        : nil
+                self.saveCosmeticCache(sourceId: sourceId, selectors: payload.cosmeticSelectors)
 
-                    completion?(true, message)
+                let metadata = AdBlockCompiledSourceMetadata(
+                    sourceId: sourceId,
+                    ruleListIdentifiers: [],
+                    ruleCount: payload.ruleCount,
+                    skippedRuleCount: payload.skippedRuleCount
+                )
+
+                self.stateLock.lock()
+                self.metadataBySource[sourceId] = metadata
+                self.compiledListsBySource.removeValue(forKey: sourceId)
+                self.unsupportedRulesBySource[sourceId] = []
+                let metaCopy = self.metadataBySource
+                let unsuppCopy = self.unsupportedRulesBySource
+                self.updatingSourceIds.remove(sourceId)
+                self.stateLock.unlock()
+
+                self.saveMetadata(metaCopy)
+                self.saveUnsupportedRules(unsuppCopy)
+                self.cleanupOrphanedRuleLists()
+                self.performDeepMemoryRelief()
+
+                self.parseQueue.async {
+                    self.restoreCosmeticScripts(metadata: metadata)
+                    DispatchQueue.main.async {
+                        self.setUpdateStatus(sourceId: sourceId, status: nil)
+                        self.applyRulesToAttachedWebViews()
+
+                        let message = payload.skippedRuleCount > 0
+                            ? "已更新，跳过 \(payload.skippedRuleCount) 条不兼容规则"
+                            : nil
+
+                        completion?(true, message)
+                    }
                 }
             }
             return
@@ -1116,8 +1076,7 @@ final class AdBlockManager {
             self.cleanupOrphanedRuleLists()
             self.performDeepMemoryRelief()
 
-            self.parseQueue.async { [weak self] in
-                guard let self = self else { return }
+            self.parseQueue.async {
                 self.restoreCosmeticScripts(metadata: metadata)
                 DispatchQueue.main.async {
                     self.setUpdateStatus(sourceId: sourceId, status: nil)
@@ -1322,28 +1281,41 @@ final class AdBlockManager {
         let unsuppCopy = unsupportedRulesBySource
         stateLock.unlock()
 
-        for identifier in identifiersToRemove {
-            WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier) { _ in }
-        }
+        removePhysicalFiles(for: sourceId)
+        saveMetadata(metaCopy)
+        saveUnsupportedRules(unsuppCopy)
 
-        let cleanId = sourceId.replacingOccurrences(of: "-", with: "")
-        WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { identifiers in
-            guard let available = identifiers else { return }
-            for id in available {
-                if id.contains(cleanId) {
-                    WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            self.applyRulesToAttachedWebViews()
+
+            let cleanId = sourceId.replacingOccurrences(of: "-", with: "")
+            WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { identifiers in
+                guard let available = identifiers, !available.isEmpty else {
+                    self.purgeIfNoRulesRemaining()
+                    self.performDeepMemoryRelief()
+                    return
+                }
+
+                let targetSet = Set(identifiersToRemove)
+                let group = DispatchGroup()
+                for id in available {
+                    if targetSet.contains(id) || id.contains(cleanId) {
+                        group.enter()
+                        WKContentRuleListStore.default().removeContentRuleList(forIdentifier: id) { _ in
+                            group.leave()
+                        }
+                    }
+                }
+
+                group.notify(queue: .main) {
+                    self.cleanupOrphanedRuleLists()
+                    self.purgeIfNoRulesRemaining()
+                    self.performDeepMemoryRelief()
                 }
             }
         }
-
-        removePhysicalFiles(for: sourceId)
-
-        saveMetadata(metaCopy)
-        saveUnsupportedRules(unsuppCopy)
-        cleanupOrphanedRuleLists()
-        applyRulesToAttachedWebViews()
-        purgeIfNoRulesRemaining()
-        performDeepMemoryRelief()
     }
 
     private func saveCosmeticCache(
@@ -1458,13 +1430,19 @@ final class AdBlockManager {
         }
 
         var allNetworkChunks: [[String]] = []
+
         if !allBlockRules.isEmpty {
-            allNetworkChunks = stride(from: 0, to: allBlockRules.count, by: nativeRuleChunkSize).map { start in
-                let blockChunk = Array(allBlockRules[start..<min(start + nativeRuleChunkSize, allBlockRules.count)])
-                return blockChunk + allExceptionRules
+            for start in stride(from: 0, to: allBlockRules.count, by: nativeRuleChunkSize) {
+                let chunk = Array(allBlockRules[start..<min(start + nativeRuleChunkSize, allBlockRules.count)])
+                allNetworkChunks.append(chunk)
             }
-        } else if !allExceptionRules.isEmpty {
-            allNetworkChunks = [allExceptionRules]
+        }
+
+        if !allExceptionRules.isEmpty {
+            for start in stride(from: 0, to: allExceptionRules.count, by: nativeRuleChunkSize) {
+                let chunk = Array(allExceptionRules[start..<min(start + nativeRuleChunkSize, allExceptionRules.count)])
+                allNetworkChunks.append(chunk)
+            }
         }
 
         return AdBlockSourcePayload(
