@@ -58,10 +58,11 @@ final class UnsupportedRulesViewController: UIViewController {
 final class AdBlockMemoryDetailViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private var report: AdBlockMemoryReport?
+    private let loadingIndicator = UIActivityIndicatorView(style: .medium)
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "内存诊断详情"
+        title = "内存与存储诊断"
         view.backgroundColor = .systemGroupedBackground
 
         navigationItem.rightBarButtonItem = UIBarButtonItem(
@@ -95,22 +96,29 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
     }
 
     @objc private func handleDeepClean() {
+        navigationItem.rightBarButtonItem?.isEnabled = false
+        title = "正在清理…"
+
         AdBlockManager.shared.cleanMemoryResidue { [weak self] rep in
-            self?.report = rep
-            self?.tableView.reloadData()
+            guard let self = self else { return }
+            self.title = "内存与存储诊断"
+            self.navigationItem.rightBarButtonItem?.isEnabled = true
+            self.report = rep
+            self.tableView.reloadData()
 
             let alert = UIAlertController(
                 title: "清理完成",
-                message: "已清理规则与底层内存残留，当前物理内存: \(rep.physicalFootprintString)",
+                message: "已彻底清空旧碎片规则库、重置紧凑规则、删除沙盒构建归档残留与网页缓存。\n当前物理内存: \(rep.physicalFootprintString)\n底层规则库已压缩至: \(rep.diskStoreIdentifiers.count) 个",
                 preferredStyle: .alert
             )
             alert.addAction(UIAlertAction(title: "确定", style: .default))
-            self?.present(alert, animated: true)
+            self.present(alert, animated: true)
         }
     }
 
     func numberOfSections(in tableView: UITableView) -> Int {
-        return 4
+        let hasArtifacts = !(report?.largeArtifacts.isEmpty ?? true)
+        return hasArtifacts ? 5 : 4
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -118,11 +126,13 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
         case 0:
             return 2
         case 1:
-            return 4
+            return 3
         case 2:
             return 2
         case 3:
             return 4
+        case 4:
+            return report?.largeArtifacts.count ?? 0
         default:
             return 0
         }
@@ -131,16 +141,28 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch section {
         case 0:
-            return "系统内存"
+            return "系统运行内存"
         case 1:
             return "广告拦截引擎"
         case 2:
             return "底层规则库"
         case 3:
-            return "本地存储与缓存"
+            return "应用沙盒占用"
+        case 4:
+            return "检测到的沙盒大文件"
         default:
             return nil
         }
+    }
+
+    func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        if section == 2 {
+            return "旧版本错误拆分会导致产生上百个碎片规则库，点击右上角深度清理可彻底清空并重新压缩为规范库。"
+        }
+        if section == 3 {
+            return "系统设置中的文稿与数据由以上目录大小总和构成。"
+        }
+        return nil
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -148,7 +170,7 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
         cell.selectionStyle = .none
 
         guard let r = report else {
-            cell.textLabel?.text = "正在扫描内存…"
+            cell.textLabel?.text = "正在全面扫描沙盒与内存…"
             cell.detailTextLabel?.text = nil
             return cell
         }
@@ -169,17 +191,15 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
             } else if indexPath.row == 1 {
                 cell.textLabel?.text = "美化脚本数量"
                 cell.detailTextLabel?.text = "\(r.inMemoryUserScriptCount) 个"
-            } else if indexPath.row == 2 {
-                cell.textLabel?.text = "美化脚本字符数"
-                cell.detailTextLabel?.text = "\(r.inMemoryUserScriptChars) 字"
             } else {
-                cell.textLabel?.text = "美化脚本内存估算"
-                cell.detailTextLabel?.text = r.userScriptsEstimatedSizeString
+                cell.textLabel?.text = "美化脚本注入字符数"
+                cell.detailTextLabel?.text = "\(r.inMemoryUserScriptChars) 字"
             }
         case 2:
             if indexPath.row == 0 {
                 cell.textLabel?.text = "已注册底层规则库"
                 cell.detailTextLabel?.text = "\(r.diskStoreIdentifiers.count) 个"
+                cell.detailTextLabel?.textColor = r.diskStoreIdentifiers.count > 10 ? .systemRed : .secondaryLabel
             } else {
                 cell.textLabel?.text = "孤儿规则库"
                 cell.detailTextLabel?.text = "\(r.orphanStoreIdentifiers.count) 个"
@@ -187,18 +207,24 @@ final class AdBlockMemoryDetailViewController: UIViewController, UITableViewData
             }
         case 3:
             if indexPath.row == 0 {
-                cell.textLabel?.text = "订阅源原始文件"
-                cell.detailTextLabel?.text = "\(r.subscriptionFilesCount) 个"
+                cell.textLabel?.text = "文稿目录大小"
+                cell.detailTextLabel?.text = r.documentsSizeString
             } else if indexPath.row == 1 {
-                cell.textLabel?.text = "订阅文件磁盘大小"
-                cell.detailTextLabel?.text = r.subscriptionFilesSizeString
+                cell.textLabel?.text = "缓存目录大小"
+                cell.detailTextLabel?.text = r.cachesSizeString
             } else if indexPath.row == 2 {
-                cell.textLabel?.text = "网络缓存内存"
-                cell.detailTextLabel?.text = r.urlCacheMemoryString
+                cell.textLabel?.text = "临时目录大小"
+                cell.detailTextLabel?.text = r.tmpSizeString
             } else {
-                cell.textLabel?.text = "网络缓存磁盘"
+                cell.textLabel?.text = "网络缓存占用"
                 cell.detailTextLabel?.text = r.urlCacheDiskString
             }
+        case 4:
+            let item = r.largeArtifacts[indexPath.row]
+            cell.textLabel?.text = item.name
+            cell.textLabel?.font = .systemFont(ofSize: 14)
+            cell.detailTextLabel?.text = item.sizeString
+            cell.detailTextLabel?.textColor = .systemOrange
         default:
             break
         }
