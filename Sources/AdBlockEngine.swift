@@ -848,13 +848,13 @@ final class AdBlockManager {
             guard chunkIndex < chunks.count else {
                 self.removeOldRuleLists(for: sourceId)
 
-                let finalRuleCount = compiledLists.reduce(0) { $0 + Int($1.value(forKey: "ruleCount") as? Int ?? 0) }
+                let finalRuleCount = max(0, totalCount - dynamicallySkipped)
                 let finalSkippedCount = skippedCount + dynamicallySkipped
 
                 let metadata = AdBlockCompiledSourceMetadata(
                     sourceId: sourceId,
                     ruleListIdentifiers: compiledIdentifiers,
-                    ruleCount: finalRuleCount > 0 ? finalRuleCount : (totalCount - dynamicallySkipped),
+                    ruleCount: finalRuleCount,
                     skippedRuleCount: finalSkippedCount
                 )
 
@@ -983,6 +983,7 @@ final class AdBlockManager {
     ) {
         func filterSlice(
             slice: [(raw: String, dict: [String: Any])],
+            depth: Int,
             finish: @escaping ([(raw: String, dict: [String: Any])], Int) -> Void
         ) {
             guard !slice.isEmpty else {
@@ -990,14 +991,16 @@ final class AdBlockManager {
                 return
             }
 
-            if slice.count == 1 {
-                self.recordUnsupportedRule(
-                    sourceId: sourceId,
-                    rawRule: slice[0].raw,
-                    compiledRule: slice[0].dict,
-                    error: "WebKit 无法解析该规则语法"
-                )
-                finish([], 1)
+            if slice.count == 1 || depth >= 8 {
+                for item in slice {
+                    self.recordUnsupportedRule(
+                        sourceId: sourceId,
+                        rawRule: item.raw,
+                        compiledRule: item.dict,
+                        error: "WebKit 无法解析该规则语法"
+                    )
+                }
+                finish([], slice.count)
                 return
             }
 
@@ -1023,8 +1026,8 @@ final class AdBlockManager {
                         let right = Array(slice[mid..<slice.count])
 
                         self.parseQueue.async {
-                            filterSlice(slice: left) { leftValid, leftSkipped in
-                                filterSlice(slice: right) { rightValid, rightSkipped in
+                            filterSlice(slice: left, depth: depth + 1) { leftValid, leftSkipped in
+                                filterSlice(slice: right, depth: depth + 1) { rightValid, rightSkipped in
                                     finish(leftValid + rightValid, leftSkipped + rightSkipped)
                                 }
                             }
@@ -1035,7 +1038,7 @@ final class AdBlockManager {
         }
 
         parseQueue.async {
-            filterSlice(slice: rules, finish: completion)
+            filterSlice(slice: rules, depth: 0, finish: completion)
         }
     }
 
@@ -1127,6 +1130,18 @@ final class AdBlockManager {
               !trimmed.contains(":matches-css("),
               !trimmed.contains(":xpath("),
               !trimmed.contains("[-ext-") else {
+            return false
+        }
+
+        var brackets = 0
+        var parens = 0
+        for char in trimmed {
+            if char == "[" { brackets += 1 }
+            else if char == "]" { brackets -= 1; if brackets < 0 { return false } }
+            else if char == "(" { parens += 1 }
+            else if char == ")" { parens -= 1; if parens < 0 { return false } }
+        }
+        if brackets != 0 || parens != 0 {
             return false
         }
         return true
@@ -1667,42 +1682,42 @@ final class AdBlockManager {
         }
     }
 
-    func cleanMemoryResidue(completion: ((AdBlockMemoryReport) -> Void)? = nil) {
-        parseQueue.async { [weak self] in
-            guard let self = self else { return }
+    private func purgeDiskArtifacts() {
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let activeSourceIds = Set(loadSubscriptions().map(\.id) + [Self.customSourceId])
 
-            let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let activeSourceIds = Set(self.loadSubscriptions().map(\.id) + [Self.customSourceId])
-
-            if let files = try? FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil) {
-                for fileURL in files {
-                    let name = fileURL.lastPathComponent
-                    if name.hasSuffix(".ipa") ||
-                        name.hasSuffix(".zip") ||
-                        name.hasSuffix(".log") {
+        if let files = try? FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil) {
+            for fileURL in files {
+                let name = fileURL.lastPathComponent
+                if name.hasSuffix(".ipa") || name.hasSuffix(".zip") || name.hasSuffix(".log") {
+                    try? FileManager.default.removeItem(at: fileURL)
+                } else if name.hasPrefix("adblock_subscription_") && name.hasSuffix(".txt") {
+                    let subId = name
+                        .replacingOccurrences(of: "adblock_subscription_", with: "")
+                        .replacingOccurrences(of: ".txt", with: "")
+                    if !activeSourceIds.contains(subId) {
                         try? FileManager.default.removeItem(at: fileURL)
-                    } else if name.hasPrefix("adblock_subscription_") && name.hasSuffix(".txt") {
-                        let subId = name
-                            .replacingOccurrences(of: "adblock_subscription_", with: "")
-                            .replacingOccurrences(of: ".txt", with: "")
-                        if !activeSourceIds.contains(subId) {
-                            try? FileManager.default.removeItem(at: fileURL)
-                        }
                     }
                 }
             }
+        }
 
-            let tmpURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            if let tmpFiles = try? FileManager.default.contentsOfDirectory(at: tmpURL, includingPropertiesForKeys: nil) {
-                for fileURL in tmpFiles {
-                    try? FileManager.default.removeItem(at: fileURL)
-                }
+        let tmpURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        if let tmpFiles = try? FileManager.default.contentsOfDirectory(at: tmpURL, includingPropertiesForKeys: nil) {
+            for fileURL in tmpFiles {
+                try? FileManager.default.removeItem(at: fileURL)
             }
+        }
+    }
+
+    func cleanMemoryResidue(completion: ((AdBlockMemoryReport) -> Void)? = nil) {
+        parseQueue.async { [weak self] () -> Void in
+            guard let self = self else { return }
+            self.purgeDiskArtifacts()
 
             DispatchQueue.main.async {
-                WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { [weak self] identifiers in
-                    guard let self = self else { return }
-                    let list = identifiers ?? []
+                WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { (identifiers: [String]?) in
+                    let list: [String] = identifiers ?? []
                     let group = DispatchGroup()
 
                     for identifier in list {
@@ -1719,11 +1734,8 @@ final class AdBlockManager {
                         self.stateLock.unlock()
 
                         self.saveMetadata([:])
-                        URLCache.shared.removeAllCachedResponses()
-                        WebsiteCleaner.shared.cleanCacheOnly()
 
-                        let store = WKWebsiteDataStore.default()
-                        store.removeData(ofTypes: [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeFetchCache, WKWebsiteDataTypeOfflineWebApplicationCache], modifiedSince: .distantPast) {
+                        WebsiteCleaner.shared.cleanCacheOnly {
                             releaseSystemHeapPressure()
 
                             self.recompileAllActiveSubscriptions {
