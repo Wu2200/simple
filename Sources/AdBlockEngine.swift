@@ -128,16 +128,24 @@ final class AdBlockManager {
             UserDefaults.standard.set(true, forKey: enabledKey)
         }
 
-        metadataBySource = loadMetadata()
-        unsupportedRulesBySource = loadUnsupportedRules()
-        restorePersistedRules()
-
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAppDidBecomeActive),
             name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
+
+        parseQueue.async { [weak self] () -> Void in
+            guard let self = self else { return }
+            let meta = self.loadMetadata()
+            let unsupp = self.loadUnsupportedRules()
+            self.stateLock.lock()
+            self.metadataBySource = meta
+            self.unsupportedRulesBySource = unsupp
+            self.stateLock.unlock()
+
+            self.restorePersistedRules()
+        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
             self?.checkAndAutoUpdateSubscriptions()
@@ -1231,7 +1239,7 @@ final class AdBlockManager {
     private func cosmeticRuleBatches(
         _ rules: [AdBlockCosmeticRule]
     ) -> [[AdBlockCosmeticRule]] {
-        let chunkSize = 800
+        let chunkSize = 4000
         return stride(from: 0, to: rules.count, by: chunkSize).map {
             Array(rules[$0..<min($0 + chunkSize, rules.count)])
         }
