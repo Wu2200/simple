@@ -43,11 +43,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     private static let coreHistoryScriptSource = """
     (function() {
+        if (window !== window.top) return;
         if (window.__simple_history_hooked__) return;
         window.__simple_history_hooked__ = true;
 
         function notifyUrlChange() {
             try {
+                if (window !== window.top) return;
                 window.webkit.messageHandlers.HistoryBridge.postMessage({
                     url: window.location.href,
                     title: document.title || ''
@@ -588,7 +590,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             let script = WKUserScript(
                 source: Self.coreHistoryScriptSource,
                 injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
+                forMainFrameOnly: true
             )
             controller.addUserScript(script)
         }
@@ -684,13 +686,29 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func sessionURL() -> URL? {
         if isDisplayingFailurePage {
-            return failedURL ?? url
+            return failedURL ?? url ?? webView.url
         }
-        return pendingRestoreURL ?? url
+        let candidate = pendingRestoreURL ?? url ?? webView.url
+        guard let target = candidate else { return nil }
+        let str = target.absoluteString
+        if str.isEmpty || str == "about:blank" || str.contains("settings/hatsv2") {
+            return nil
+        }
+        return target
     }
 
     func handleURLChange(_ newURL: URL?, explicitTitle: String? = nil) {
         guard let newURL = newURL, !newURL.absoluteString.contains("about:blank") else { return }
+
+        let scheme = newURL.scheme?.lowercased() ?? ""
+        guard scheme == "http" || scheme == "https" else { return }
+
+        if let currentHost = webView.url?.host?.lowercased(),
+           let newHost = newURL.host?.lowercased(),
+           currentHost != newHost {
+            return
+        }
+
         if !isDisplayingFailurePage {
             var hasChanged = false
             if url != newURL {
@@ -725,10 +743,18 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "HistoryBridge",
-           let body = message.body as? [String: Any],
-           let urlStr = body["url"] as? String,
-           let newURL = URL(string: urlStr) {
+        if message.name == "HistoryBridge" {
+            guard message.frameInfo.isMainFrame else { return }
+            guard let body = message.body as? [String: Any],
+                  let urlStr = body["url"] as? String,
+                  let newURL = URL(string: urlStr) else { return }
+
+            if let currentHost = webView.url?.host?.lowercased(),
+               let newHost = newURL.host?.lowercased(),
+               currentHost != newHost {
+                return
+            }
+
             let newTitle = body["title"] as? String
             handleURLChange(newURL, explicitTitle: newTitle)
             return
@@ -1445,8 +1471,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         hideReloadCover()
         isLoading = false
-        if !isDisplayingFailurePage {
-            url = webView.url
+        if !isDisplayingFailurePage, let currentURL = webView.url, !currentURL.absoluteString.contains("about:blank") {
+            url = currentURL
             title = webView.title ?? url?.host ?? "新标签页"
         }
         extractHighResFaviconIfNeeded()
@@ -1523,7 +1549,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             return
         }
 
-        navigationActionURL = targetURL
+        if navigationAction.targetFrame?.isMainFrame == true {
+            navigationActionURL = targetURL
+        }
 
         let selectedItem = UserAgentStore.shared.getSelectedItem()
         let isDesktopMode = selectedItem.category == .desktop || selectedItem.id == "default_mac"
@@ -1532,7 +1560,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let scheme = targetURL.scheme?.lowercased() ?? ""
 
         if ["http", "https"].contains(scheme),
-           navigationAction.targetFrame != nil,
+           navigationAction.targetFrame?.isMainFrame == true,
            targetURL != url {
             failureOriginURL = url
         }
