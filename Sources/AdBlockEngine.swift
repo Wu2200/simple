@@ -101,6 +101,7 @@ final class AdBlockManager {
     private var attachedWebViews = NSHashTable<WKWebView>.weakObjects()
     private var compiledListsBySource: [String: [WKContentRuleList]] = [:]
     private var cosmeticScriptsBySource: [String: [WKUserScript]] = [:]
+    private var cosmeticScriptCharsBySource: [String: Int] = [:]
     private var metadataBySource: [String: AdBlockCompiledSourceMetadata] = [:]
     private var unsupportedRulesBySource: [String: [AdBlockUnsupportedRule]] = [:]
     private var updatingSourceIds = Set<String>()
@@ -742,6 +743,7 @@ final class AdBlockManager {
             stateLock.lock()
             metadataBySource[sourceId] = metadata
             compiledListsBySource.removeValue(forKey: sourceId)
+            cosmeticScriptCharsBySource.removeValue(forKey: sourceId)
             unsupportedRulesBySource[sourceId] = []
             let metaCopy = metadataBySource
             let unsuppCopy = unsupportedRulesBySource
@@ -1004,6 +1006,7 @@ final class AdBlockManager {
         metadataBySource.removeValue(forKey: sourceId)
         compiledListsBySource.removeValue(forKey: sourceId)
         cosmeticScriptsBySource.removeValue(forKey: sourceId)
+        cosmeticScriptCharsBySource.removeValue(forKey: sourceId)
         unsupportedRulesBySource.removeValue(forKey: sourceId)
         updatingSourceIds.remove(sourceId)
         let metaCopy = metadataBySource
@@ -1022,6 +1025,7 @@ final class AdBlockManager {
         guard !metadata.cosmeticRules.isEmpty || !metadata.cosmeticExceptions.isEmpty else {
             stateLock.lock()
             cosmeticScriptsBySource.removeValue(forKey: metadata.sourceId)
+            cosmeticScriptCharsBySource.removeValue(forKey: metadata.sourceId)
             stateLock.unlock()
             return
         }
@@ -1029,6 +1033,8 @@ final class AdBlockManager {
         let batches = cosmeticRuleBatches(metadata.cosmeticRules)
         let exceptionsData = (try? JSONEncoder().encode(metadata.cosmeticExceptions)) ?? Data()
         let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
+
+        var totalChars = 0
 
         let scripts = batches.compactMap { rules -> WKUserScript? in
             guard let data = try? JSONEncoder().encode(rules),
@@ -1207,6 +1213,8 @@ final class AdBlockManager {
             })();
             """
 
+            totalChars += source.count
+
             return WKUserScript(
                 source: source,
                 injectionTime: .atDocumentStart,
@@ -1216,6 +1224,7 @@ final class AdBlockManager {
 
         stateLock.lock()
         cosmeticScriptsBySource[metadata.sourceId] = scripts
+        cosmeticScriptCharsBySource[metadata.sourceId] = totalChars
         stateLock.unlock()
     }
 
@@ -1955,6 +1964,44 @@ final class AdBlockManager {
         return ByteCountFormatter.string(fromByteCount: Int64(memory.footprint), countStyle: .memory)
     }
 
+    func currentQuickReport() -> AdBlockMemoryReport {
+        let memory = currentProcessMemory()
+
+        stateLock.lock()
+        var inMemoryRuleCount = 0
+        var metadataRuleCount = 0
+        var activeIdentifiers: [String] = []
+        for metadata in metadataBySource.values {
+            activeIdentifiers.append(contentsOf: metadata.ruleListIdentifiers)
+            metadataRuleCount += metadata.ruleCount
+        }
+
+        for ruleLists in compiledListsBySource.values {
+            inMemoryRuleCount += ruleLists.count
+        }
+
+        var scriptCount = 0
+        for scripts in cosmeticScriptsBySource.values {
+            scriptCount += scripts.count
+        }
+        let scriptChars = cosmeticScriptCharsBySource.values.reduce(0, +)
+        stateLock.unlock()
+
+        return AdBlockMemoryReport(
+            physicalFootprintBytes: memory.footprint,
+            residentSizeBytes: memory.resident,
+            activeSubscriptionCount: loadSubscriptions().count,
+            inMemoryRuleListCount: inMemoryRuleCount,
+            inMemoryUserScriptCount: scriptCount,
+            inMemoryUserScriptChars: scriptChars,
+            metadataRuleCount: metadataRuleCount,
+            diskStoreIdentifiers: activeIdentifiers,
+            orphanStoreIdentifiers: [],
+            subscriptionFilesBytes: 0,
+            tmpBytes: 0
+        )
+    }
+
     func scanMemoryUsage(completion: @escaping (AdBlockMemoryReport) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] () -> Void in
             guard let self = self else { return }
@@ -1975,13 +2022,10 @@ final class AdBlockManager {
             }
 
             var scriptCount = 0
-            var scriptChars = 0
             for scripts in self.cosmeticScriptsBySource.values {
                 scriptCount += scripts.count
-                for script in scripts {
-                    scriptChars += script.source.count
-                }
             }
+            let scriptChars = self.cosmeticScriptCharsBySource.values.reduce(0, +)
             self.stateLock.unlock()
 
             let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
