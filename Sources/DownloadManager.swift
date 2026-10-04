@@ -58,9 +58,9 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
     func start() {
         guard !isCancelled else { return }
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 180.0
+        config.timeoutIntervalForRequest = 60.0
         config.timeoutIntervalForResource = 86400.0
-        config.waitsForConnectivity = true
+        config.waitsForConnectivity = false
         config.allowsCellularAccess = true
         config.allowsExpensiveNetworkAccess = true
         config.allowsConstrainedNetworkAccess = true
@@ -86,7 +86,7 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
         self.writtenBytes = existingSize
 
         var request = URLRequest(url: originalURL)
-        request.timeoutInterval = 180.0
+        request.timeoutInterval = 60.0
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
         request.setValue("*/*", forHTTPHeaderField: "Accept")
@@ -646,12 +646,6 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
                             return
                         }
                         if shouldDownload {
-                            if let directURL = response.url {
-                                safeCompletion(nil)
-                                self.startDownload(url: directURL, filename: filename)
-                                return
-                            }
-
                             let destDir = Self.getDownloadsDirectory()
                             let targetURL = Self.uniqueDestinationURL(for: filename, in: destDir)
 
