@@ -170,7 +170,8 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
         cell.configure(tab: tab, isActive: indexPath.item == activeIndex)
 
         cell.onClose = { [weak self] in
-            self?.closeTab(at: indexPath.item)
+            guard let self = self, let currentIndex = self.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+            self.closeTab(at: currentIndex)
         }
 
         return cell
@@ -218,9 +219,8 @@ final class TabGridViewController: UIViewController, UICollectionViewDataSource,
         let alert = UIAlertController(title: "关闭所有标签页", message: "确定要关闭所有标签页吗？", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "确定关闭", style: .destructive) { [weak self] _ in
-            self?.dismiss(animated: true) {
-                self?.onClearAllTabs?()
-            }
+            self?.onClearAllTabs?()
+            self?.dismiss(animated: true)
         })
         present(alert, animated: true)
     }

@@ -19,18 +19,31 @@ struct BrowserSession: Codable {
 final class BrowserSessionStore {
     static let shared = BrowserSessionStore()
 
-    private let key = "browser_tab_session_v1"
+    private let legacyKey = "browser_tab_session_v1"
     private let maximumTabCount = 30
+    private let sessionFileURL: URL
 
-    private init() {}
+    private init() {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        sessionFileURL = dir.appendingPathComponent("browser_session_v2.json")
+    }
 
     func loadSession() -> BrowserSession? {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let session = try? JSONDecoder().decode(BrowserSession.self, from: data),
-              !session.tabs.isEmpty else {
-            return nil
+        if let data = try? Data(contentsOf: sessionFileURL),
+           let session = try? JSONDecoder().decode(BrowserSession.self, from: data),
+           !session.tabs.isEmpty {
+            return session
         }
-        return session
+
+        if let data = UserDefaults.standard.data(forKey: legacyKey),
+           let session = try? JSONDecoder().decode(BrowserSession.self, from: data),
+           !session.tabs.isEmpty {
+            saveSession(tabs: session.tabs, activeIndex: session.activeIndex)
+            UserDefaults.standard.removeObject(forKey: legacyKey)
+            return session
+        }
+
+        return nil
     }
 
     func saveSession(tabs: [BrowserTabSessionItem], activeIndex: Int) {
@@ -47,11 +60,12 @@ final class BrowserSessionStore {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: key)
+        try? data.write(to: sessionFileURL, options: .atomic)
     }
 
     func clearSession() {
-        UserDefaults.standard.removeObject(forKey: key)
+        try? FileManager.default.removeItem(at: sessionFileURL)
+        UserDefaults.standard.removeObject(forKey: legacyKey)
     }
 }
 
@@ -243,6 +257,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func configureSessionObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSessionPersistenceNotification),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleSessionPersistenceNotification),
@@ -1539,6 +1560,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if isFullscreen {
             setFullscreen(false)
         }
+        activeTab.url = nil
+        activeTab.title = "主页"
         homeView.alpha = 1
         webContainer.alpha = 0
         failureOverlayView.isHidden = true
@@ -1548,6 +1571,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         homeSearchField.resignFirstResponder()
         resetProgress()
         updateUIState()
+        persistCurrentSession()
         updateAddressRightButtons()
     }
 

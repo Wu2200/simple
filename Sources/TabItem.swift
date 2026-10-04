@@ -686,9 +686,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func sessionURL() -> URL? {
         if isDisplayingFailurePage {
-            return failedURL ?? url ?? webView.url
+            return failedURL ?? url
         }
-        let candidate = pendingRestoreURL ?? url ?? webView.url
+        let candidate = pendingRestoreURL ?? url
         guard let target = candidate else { return nil }
         let str = target.absoluteString
         if str.isEmpty || str == "about:blank" || str.contains("settings/hatsv2") {
@@ -1139,9 +1139,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                                 if (origOnload) origOnload(res);
                                 resolve(res);
                             };
-                            opts.onerror = function(res) {
-                                if (origOnerror) origOnerror(res);
-                                reject(res);
+                            opts.onerror = function(error) {
+                                if (origOnerror) origOnerror(error);
+                                reject(error);
                             };
                             GM_xmlhttpRequest(opts);
                         });
