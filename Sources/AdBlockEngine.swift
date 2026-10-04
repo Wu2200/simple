@@ -616,24 +616,23 @@ final class AdBlockManager {
             let metadataCopy = self.metadataBySource
             self.stateLock.unlock()
 
-            for sourceId in metadataCopy.keys.sorted() {
-                guard let metadata = metadataCopy[sourceId] else {
-                    continue
-                }
+            for (_, metadata) in metadataCopy {
+                self.restoreCosmeticScripts(metadata: metadata)
+            }
+            self.applyRulesToAttachedWebViews()
 
+            for (sourceId, metadata) in metadataCopy {
                 if metadata.ruleListIdentifiers.isEmpty {
-                    self.restoreCosmeticScripts(metadata: metadata)
                     continue
                 }
 
-                self.loadRuleListsSequentially(identifiers: metadata.ruleListIdentifiers, index: 0, loaded: []) { [weak self] lists in
+                self.loadRuleListsParallel(identifiers: metadata.ruleListIdentifiers) { [weak self] lists in
                     guard let self = self else { return }
 
                     if lists.count == metadata.ruleListIdentifiers.count {
                         self.stateLock.lock()
                         self.compiledListsBySource[sourceId] = lists
                         self.stateLock.unlock()
-                        self.restoreCosmeticScripts(metadata: metadata)
                         self.applyRulesToAttachedWebViews()
                     } else {
                         self.compileSource(id: sourceId, completion: nil)
@@ -643,32 +642,36 @@ final class AdBlockManager {
         }
     }
 
-    private func loadRuleListsSequentially(
+    private func loadRuleListsParallel(
         identifiers: [String],
-        index: Int,
-        loaded: [WKContentRuleList],
         completion: @escaping ([WKContentRuleList]) -> Void
     ) {
-        guard index < identifiers.count else {
-            completion(loaded)
+        guard !identifiers.isEmpty else {
+            completion([])
             return
         }
 
-        DispatchQueue.main.async {
-            WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: identifiers[index]) { [weak self] ruleList, _ in
-                self?.parseQueue.async {
-                    var nextLoaded = loaded
-                    if let rl = ruleList {
-                        nextLoaded.append(rl)
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var results: [String: WKContentRuleList] = [:]
+
+        for id in identifiers {
+            group.enter()
+            DispatchQueue.main.async {
+                WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: id) { ruleList, _ in
+                    if let ruleList = ruleList {
+                        lock.lock()
+                        results[id] = ruleList
+                        lock.unlock()
                     }
-                    self?.loadRuleListsSequentially(
-                        identifiers: identifiers,
-                        index: index + 1,
-                        loaded: nextLoaded,
-                        completion: completion
-                    )
+                    group.leave()
                 }
             }
+        }
+
+        group.notify(queue: parseQueue) {
+            let ordered = identifiers.compactMap { results[$0] }
+            completion(ordered)
         }
     }
 
@@ -1039,183 +1042,294 @@ final class AdBlockManager {
         }
 
         let batches = cosmeticRuleBatches(metadata.cosmeticRules)
-        let exceptionsData = (try? JSONEncoder().encode(metadata.cosmeticExceptions)) ?? Data()
+        var exceptionsPayload: [[String: Any]] = []
+        for ex in metadata.cosmeticExceptions {
+            exceptionsPayload.append([
+                "s": ex.selector,
+                "d": ex.domains
+            ])
+        }
+        let exceptionsData = (try? JSONSerialization.data(withJSONObject: exceptionsPayload)) ?? Data()
         let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
 
         var totalChars = 0
+        var scripts: [WKUserScript] = []
 
-        let scripts = batches.compactMap { rules -> WKUserScript? in
-            guard let data = try? JSONEncoder().encode(rules),
-                  let json = String(data: data, encoding: .utf8) else {
-                return nil
+        for (index, rules) in batches.enumerated() {
+            var globalList: [String] = []
+            var withExcludes: [[String: Any]] = []
+            var domainMap: [String: [String]] = [:]
+
+            for rule in rules {
+                if rule.domains.isEmpty {
+                    if rule.excludedDomains.isEmpty {
+                        globalList.append(rule.selector)
+                    } else {
+                        withExcludes.append([
+                            "s": rule.selector,
+                            "x": rule.excludedDomains
+                        ])
+                    }
+                } else {
+                    for d in rule.domains {
+                        var existing = domainMap[d] ?? []
+                        existing.append(rule.selector)
+                        domainMap[d] = existing
+                    }
+                }
             }
+
+            let gData = (try? JSONSerialization.data(withJSONObject: globalList)) ?? Data()
+            let gJson = String(data: gData, encoding: .utf8) ?? "[]"
+
+            let eData = (try? JSONSerialization.data(withJSONObject: withExcludes)) ?? Data()
+            let eJson = String(data: eData, encoding: .utf8) ?? "[]"
+
+            let dData = (try? JSONSerialization.data(withJSONObject: domainMap)) ?? Data()
+            let dJson = String(data: dData, encoding: .utf8) ?? "{}"
+
+            let safeSourceId = metadata.sourceId.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "")
+            let batchIdentifier = "\(safeSourceId)_\(index)"
 
             let source = """
             (function() {
-                var rules = \(json);
-                var exceptions = \(exceptionsJson);
-                var fallbackRules = [];
-                var styleId = '__simple_browser_adblock_style__';
                 var host = (location.hostname || '').toLowerCase();
+                if (!host) {
+                    return;
+                }
+                var token = '__sb_ab_\(batchIdentifier)__';
+                if (window[token]) {
+                    return;
+                }
+                window[token] = true;
 
-                function matchesDomain(rule) {
-                    if (rule.excludedDomains && rule.excludedDomains.length > 0) {
-                        for (var j = 0; j < rule.excludedDomains.length; j++) {
-                            var ex = rule.excludedDomains[j];
+                var g = \(gJson);
+                var e = \(eJson);
+                var d = \(dJson);
+                var x = \(exceptionsJson);
+
+                var domainList = [];
+                var parts = host.split('.');
+                for (var i = 0; i < parts.length - 1; i++) {
+                    domainList.push(parts.slice(i).join('.'));
+                }
+
+                function isDomainMatched(domains) {
+                    if (!domains || domains.length === 0) {
+                        return true;
+                    }
+                    for (var i = 0; i < domains.length; i++) {
+                        var dm = domains[i];
+                        if (host === dm || host.endsWith('.' + dm)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                function isWhitelisted(sel) {
+                    if (!x || x.length === 0) {
+                        return false;
+                    }
+                    for (var i = 0; i < x.length; i++) {
+                        var item = x[i];
+                        if (item.s === sel && isDomainMatched(item.d)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                var activeSelectors = [];
+                var seenSelectors = {};
+
+                function addSelector(sel) {
+                    if (!sel || seenSelectors[sel]) {
+                        return;
+                    }
+                    seenSelectors[sel] = true;
+                    activeSelectors.push(sel);
+                }
+
+                for (var i = 0; i < g.length; i++) {
+                    var s = g[i];
+                    if (!isWhitelisted(s)) {
+                        addSelector(s);
+                    }
+                }
+
+                for (var i = 0; i < e.length; i++) {
+                    var item = e[i];
+                    var excluded = false;
+                    if (item.x && item.x.length > 0) {
+                        for (var j = 0; j < item.x.length; j++) {
+                            var ex = item.x[j];
                             if (host === ex || host.endsWith('.' + ex)) {
-                                return false;
+                                excluded = true;
+                                break;
                             }
                         }
                     }
-                    if (!rule.domains || rule.domains.length === 0) {
-                        return true;
-                    }
-                    for (var i = 0; i < rule.domains.length; i++) {
-                        var domain = rule.domains[i];
-                        if (host === domain || host.endsWith('.' + domain)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-
-                function isSelectorWhitelisted(selector) {
-                    if (!exceptions || exceptions.length === 0) {
-                        return false;
-                    }
-                    for (var i = 0; i < exceptions.length; i++) {
-                        var ex = exceptions[i];
-                        if (ex.selector === selector && matchesDomain(ex)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-
-                function hideElement(element) {
-                    if (!element) {
-                        return;
-                    }
-                    element.style.setProperty('display', 'none', 'important');
-                    element.style.setProperty('visibility', 'hidden', 'important');
-                    element.style.setProperty('pointer-events', 'none', 'important');
-                }
-
-                function hideBySelector(selector) {
-                    try {
-                        var elements = document.querySelectorAll(selector);
-                        for (var i = 0; i < elements.length; i++) {
-                            hideElement(elements[i]);
-                        }
-                        return true;
-                    } catch (_) {
-                        return false;
+                    if (!excluded && !isWhitelisted(item.s)) {
+                        addSelector(item.s);
                     }
                 }
 
-                function hideByHasFallback(selector) {
-                    var hasIndex = selector.indexOf(':has(');
-                    if (hasIndex < 0 || !selector.endsWith(')')) {
-                        return;
-                    }
-                    var outerSelector = selector.substring(0, hasIndex).trim() || '*';
-                    var innerSelector = selector.substring(hasIndex + 5, selector.length - 1).trim();
-                    if (!innerSelector) {
-                        return;
-                    }
-                    var outerElements;
-                    try {
-                        outerElements = document.querySelectorAll(outerSelector);
-                    } catch (_) {
-                        return;
-                    }
-                    for (var i = 0; i < outerElements.length; i++) {
-                        var outerElement = outerElements[i];
-                        var matched = false;
-                        try {
-                            if (innerSelector.startsWith('>')) {
-                                matched = outerElement.querySelector(':scope ' + innerSelector) !== null;
-                            } else {
-                                matched = outerElement.querySelector(innerSelector) !== null;
+                for (var i = 0; i < domainList.length; i++) {
+                    var list = d[domainList[i]];
+                    if (list && list.length > 0) {
+                        for (var j = 0; j < list.length; j++) {
+                            var s = list[j];
+                            if (!isWhitelisted(s)) {
+                                addSelector(s);
                             }
-                        } catch (_) {
-                            matched = false;
-                        }
-                        if (matched) {
-                            hideElement(outerElement);
                         }
                     }
                 }
 
-                function applyFallbackRules() {
-                    for (var i = 0; i < fallbackRules.length; i++) {
-                        var rule = fallbackRules[i];
-                        if (!matchesDomain(rule) || isSelectorWhitelisted(rule.selector)) {
-                            continue;
-                        }
-                        if (!hideBySelector(rule.selector)) {
-                            hideByHasFallback(rule.selector);
-                        }
+                if (activeSelectors.length === 0) {
+                    return;
+                }
+
+                var standardSelectors = [];
+                var fallbackSelectors = [];
+
+                var supportsHas = false;
+                try {
+                    document.querySelector(':has(*)');
+                    supportsHas = true;
+                } catch (_) {
+                    supportsHas = false;
+                }
+
+                for (var i = 0; i < activeSelectors.length; i++) {
+                    var sel = activeSelectors[i];
+                    if (sel.indexOf(':has(') !== -1 && !supportsHas) {
+                        fallbackSelectors.push(sel);
+                    } else {
+                        standardSelectors.push(sel);
                     }
                 }
 
-                function insertRules() {
-                    var style = document.getElementById(styleId);
+                var styleId = '__simple_browser_adblock_style__';
+                var cssInjected = false;
+
+                function injectCss() {
+                    if (standardSelectors.length === 0) {
+                        return;
+                    }
+                    var existingStyle = document.getElementById(styleId);
+                    if (cssInjected && existingStyle) {
+                        return;
+                    }
+                    var style = existingStyle;
                     if (!style) {
                         style = document.createElement('style');
                         style.id = styleId;
                         style.type = 'text/css';
-                        (document.head || document.documentElement).appendChild(style);
-                    }
-                    var sheet = style.sheet;
-                    if (!sheet) {
-                        return;
-                    }
-                    for (var i = 0; i < rules.length; i++) {
-                        var rule = rules[i];
-                        if (!matchesDomain(rule) || isSelectorWhitelisted(rule.selector)) {
-                            continue;
-                        }
-                        try {
-                            sheet.insertRule(
-                                rule.selector + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}',
-                                sheet.cssRules.length
-                            );
-                        } catch (_) {
-                            fallbackRules.push(rule);
+                        var root = document.head || document.documentElement;
+                        if (root) {
+                            root.appendChild(style);
+                        } else {
+                            var obs = new MutationObserver(function() {
+                                var r = document.head || document.documentElement;
+                                if (r) {
+                                    obs.disconnect();
+                                    r.appendChild(style);
+                                }
+                            });
+                            obs.observe(document, { childList: true, subtree: true });
                         }
                     }
-                    applyFallbackRules();
+
+                    var chunks = [];
+                    var batchSize = 100;
+                    for (var i = 0; i < standardSelectors.length; i += batchSize) {
+                        var slice = standardSelectors.slice(i, i + batchSize);
+                        chunks.push(slice.join(',') + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}');
+                    }
+                    var cssText = chunks.join('\\n');
+                    style.textContent = (style.textContent ? style.textContent + '\\n' : '') + cssText;
+                    cssInjected = true;
                 }
 
-                function scheduleFallbackApply() {
-                    var timer = null;
-                    var observer = new MutationObserver(function() {
-                        if (timer !== null) {
-                            return;
-                        }
-                        timer = setTimeout(function() {
-                            timer = null;
-                            applyFallbackRules();
-                        }, 300);
-                    });
-                    observer.observe(document.documentElement, {
-                        childList: true,
-                        subtree: true
-                    });
-                }
+                injectCss();
 
                 if (document.readyState === 'loading') {
-                    document.addEventListener('DOMContentLoaded', function() {
-                        insertRules();
-                        if (fallbackRules.length > 0) {
-                            scheduleFallbackApply();
+                    document.addEventListener('DOMContentLoaded', injectCss, { once: true });
+                }
+
+                if (fallbackSelectors.length > 0) {
+                    function hideElement(el) {
+                        if (!el) {
+                            return;
                         }
-                    }, { once: true });
-                } else {
-                    insertRules();
-                    if (fallbackRules.length > 0) {
-                        scheduleFallbackApply();
+                        el.style.setProperty('display', 'none', 'important');
+                        el.style.setProperty('visibility', 'hidden', 'important');
+                        el.style.setProperty('pointer-events', 'none', 'important');
+                    }
+
+                    function hideByHasFallback(selector) {
+                        var hasIndex = selector.indexOf(':has(');
+                        if (hasIndex < 0 || !selector.endsWith(')')) {
+                            return;
+                        }
+                        var outerSelector = selector.substring(0, hasIndex).trim() || '*';
+                        var innerSelector = selector.substring(hasIndex + 5, selector.length - 1).trim();
+                        if (!innerSelector) {
+                            return;
+                        }
+                        var outerElements;
+                        try {
+                            outerElements = document.querySelectorAll(outerSelector);
+                        } catch (_) {
+                            return;
+                        }
+                        for (var i = 0; i < outerElements.length; i++) {
+                            var el = outerElements[i];
+                            var matched = false;
+                            try {
+                                if (innerSelector.startsWith('>')) {
+                                    matched = el.querySelector(':scope ' + innerSelector) !== null;
+                                } else {
+                                    matched = el.querySelector(innerSelector) !== null;
+                                }
+                            } catch (_) {
+                                matched = false;
+                            }
+                            if (matched) {
+                                hideElement(el);
+                            }
+                        }
+                    }
+
+                    function applyFallback() {
+                        for (var i = 0; i < fallbackSelectors.length; i++) {
+                            hideByHasFallback(fallbackSelectors[i]);
+                        }
+                    }
+
+                    applyFallback();
+
+                    var scheduled = false;
+                    function scheduleFallback() {
+                        if (scheduled) {
+                            return;
+                        }
+                        scheduled = true;
+                        var scheduleFn = window.requestAnimationFrame || function(cb) { setTimeout(cb, 16); };
+                        scheduleFn(function() {
+                            scheduled = false;
+                            applyFallback();
+                        });
+                    }
+
+                    var observer = new MutationObserver(scheduleFallback);
+                    var target = document.documentElement || document;
+                    observer.observe(target, { childList: true, subtree: true });
+
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', applyFallback, { once: true });
                     }
                 }
             })();
@@ -1223,11 +1337,12 @@ final class AdBlockManager {
 
             totalChars += source.count
 
-            return WKUserScript(
+            let script = WKUserScript(
                 source: source,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
+            scripts.append(script)
         }
 
         stateLock.lock()
@@ -1707,6 +1822,11 @@ final class AdBlockManager {
     }
 
     private func splitSelectorList(_ text: String) -> [String] {
+        guard text.contains(",") else {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? [] : [trimmed]
+        }
+
         var result: [String] = []
         var current = ""
         var parenthesesDepth = 0
