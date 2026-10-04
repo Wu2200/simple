@@ -1,4 +1,31 @@
 import UIKit
+import Network
+
+final class LocalNetworkAuthorizer {
+    static let shared = LocalNetworkAuthorizer()
+    private var browser: NWBrowser?
+
+    func triggerAuthorization() {
+        let parameters = NWParameters()
+        parameters.includePeerToPeer = true
+        let browser = NWBrowser(for: .bonjour(type: "_http._tcp", domain: nil), using: parameters)
+        self.browser = browser
+        browser.stateUpdateHandler = { [weak self] state in
+            if case .ready = state {
+                self?.stop()
+            }
+        }
+        browser.start(queue: .main)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+            self?.stop()
+        }
+    }
+
+    private func stop() {
+        browser?.cancel()
+        browser = nil
+    }
+}
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -8,6 +35,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        LocalNetworkAuthorizer.shared.triggerAuthorization()
+
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = BrowserViewController()
         window.makeKeyAndVisible()
