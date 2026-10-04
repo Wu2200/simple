@@ -118,6 +118,9 @@ final class AdBlockManager {
     private let parseQueue = DispatchQueue(label: "SimpleBrowser.AdBlockParser", qos: .userInitiated)
     private let stateLock = NSLock()
 
+    private(set) var isReady: Bool = false
+    private var readyCallbacks: [() -> Void] = []
+
     var isEnabled: Bool {
         get {
             UserDefaults.standard.bool(forKey: enabledKey)
@@ -143,6 +146,10 @@ final class AdBlockManager {
             object: nil
         )
 
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            self?.markReadyOnMainThread()
+        }
+
         parseQueue.async { [weak self] () -> Void in
             guard let self = self else { return }
             let meta = self.loadMetadata()
@@ -158,6 +165,40 @@ final class AdBlockManager {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
             self?.checkAndAutoUpdateSubscriptions()
         }
+    }
+
+    func performWhenReady(_ action: @escaping () -> Void) {
+        stateLock.lock()
+        if isReady || !isEnabled {
+            stateLock.unlock()
+            DispatchQueue.main.async {
+                action()
+            }
+            return
+        }
+        readyCallbacks.append(action)
+        stateLock.unlock()
+    }
+
+    private func markReadyOnMainThread() {
+        stateLock.lock()
+        guard !isReady else {
+            stateLock.unlock()
+            return
+        }
+        isReady = true
+        let callbacks = readyCallbacks
+        readyCallbacks.removeAll()
+        stateLock.unlock()
+
+        for callback in callbacks {
+            callback()
+        }
+
+        NotificationCenter.default.post(
+            name: NSNotification.Name("SimpleAdBlockReadyNotification"),
+            object: nil
+        )
     }
 
     @objc private func handleAppDidBecomeActive() {
@@ -649,27 +690,55 @@ final class AdBlockManager {
             let metadataCopy = self.metadataBySource
             self.stateLock.unlock()
 
+            guard !metadataCopy.isEmpty else {
+                DispatchQueue.main.async {
+                    self.markReadyOnMainThread()
+                }
+                return
+            }
+
             for (_, metadata) in metadataCopy {
                 self.restoreCosmeticScripts(metadata: metadata)
             }
-            self.applyRulesToAttachedWebViews()
+
+            let overallGroup = DispatchGroup()
+            let lock = NSLock()
+            var allLoadedLists: [String: [WKContentRuleList]] = [:]
+            var sourcesNeedingRecompile: [String] = []
 
             for (sourceId, metadata) in metadataCopy {
                 if metadata.ruleListIdentifiers.isEmpty {
                     continue
                 }
 
-                self.loadRuleListsParallel(identifiers: metadata.ruleListIdentifiers) { [weak self] lists in
-                    guard let self = self else { return }
-
+                overallGroup.enter()
+                self.loadRuleListsParallel(identifiers: metadata.ruleListIdentifiers) { lists in
+                    lock.lock()
                     if lists.count == metadata.ruleListIdentifiers.count {
-                        self.stateLock.lock()
-                        self.compiledListsBySource[sourceId] = lists
-                        self.stateLock.unlock()
-                        self.applyRulesToAttachedWebViews()
+                        allLoadedLists[sourceId] = lists
                     } else {
-                        self.compileSource(id: sourceId, completion: nil)
+                        sourcesNeedingRecompile.append(sourceId)
                     }
+                    lock.unlock()
+                    overallGroup.leave()
+                }
+            }
+
+            overallGroup.notify(queue: self.parseQueue) { [weak self] in
+                guard let self = self else { return }
+                self.stateLock.lock()
+                for (sourceId, lists) in allLoadedLists {
+                    self.compiledListsBySource[sourceId] = lists
+                }
+                self.stateLock.unlock()
+
+                DispatchQueue.main.async {
+                    self.applyRulesToAttachedWebViews()
+                    self.markReadyOnMainThread()
+                }
+
+                for sourceId in sourcesNeedingRecompile {
+                    self.compileSource(id: sourceId, completion: nil)
                 }
             }
         }
