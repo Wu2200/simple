@@ -1,6 +1,7 @@
 import UIKit
 import WebKit
 import Darwin
+import CryptoKit
 
 struct AdBlockSubscription: Codable, Equatable {
     var id: String
@@ -78,6 +79,11 @@ private func currentProcessMemory() -> (footprint: UInt64, resident: UInt64) {
     return (footprint, resident)
 }
 
+private func computeContentHash(_ text: String) -> String {
+    let digest = SHA256.hash(data: Data(text.utf8))
+    return digest.map { String(format: "%02x", $0) }.joined()
+}
+
 final class AdBlockManager {
     static let shared = AdBlockManager()
 
@@ -91,12 +97,14 @@ final class AdBlockManager {
     private let diagnosticKey = "adblock_unsupported_rules_v1"
 
     private let nativeRuleChunkSize = 8000
-    private let maximumCosmeticRulesPerSource = 100000
+    private let maximumCosmeticRulesPerSource = 300000
     private let cosmeticScriptPayloadLimit = 180000
     private let maximumCompilationDuration: TimeInterval = 180
     private let maximumSingleChunkDuration: TimeInterval = 45
     private let autoUpdateInterval: TimeInterval = 86400
     private let autoUpdateRetryCooldown: TimeInterval = 1800
+
+    private let patternValidationCache = NSCache<NSString, NSNumber>()
 
     private var attachedWebViews = NSHashTable<WKWebView>.weakObjects()
     private var compiledListsBySource: [String: [WKContentRuleList]] = [:]
@@ -550,14 +558,39 @@ final class AdBlockManager {
             }
 
             let text = String(decoding: data, as: UTF8.self)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            guard !trimmed.isEmpty else {
                 DispatchQueue.main.async {
                     self.stateLock.lock()
                     self.updatingSourceIds.remove(subscription.id)
                     self.stateLock.unlock()
                     self.setUpdateStatus(sourceId: subscription.id, status: nil)
                     completion(false, 0, "订阅内容不是有效文本")
+                }
+                return
+            }
+
+            let hash = computeContentHash(text)
+            self.stateLock.lock()
+            let existingMetadata = self.metadataBySource[subscription.id]
+            let existingLists = self.compiledListsBySource[subscription.id]
+            self.stateLock.unlock()
+
+            if let meta = existingMetadata, meta.contentHash == hash, let lists = existingLists, !lists.isEmpty || !meta.cosmeticRules.isEmpty {
+                DispatchQueue.main.async {
+                    self.stateLock.lock()
+                    self.updatingSourceIds.remove(subscription.id)
+                    self.stateLock.unlock()
+                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
+
+                    var subscriptions = self.loadSubscriptions()
+                    if let index = subscriptions.firstIndex(where: { $0.id == subscription.id }) {
+                        subscriptions[index].lastUpdated = Date()
+                        subscriptions[index].ruleCount = meta.ruleCount
+                        self.saveSubscriptions(subscriptions)
+                    }
+                    completion(true, meta.ruleCount, nil)
                 }
                 return
             }
@@ -748,7 +781,8 @@ final class AdBlockManager {
                 ruleCount: payload.ruleCount,
                 skippedRuleCount: payload.skippedRuleCount,
                 cosmeticRules: payload.cosmeticRules,
-                cosmeticExceptions: payload.cosmeticExceptions
+                cosmeticExceptions: payload.cosmeticExceptions,
+                contentHash: payload.contentHash
             )
 
             stateLock.lock()
@@ -818,7 +852,8 @@ final class AdBlockManager {
                 ruleCount: payload.ruleCount,
                 skippedRuleCount: payload.skippedRuleCount + self.unsupportedRuleCount(sourceId: sourceId),
                 cosmeticRules: payload.cosmeticRules,
-                cosmeticExceptions: payload.cosmeticExceptions
+                cosmeticExceptions: payload.cosmeticExceptions,
+                contentHash: payload.contentHash
             )
 
             self.stateLock.lock()
@@ -1090,6 +1125,9 @@ final class AdBlockManager {
 
             let safeSourceId = metadata.sourceId.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "")
             let batchIdentifier = "\(safeSourceId)_\(index)"
+            let exceptionsInjectionCode = (index == 0 && !metadata.cosmeticExceptions.isEmpty)
+                ? "core.exceptions = core.exceptions.concat(\(exceptionsJson));"
+                : ""
 
             let source = """
             (function() {
@@ -1097,65 +1135,212 @@ final class AdBlockManager {
                 if (!host) {
                     return;
                 }
+
+                if (!window.__sb_ab_core__) {
+                    var domainList = [];
+                    var parts = host.split('.');
+                    for (var i = 0; i < parts.length - 1; i++) {
+                        domainList.push(parts.slice(i).join('.'));
+                    }
+                    var supportsHas = false;
+                    try {
+                        document.querySelector(':has(*)');
+                        supportsHas = true;
+                    } catch (_) {
+                        supportsHas = false;
+                    }
+                    window.__sb_ab_core__ = {
+                        host: host,
+                        domainList: domainList,
+                        supportsHas: supportsHas,
+                        seen: {},
+                        exceptions: [],
+                        styleElement: null,
+                        fallbackSelectors: [],
+                        observerStarted: false,
+                        injectCss: function(selectors) {
+                            if (!selectors || selectors.length === 0) {
+                                return;
+                            }
+                            var style = window.__sb_ab_core__.styleElement;
+                            if (!style) {
+                                style = document.getElementById('__simple_browser_adblock_style__');
+                            }
+                            if (!style) {
+                                style = document.createElement('style');
+                                style.id = '__simple_browser_adblock_style__';
+                                style.type = 'text/css';
+                                var root = document.head || document.documentElement;
+                                if (root) {
+                                    root.appendChild(style);
+                                } else {
+                                    var obs = new MutationObserver(function() {
+                                        var r = document.head || document.documentElement;
+                                        if (r) {
+                                            obs.disconnect();
+                                            r.appendChild(style);
+                                        }
+                                    });
+                                    obs.observe(document, { childList: true, subtree: true });
+                                }
+                                window.__sb_ab_core__.styleElement = style;
+                            }
+                            var batchSize = 100;
+                            var chunks = [];
+                            for (var i = 0; i < selectors.length; i += batchSize) {
+                                var slice = selectors.slice(i, i + batchSize);
+                                chunks.push(slice.join(',') + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}');
+                            }
+                            var cssText = chunks.join('\\n');
+                            style.textContent = (style.textContent ? style.textContent + '\\n' : '') + cssText;
+                        },
+                        isWhitelisted: function(sel) {
+                            var x = window.__sb_ab_core__.exceptions;
+                            if (!x || x.length === 0) {
+                                return false;
+                            }
+                            var h = window.__sb_ab_core__.host;
+                            for (var i = 0; i < x.length; i++) {
+                                var item = x[i];
+                                if (item.s === sel) {
+                                    if (!item.d || item.d.length === 0) {
+                                        return true;
+                                    }
+                                    for (var j = 0; j < item.d.length; j++) {
+                                        var dm = item.d[j];
+                                        if (h === dm || h.endsWith('.' + dm)) {
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                            return false;
+                        },
+                        addFallback: function(sel) {
+                            window.__sb_ab_core__.fallbackSelectors.push(sel);
+                            if (!window.__sb_ab_core__.observerStarted) {
+                                window.__sb_ab_core__.observerStarted = true;
+                                window.__sb_ab_core__.initFallbackObserver();
+                            }
+                        },
+                        initFallbackObserver: function() {
+                            function hideEl(el) {
+                                if (!el || !el.style) {
+                                    return;
+                                }
+                                el.style.setProperty('display', 'none', 'important');
+                                el.style.setProperty('visibility', 'hidden', 'important');
+                                el.style.setProperty('pointer-events', 'none', 'important');
+                            }
+                            function scanScope(scope) {
+                                var list = window.__sb_ab_core__.fallbackSelectors;
+                                if (!list || list.length === 0 || !scope) {
+                                    return;
+                                }
+                                for (var i = 0; i < list.length; i++) {
+                                    var sel = list[i];
+                                    var idx = sel.indexOf(':has(');
+                                    if (idx < 0 || !sel.endsWith(')')) {
+                                        continue;
+                                    }
+                                    var outer = sel.substring(0, idx).trim() || '*';
+                                    var inner = sel.substring(idx + 5, sel.length - 1).trim();
+                                    if (!inner) {
+                                        continue;
+                                    }
+                                    var elements = [];
+                                    try {
+                                        if (scope.matches && scope.matches(outer)) {
+                                            elements.push(scope);
+                                        }
+                                        if (scope.querySelectorAll) {
+                                            var found = scope.querySelectorAll(outer);
+                                            for (var k = 0; k < found.length; k++) {
+                                                elements.push(found[k]);
+                                            }
+                                        }
+                                    } catch (_) {}
+                                    for (var j = 0; j < elements.length; j++) {
+                                        var el = elements[j];
+                                        var matched = false;
+                                        try {
+                                            if (inner.startsWith('>')) {
+                                                matched = el.querySelector(':scope ' + inner) !== null;
+                                            } else {
+                                                matched = el.querySelector(inner) !== null;
+                                            }
+                                        } catch (_) {
+                                            matched = false;
+                                        }
+                                        if (matched) {
+                                            hideEl(el);
+                                        }
+                                    }
+                                }
+                            }
+                            var scheduledNodes = [];
+                            var scheduledTimer = null;
+                            function processScheduled() {
+                                scheduledTimer = null;
+                                var nodes = scheduledNodes;
+                                scheduledNodes = [];
+                                for (var i = 0; i < nodes.length; i++) {
+                                    scanScope(nodes[i]);
+                                }
+                            }
+                            var observer = new MutationObserver(function(mutations) {
+                                for (var i = 0; i < mutations.length; i++) {
+                                    var added = mutations[i].addedNodes;
+                                    for (var j = 0; j < added.length; j++) {
+                                        if (added[j].nodeType === 1) {
+                                            scheduledNodes.push(added[j]);
+                                        }
+                                    }
+                                }
+                                if (!scheduledTimer && scheduledNodes.length > 0) {
+                                    var scheduleFn = window.requestAnimationFrame || function(cb) { setTimeout(cb, 16); };
+                                    scheduledTimer = scheduleFn(processScheduled);
+                                }
+                            });
+                            var target = document.documentElement || document;
+                            observer.observe(target, { childList: true, subtree: true });
+                            if (document.readyState === 'loading') {
+                                document.addEventListener('DOMContentLoaded', function() {
+                                    scanScope(document.body || document.documentElement);
+                                }, { once: true });
+                            } else {
+                                scanScope(document.body || document.documentElement);
+                            }
+                        }
+                    };
+                }
+
+                var core = window.__sb_ab_core__;
                 var token = '__sb_ab_\(batchIdentifier)__';
                 if (window[token]) {
                     return;
                 }
                 window[token] = true;
 
+                \(exceptionsInjectionCode)
+
                 var g = \(gJson);
                 var e = \(eJson);
                 var d = \(dJson);
-                var x = \(exceptionsJson);
 
-                var domainList = [];
-                var parts = host.split('.');
-                for (var i = 0; i < parts.length - 1; i++) {
-                    domainList.push(parts.slice(i).join('.'));
-                }
-
-                function isDomainMatched(domains) {
-                    if (!domains || domains.length === 0) {
-                        return true;
-                    }
-                    for (var i = 0; i < domains.length; i++) {
-                        var dm = domains[i];
-                        if (host === dm || host.endsWith('.' + dm)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-
-                function isWhitelisted(sel) {
-                    if (!x || x.length === 0) {
-                        return false;
-                    }
-                    for (var i = 0; i < x.length; i++) {
-                        var item = x[i];
-                        if (item.s === sel && isDomainMatched(item.d)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-
-                var activeSelectors = [];
-                var seenSelectors = {};
-
-                function addSelector(sel) {
-                    if (!sel || seenSelectors[sel]) {
+                var targetSelectors = [];
+                function tryAdd(sel) {
+                    if (!sel || core.seen[sel]) {
                         return;
                     }
-                    seenSelectors[sel] = true;
-                    activeSelectors.push(sel);
+                    core.seen[sel] = true;
+                    if (!core.isWhitelisted(sel)) {
+                        targetSelectors.push(sel);
+                    }
                 }
 
                 for (var i = 0; i < g.length; i++) {
-                    var s = g[i];
-                    if (!isWhitelisted(s)) {
-                        addSelector(s);
-                    }
+                    tryAdd(g[i]);
                 }
 
                 for (var i = 0; i < e.length; i++) {
@@ -1164,174 +1349,41 @@ final class AdBlockManager {
                     if (item.x && item.x.length > 0) {
                         for (var j = 0; j < item.x.length; j++) {
                             var ex = item.x[j];
-                            if (host === ex || host.endsWith('.' + ex)) {
+                            if (core.host === ex || core.host.endsWith('.' + ex)) {
                                 excluded = true;
                                 break;
                             }
                         }
                     }
-                    if (!excluded && !isWhitelisted(item.s)) {
-                        addSelector(item.s);
+                    if (!excluded) {
+                        tryAdd(item.s);
                     }
                 }
 
-                for (var i = 0; i < domainList.length; i++) {
-                    var list = d[domainList[i]];
+                for (var i = 0; i < core.domainList.length; i++) {
+                    var list = d[core.domainList[i]];
                     if (list && list.length > 0) {
                         for (var j = 0; j < list.length; j++) {
-                            var s = list[j];
-                            if (!isWhitelisted(s)) {
-                                addSelector(s);
-                            }
+                            tryAdd(list[j]);
                         }
                     }
                 }
 
-                if (activeSelectors.length === 0) {
+                if (targetSelectors.length === 0) {
                     return;
                 }
 
-                var standardSelectors = [];
-                var fallbackSelectors = [];
-
-                var supportsHas = false;
-                try {
-                    document.querySelector(':has(*)');
-                    supportsHas = true;
-                } catch (_) {
-                    supportsHas = false;
-                }
-
-                for (var i = 0; i < activeSelectors.length; i++) {
-                    var sel = activeSelectors[i];
-                    if (sel.indexOf(':has(') !== -1 && !supportsHas) {
-                        fallbackSelectors.push(sel);
+                var cssBatch = [];
+                for (var i = 0; i < targetSelectors.length; i++) {
+                    var sel = targetSelectors[i];
+                    if (sel.indexOf(':has(') !== -1 && !core.supportsHas) {
+                        core.addFallback(sel);
                     } else {
-                        standardSelectors.push(sel);
+                        cssBatch.push(sel);
                     }
                 }
 
-                var styleId = '__simple_browser_adblock_style__';
-                var cssInjected = false;
-
-                function injectCss() {
-                    if (standardSelectors.length === 0) {
-                        return;
-                    }
-                    var existingStyle = document.getElementById(styleId);
-                    if (cssInjected && existingStyle) {
-                        return;
-                    }
-                    var style = existingStyle;
-                    if (!style) {
-                        style = document.createElement('style');
-                        style.id = styleId;
-                        style.type = 'text/css';
-                        var root = document.head || document.documentElement;
-                        if (root) {
-                            root.appendChild(style);
-                        } else {
-                            var obs = new MutationObserver(function() {
-                                var r = document.head || document.documentElement;
-                                if (r) {
-                                    obs.disconnect();
-                                    r.appendChild(style);
-                                }
-                            });
-                            obs.observe(document, { childList: true, subtree: true });
-                        }
-                    }
-
-                    var chunks = [];
-                    var batchSize = 100;
-                    for (var i = 0; i < standardSelectors.length; i += batchSize) {
-                        var slice = standardSelectors.slice(i, i + batchSize);
-                        chunks.push(slice.join(',') + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}');
-                    }
-                    var cssText = chunks.join('\\n');
-                    style.textContent = (style.textContent ? style.textContent + '\\n' : '') + cssText;
-                    cssInjected = true;
-                }
-
-                injectCss();
-
-                if (document.readyState === 'loading') {
-                    document.addEventListener('DOMContentLoaded', injectCss, { once: true });
-                }
-
-                if (fallbackSelectors.length > 0) {
-                    function hideElement(el) {
-                        if (!el) {
-                            return;
-                        }
-                        el.style.setProperty('display', 'none', 'important');
-                        el.style.setProperty('visibility', 'hidden', 'important');
-                        el.style.setProperty('pointer-events', 'none', 'important');
-                    }
-
-                    function hideByHasFallback(selector) {
-                        var hasIndex = selector.indexOf(':has(');
-                        if (hasIndex < 0 || !selector.endsWith(')')) {
-                            return;
-                        }
-                        var outerSelector = selector.substring(0, hasIndex).trim() || '*';
-                        var innerSelector = selector.substring(hasIndex + 5, selector.length - 1).trim();
-                        if (!innerSelector) {
-                            return;
-                        }
-                        var outerElements;
-                        try {
-                            outerElements = document.querySelectorAll(outerSelector);
-                        } catch (_) {
-                            return;
-                        }
-                        for (var i = 0; i < outerElements.length; i++) {
-                            var el = outerElements[i];
-                            var matched = false;
-                            try {
-                                if (innerSelector.startsWith('>')) {
-                                    matched = el.querySelector(':scope ' + innerSelector) !== null;
-                                } else {
-                                    matched = el.querySelector(innerSelector) !== null;
-                                }
-                            } catch (_) {
-                                matched = false;
-                            }
-                            if (matched) {
-                                hideElement(el);
-                            }
-                        }
-                    }
-
-                    function applyFallback() {
-                        for (var i = 0; i < fallbackSelectors.length; i++) {
-                            hideByHasFallback(fallbackSelectors[i]);
-                        }
-                    }
-
-                    applyFallback();
-
-                    var scheduled = false;
-                    function scheduleFallback() {
-                        if (scheduled) {
-                            return;
-                        }
-                        scheduled = true;
-                        var scheduleFn = window.requestAnimationFrame || function(cb) { setTimeout(cb, 16); };
-                        scheduleFn(function() {
-                            scheduled = false;
-                            applyFallback();
-                        });
-                    }
-
-                    var observer = new MutationObserver(scheduleFallback);
-                    var target = document.documentElement || document;
-                    observer.observe(target, { childList: true, subtree: true });
-
-                    if (document.readyState === 'loading') {
-                        document.addEventListener('DOMContentLoaded', applyFallback, { once: true });
-                    }
-                }
+                core.injectCss(cssBatch);
             })();
             """
 
@@ -1354,7 +1406,7 @@ final class AdBlockManager {
     private func cosmeticRuleBatches(
         _ rules: [AdBlockCosmeticRule]
     ) -> [[AdBlockCosmeticRule]] {
-        let chunkSize = 4000
+        let chunkSize = 12000
         return stride(from: 0, to: rules.count, by: chunkSize).map {
             Array(rules[$0..<min($0 + chunkSize, rules.count)])
         }
@@ -1381,7 +1433,8 @@ final class AdBlockManager {
                 cosmeticRules: [],
                 cosmeticExceptions: [],
                 ruleCount: 0,
-                skippedRuleCount: 0
+                skippedRuleCount: 0,
+                contentHash: nil
             )
         }
 
@@ -1496,22 +1549,34 @@ final class AdBlockManager {
             totalSkipped += r.skippedRuleCount
         }
 
+        var uniqueExceptionRules: [AdBlockNetworkRule] = []
+        var seenExceptionRules = Set<String>()
+        for rule in allExceptionRules {
+            if !seenExceptionRules.contains(rule.rawRule) {
+                seenExceptionRules.insert(rule.rawRule)
+                uniqueExceptionRules.append(rule)
+            }
+        }
+
         var allNetworkChunks: [[AdBlockNetworkRule]] = []
         if !allBlockRules.isEmpty {
             allNetworkChunks = stride(from: 0, to: allBlockRules.count, by: nativeRuleChunkSize).map { start in
                 let blockChunk = Array(allBlockRules[start..<min(start + nativeRuleChunkSize, allBlockRules.count)])
-                return blockChunk + allExceptionRules
+                return blockChunk + uniqueExceptionRules
             }
-        } else if !allExceptionRules.isEmpty {
-            allNetworkChunks = [allExceptionRules]
+        } else if !uniqueExceptionRules.isEmpty {
+            allNetworkChunks = [uniqueExceptionRules]
         }
+
+        let contentHash = computeContentHash(text)
 
         return AdBlockSourcePayload(
             networkChunks: allNetworkChunks,
             cosmeticRules: allCosmeticRules,
             cosmeticExceptions: allCosmeticExceptions,
             ruleCount: totalRuleCount,
-            skippedRuleCount: totalSkipped
+            skippedRuleCount: totalSkipped,
+            contentHash: contentHash
         )
     }
 
@@ -1522,6 +1587,11 @@ final class AdBlockManager {
               !pattern.contains("(?"),
               !pattern.contains("[:") else {
             return false
+        }
+
+        let key = pattern as NSString
+        if let cached = patternValidationCache.object(forKey: key) {
+            return cached.boolValue
         }
 
         var openParens = 0
@@ -1541,20 +1611,29 @@ final class AdBlockManager {
                 openParens += 1
             } else if ch == ")" {
                 openParens -= 1
-                if openParens < 0 { return false }
+                if openParens < 0 {
+                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                    return false
+                }
             } else if ch == "[" {
                 openBrackets += 1
             } else if ch == "]" {
                 openBrackets -= 1
-                if openBrackets < 0 { return false }
+                if openBrackets < 0 {
+                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                    return false
+                }
             }
         }
 
         if escaped || openParens != 0 || openBrackets != 0 {
+            patternValidationCache.setObject(NSNumber(value: false), forKey: key)
             return false
         }
 
-        return (try? NSRegularExpression(pattern: pattern)) != nil
+        let isValid = (try? NSRegularExpression(pattern: pattern)) != nil
+        patternValidationCache.setObject(NSNumber(value: isValid), forKey: key)
+        return isValid
     }
 
     private func parseRule(_ rawLine: String) -> AdBlockParsedLine {
@@ -2276,9 +2355,10 @@ struct AdBlockCompiledSourceMetadata: Codable {
     var skippedRuleCount: Int
     var cosmeticRules: [AdBlockCosmeticRule]
     var cosmeticExceptions: [AdBlockCosmeticException]
+    var contentHash: String?
 
     enum CodingKeys: String, CodingKey {
-        case sourceId, ruleListIdentifiers, ruleCount, skippedRuleCount, cosmeticRules, cosmeticExceptions
+        case sourceId, ruleListIdentifiers, ruleCount, skippedRuleCount, cosmeticRules, cosmeticExceptions, contentHash
     }
 
     init(
@@ -2287,7 +2367,8 @@ struct AdBlockCompiledSourceMetadata: Codable {
         ruleCount: Int,
         skippedRuleCount: Int,
         cosmeticRules: [AdBlockCosmeticRule],
-        cosmeticExceptions: [AdBlockCosmeticException] = []
+        cosmeticExceptions: [AdBlockCosmeticException] = [],
+        contentHash: String? = nil
     ) {
         self.sourceId = sourceId
         self.ruleListIdentifiers = ruleListIdentifiers
@@ -2295,6 +2376,7 @@ struct AdBlockCompiledSourceMetadata: Codable {
         self.skippedRuleCount = skippedRuleCount
         self.cosmeticRules = cosmeticRules
         self.cosmeticExceptions = cosmeticExceptions
+        self.contentHash = contentHash
     }
 
     init(from decoder: Decoder) throws {
@@ -2305,6 +2387,7 @@ struct AdBlockCompiledSourceMetadata: Codable {
         self.skippedRuleCount = try container.decode(Int.self, forKey: .skippedRuleCount)
         self.cosmeticRules = try container.decode([AdBlockCosmeticRule].self, forKey: .cosmeticRules)
         self.cosmeticExceptions = try container.decodeIfPresent([AdBlockCosmeticException].self, forKey: .cosmeticExceptions) ?? []
+        self.contentHash = try container.decodeIfPresent(String.self, forKey: .contentHash)
     }
 }
 
@@ -2314,6 +2397,7 @@ private struct AdBlockSourcePayload {
     var cosmeticExceptions: [AdBlockCosmeticException]
     var ruleCount: Int
     var skippedRuleCount: Int
+    var contentHash: String?
 }
 
 private struct AdBlockParsedLine {
