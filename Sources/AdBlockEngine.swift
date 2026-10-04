@@ -90,9 +90,11 @@ final class AdBlockManager {
     private let identifierPrefix = "SimpleBrowserAdBlockV9"
     private let diagnosticKey = "adblock_unsupported_rules_v1"
 
-    private let nativeRuleChunkSize = 25000
-    private let maximumCosmeticRulesPerSource = 120000
+    private let nativeRuleChunkSize = 8000
+    private let maximumCosmeticRulesPerSource = 200000
+    private let cosmeticScriptPayloadLimit = 180000
     private let maximumCompilationDuration: TimeInterval = 180
+    private let maximumSingleChunkDuration: TimeInterval = 45
     private let autoUpdateInterval: TimeInterval = 86400
     private let autoUpdateRetryCooldown: TimeInterval = 1800
 
@@ -1036,150 +1038,234 @@ final class AdBlockManager {
             return
         }
 
-        var genericSelectors: [String] = []
-        var domainSpecificMap: [String: [String]] = [:]
-
-        for rule in metadata.cosmeticRules {
-            let sel = rule.selector.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !sel.isEmpty else { continue }
-
-            if rule.domains.isEmpty && rule.excludedDomains.isEmpty {
-                genericSelectors.append(sel)
-            } else {
-                for d in rule.domains {
-                    let dLower = d.lowercased()
-                    domainSpecificMap[dLower, default: []].append(sel)
-                }
-            }
-        }
-
-        let genericCssBlocks = chunkSelectorsIntoCss(genericSelectors, chunkSize: 250)
-        let genericCssJson = (try? String(data: JSONEncoder().encode(genericCssBlocks), encoding: .utf8)) ?? "[]"
-        let domainMapJson = (try? String(data: JSONEncoder().encode(domainSpecificMap), encoding: .utf8)) ?? "{}"
+        let batches = cosmeticRuleBatches(metadata.cosmeticRules)
         let exceptionsData = (try? JSONEncoder().encode(metadata.cosmeticExceptions)) ?? Data()
         let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
 
-        let safeSourceId = metadata.sourceId.replacingOccurrences(of: "-", with: "_")
-        let styleElementId = "__simple_adblock_style_\(safeSourceId)__"
+        var totalChars = 0
 
-        let source = """
-        (function() {
-            var genericCssBlocks = \(genericCssJson);
-            var domainMap = \(domainMapJson);
-            var exceptions = \(exceptionsJson);
-            var styleId = '\(styleElementId)';
-
-            function currentHostname() {
-                try {
-                    return (location.hostname || '').toLowerCase();
-                } catch(_) {
-                    return '';
-                }
+        let scripts = batches.compactMap { rules -> WKUserScript? in
+            guard let data = try? JSONEncoder().encode(rules),
+                  let json = String(data: data, encoding: .utf8) else {
+                return nil
             }
 
-            var host = currentHostname();
+            let source = """
+            (function() {
+                var rules = \(json);
+                var exceptions = \(exceptionsJson);
+                var fallbackRules = [];
+                var styleId = '__simple_browser_adblock_style__';
+                var host = (location.hostname || '').toLowerCase();
+                var rulesInserted = false;
 
-            function isSelectorWhitelisted(sel) {
-                if (!exceptions || exceptions.length === 0) return false;
-                for (var i = 0; i < exceptions.length; i++) {
-                    var ex = exceptions[i];
-                    if (ex.selector === sel) {
-                        if (!ex.domains || ex.domains.length === 0) return true;
-                        for (var j = 0; j < ex.domains.length; j++) {
-                            var d = ex.domains[j];
-                            if (host === d || host.endsWith('.' + d)) return true;
-                        }
-                    }
-                }
-                return false;
-            }
-
-            function buildCombinedCss() {
-                var css = '';
-                for (var i = 0; i < genericCssBlocks.length; i++) {
-                    css += genericCssBlocks[i] + '\\n';
-                }
-
-                if (host && domainMap) {
-                    var domainKeys = Object.keys(domainMap);
-                    for (var k = 0; k < domainKeys.length; k++) {
-                        var d = domainKeys[k];
-                        if (host === d || host.endsWith('.' + d)) {
-                            var sels = domainMap[d] || [];
-                            var validSels = [];
-                            for (var s = 0; s < sels.length; s++) {
-                                var singleSel = sels[s];
-                                if (!isSelectorWhitelisted(singleSel)) {
-                                    validSels.push(singleSel);
-                                }
-                            }
-                            if (validSels.length > 0) {
-                                css += validSels.join(',') + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}\\n';
+                function matchesDomain(rule) {
+                    if (rule.excludedDomains && rule.excludedDomains.length > 0) {
+                        for (var j = 0; j < rule.excludedDomains.length; j++) {
+                            var ex = rule.excludedDomains[j];
+                            if (host === ex || host.endsWith('.' + ex)) {
+                                return false;
                             }
                         }
                     }
-                }
-                return css;
-            }
-
-            var finalCss = buildCombinedCss();
-
-            function injectStyle() {
-                if (document.getElementById(styleId)) return true;
-                var target = document.head || document.documentElement;
-                if (!target) return false;
-                var style = document.createElement('style');
-                style.id = styleId;
-                style.type = 'text/css';
-                style.textContent = finalCss;
-                target.appendChild(style);
-                return true;
-            }
-
-            if (!injectStyle()) {
-                var observer = new MutationObserver(function() {
-                    if (injectStyle()) {
-                        observer.disconnect();
+                    if (!rule.domains || rule.domains.length === 0) {
+                        return true;
                     }
-                });
-                observer.observe(document, { childList: true, subtree: true });
-            }
-
-            function ensureStyleAttached() {
-                if (!document.getElementById(styleId)) {
-                    injectStyle();
+                    for (var i = 0; i < rule.domains.length; i++) {
+                        var domain = rule.domains[i];
+                        if (host === domain || host.endsWith('.' + domain)) {
+                            return true;
+                        }
+                    }
+                    return false;
                 }
-            }
 
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', ensureStyleAttached, { once: true });
-            }
-        })();
-        """
+                function isSelectorWhitelisted(selector) {
+                    if (!exceptions || exceptions.length === 0) {
+                        return false;
+                    }
+                    for (var i = 0; i < exceptions.length; i++) {
+                        var ex = exceptions[i];
+                        if (ex.selector === selector && matchesDomain(ex)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
 
-        let script = WKUserScript(
-            source: source,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        )
+                function hideElement(element) {
+                    if (!element) {
+                        return;
+                    }
+                    element.style.setProperty('display', 'none', 'important');
+                    element.style.setProperty('visibility', 'hidden', 'important');
+                    element.style.setProperty('pointer-events', 'none', 'important');
+                }
+
+                function hideBySelector(selector) {
+                    try {
+                        var elements = document.querySelectorAll(selector);
+                        for (var i = 0; i < elements.length; i++) {
+                            hideElement(elements[i]);
+                        }
+                        return true;
+                    } catch (_) {
+                        return false;
+                    }
+                }
+
+                function hideByHasFallback(selector) {
+                    var hasIndex = selector.indexOf(':has(');
+                    if (hasIndex < 0 || !selector.endsWith(')')) {
+                        return;
+                    }
+                    var outerSelector = selector.substring(0, hasIndex).trim() || '*';
+                    var innerSelector = selector.substring(hasIndex + 5, selector.length - 1).trim();
+                    if (!innerSelector) {
+                        return;
+                    }
+                    var outerElements;
+                    try {
+                        outerElements = document.querySelectorAll(outerSelector);
+                    } catch (_) {
+                        return;
+                    }
+                    for (var i = 0; i < outerElements.length; i++) {
+                        var outerElement = outerElements[i];
+                        var matched = false;
+                        try {
+                            if (innerSelector.startsWith('>')) {
+                                matched = outerElement.querySelector(':scope ' + innerSelector) !== null;
+                            } else {
+                                matched = outerElement.querySelector(innerSelector) !== null;
+                            }
+                        } catch (_) {
+                            matched = false;
+                        }
+                        if (matched) {
+                            hideElement(outerElement);
+                        }
+                    }
+                }
+
+                function applyFallbackRules() {
+                    for (var i = 0; i < fallbackRules.length; i++) {
+                        var rule = fallbackRules[i];
+                        if (!matchesDomain(rule) || isSelectorWhitelisted(rule.selector)) {
+                            continue;
+                        }
+                        if (!hideBySelector(rule.selector)) {
+                            hideByHasFallback(rule.selector);
+                        }
+                    }
+                }
+
+                function insertRules() {
+                    if (rulesInserted) return true;
+                    var target = document.head || document.documentElement;
+                    if (!target) return false;
+                    var style = document.getElementById(styleId);
+                    if (!style) {
+                        style = document.createElement('style');
+                        style.id = styleId;
+                        style.type = 'text/css';
+                        target.appendChild(style);
+                    }
+                    var sheet = style.sheet;
+                    if (!sheet) {
+                        return false;
+                    }
+                    rulesInserted = true;
+                    for (var i = 0; i < rules.length; i++) {
+                        var rule = rules[i];
+                        if (!matchesDomain(rule) || isSelectorWhitelisted(rule.selector)) {
+                            continue;
+                        }
+                        try {
+                            sheet.insertRule(
+                                rule.selector + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}',
+                                sheet.cssRules.length
+                            );
+                        } catch (_) {
+                            fallbackRules.push(rule);
+                        }
+                    }
+                    return true;
+                }
+
+                function scheduleFallbackApply() {
+                    var timer = null;
+                    var observer = new MutationObserver(function() {
+                        if (timer !== null) {
+                            return;
+                        }
+                        timer = setTimeout(function() {
+                            timer = null;
+                            applyFallbackRules();
+                        }, 300);
+                    });
+                    var root = document.documentElement || document.body;
+                    if (root) {
+                        observer.observe(root, {
+                            childList: true,
+                            subtree: true
+                        });
+                    }
+                }
+
+                if (!insertRules()) {
+                    var earlyObserver = new MutationObserver(function() {
+                        if (insertRules()) {
+                            earlyObserver.disconnect();
+                        }
+                    });
+                    if (document.documentElement) {
+                        earlyObserver.observe(document.documentElement, { childList: true });
+                    } else {
+                        earlyObserver.observe(document, { childList: true, subtree: true });
+                    }
+                }
+
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', function() {
+                        insertRules();
+                        if (fallbackRules.length > 0) {
+                            applyFallbackRules();
+                            scheduleFallbackApply();
+                        }
+                    }, { once: true });
+                } else {
+                    insertRules();
+                    if (fallbackRules.length > 0) {
+                        applyFallbackRules();
+                        scheduleFallbackApply();
+                    }
+                }
+            })();
+            """
+
+            totalChars += source.count
+
+            return WKUserScript(
+                source: source,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        }
 
         stateLock.lock()
-        cosmeticScriptsBySource[metadata.sourceId] = [script]
-        cosmeticScriptCharsBySource[metadata.sourceId] = source.count
+        cosmeticScriptsBySource[metadata.sourceId] = scripts
+        cosmeticScriptCharsBySource[metadata.sourceId] = totalChars
         stateLock.unlock()
     }
 
-    private func chunkSelectorsIntoCss(_ selectors: [String], chunkSize: Int) -> [String] {
-        var blocks: [String] = []
-        var i = 0
-        while i < selectors.count {
-            let end = min(i + chunkSize, selectors.count)
-            let slice = selectors[i..<end]
-            let combined = slice.joined(separator: ",") + "{display:none !important;visibility:hidden !important;pointer-events:none !important;}"
-            blocks.append(combined)
-            i += chunkSize
+    private func cosmeticRuleBatches(
+        _ rules: [AdBlockCosmeticRule]
+    ) -> [[AdBlockCosmeticRule]] {
+        let chunkSize = 4000
+        return stride(from: 0, to: rules.count, by: chunkSize).map {
+            Array(rules[$0..<min($0 + chunkSize, rules.count)])
         }
-        return blocks
     }
 
     private func sourceText(id sourceId: String) -> String? {
@@ -1339,12 +1425,9 @@ final class AdBlockManager {
 
     private func isValidWebKitPattern(_ pattern: String) -> Bool {
         guard !pattern.isEmpty,
-              pattern.count < 2048,
+              pattern.count < 1024,
               pattern.allSatisfy({ $0.isASCII }),
-              !pattern.contains("(?="),
-              !pattern.contains("(?!"),
-              !pattern.contains("(?<="),
-              !pattern.contains("(?<!"),
+              !pattern.contains("(?"),
               !pattern.contains("[:") else {
             return false
         }
@@ -1411,7 +1494,7 @@ final class AdBlockManager {
             }
         }
 
-        if line.contains("##+js") || line.contains("#%#") || line.contains("##^") {
+        if line.contains("##+js") || line.contains("#%#") {
             return AdBlockParsedLine(
                 networkRule: nil,
                 isException: false,
@@ -1421,10 +1504,15 @@ final class AdBlockManager {
             )
         }
 
-        if line.contains("#@#") || line.contains("#@?#") {
-            let sep = line.contains("#@?#") ? "#@?#" : "#@#"
-            guard let range = line.range(of: sep) else {
-                return AdBlockParsedLine(networkRule: nil, isException: false, cosmeticRules: [], cosmeticExceptions: [], isUnsupported: true)
+        if line.contains("#@#") {
+            guard let range = line.range(of: "#@#") else {
+                return AdBlockParsedLine(
+                    networkRule: nil,
+                    isException: false,
+                    cosmeticRules: [],
+                    cosmeticExceptions: [],
+                    isUnsupported: true
+                )
             }
             let domainsText = String(line[..<range.lowerBound])
             let selectorsText = String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1455,7 +1543,8 @@ final class AdBlockManager {
 
         if let sep = cosmeticSeparator, let range = line.range(of: sep) {
             let domainsText = String(line[..<range.lowerBound])
-            let selectorsText = String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let selectorsText = String(line[range.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
 
             let parsedDomains = normalizedDomains(from: domainsText)
             let selectors = splitSelectorList(selectorsText)
@@ -1508,7 +1597,7 @@ final class AdBlockManager {
         var loadTypes: [String] = []
         var isCaseSensitive = false
 
-        let subResourceTypes = ["image", "style-sheet", "script", "font", "raw", "media"]
+        let allResourceTypes = ["document", "image", "style-sheet", "script", "font", "raw", "media", "popup"]
 
         for rawOption in options {
             let option = rawOption.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1552,16 +1641,16 @@ final class AdBlockManager {
                 loadTypes.append("third-party")
             } else if option == "match-case" {
                 isCaseSensitive = true
-            } else if option == "important" || option.hasPrefix("redirect") || option.hasPrefix("rewrite") || option == "all" {
+            } else if option == "important" || option.hasPrefix("redirect") || option.hasPrefix("rewrite") || option == "all" || option == "cname" || option == "inline-script" || option == "empty" || option == "donottrack" || option == "generichide" || option == "specifichide" || option == "genericblock" || option == "object" || option == "webrtc" {
                 continue
             } else if option.hasPrefix("~") {
                 let negatedType = String(option.dropFirst())
                 if negatedType == "image" {
-                    resourceTypes.append(contentsOf: subResourceTypes.filter { $0 != "image" })
+                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "image" })
                 } else if negatedType == "script" {
-                    resourceTypes.append(contentsOf: subResourceTypes.filter { $0 != "script" })
+                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "script" })
                 } else if negatedType == "stylesheet" || negatedType == "css" {
-                    resourceTypes.append(contentsOf: subResourceTypes.filter { $0 != "style-sheet" })
+                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "style-sheet" })
                 } else {
                     continue
                 }
@@ -1634,11 +1723,7 @@ final class AdBlockManager {
         domains: [String],
         excludedDomains: [String] = []
     ) -> AdBlockCosmeticRule? {
-        var value = selector.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if value.contains(":-abp-has(") {
-            value = value.replacingOccurrences(of: ":-abp-has(", with: ":has(")
-        }
+        let value = selector.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !value.isEmpty,
               value.count <= 4096,
@@ -1646,11 +1731,7 @@ final class AdBlockManager {
               !value.contains("{"),
               !value.contains("}"),
               !value.contains("<"),
-              !value.contains(">style"),
-              !value.contains(":-abp-contains("),
-              !value.contains(":has-text("),
-              !value.contains(":xpath("),
-              !value.contains(":matches-css(") else {
+              !value.contains(">style") else {
             return nil
         }
 
@@ -1735,15 +1816,13 @@ final class AdBlockManager {
             }
 
             if value.hasPrefix("~") {
-                let domain = String(value.dropFirst()).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                let domain = String(value.dropFirst())
 
-                if !domain.isEmpty && domain.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) {
+                if !domain.isEmpty {
                     exclude.append(domain)
                 }
             } else {
-                if value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) {
-                    include.append(value)
-                }
+                include.append(value)
             }
         }
 
@@ -1797,7 +1876,7 @@ final class AdBlockManager {
 
         var result = ""
         if startsWithDomainAnchor {
-            result = "^[a-z]+://(?:[^/:]+\\.)?" + escaped
+            result = "^[a-z]+://([^/:]+\\.)?" + escaped
         } else if startsWithStartAnchor {
             result = "^" + escaped
         } else {
@@ -1805,7 +1884,7 @@ final class AdBlockManager {
         }
 
         if hasTrailingSeparator {
-            result.append("(?:[:/?#]|$)")
+            result.append("[^a-zA-Z0-9_.-]")
         }
 
         if endsWithEndAnchor {
