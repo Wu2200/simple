@@ -52,6 +52,12 @@
     </dict>
     <key>NSLocalNetworkUsageDescription</key>
     <string>需要访问局域网以支持局域网网页浏览与文件下载</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_http._tcp</string>
+        <string>_bonjour._tcp</string>
+        <string>_lnp._tcp</string>
+    </array>
     <key>NSCameraUsageDescription</key>
     <string>需要访问相机以支持网页拍照、视频或扫描功能</string>
     <key>NSMicrophoneUsageDescription</key>
