@@ -1342,7 +1342,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         tab.delegate = self
         tab.url = url
         tab.title = url.host ?? url.absoluteString
-        tab.webView.load(URLRequest(url: url))
+        if AdBlockManager.shared.isEnabled && !AdBlockManager.shared.isReady {
+            AdBlockManager.shared.performWhenReady { [weak tab] in
+                tab?.webView.load(URLRequest(url: url))
+            }
+        } else {
+            tab.webView.load(URLRequest(url: url))
+        }
         let insertIndex = min(activeTabIndex + 1, tabs.count)
         tabs.insert(tab, at: insertIndex)
         persistCurrentSession()
@@ -1388,7 +1394,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         if let restoreURL = tab.consumePendingRestoreURL() {
-            tab.webView.load(URLRequest(url: restoreURL))
+            if AdBlockManager.shared.isEnabled && !AdBlockManager.shared.isReady {
+                AdBlockManager.shared.performWhenReady { [weak tab] in
+                    guard let tab = tab else { return }
+                    tab.webView.load(URLRequest(url: restoreURL))
+                }
+            } else {
+                tab.webView.load(URLRequest(url: restoreURL))
+            }
         }
 
         persistCurrentSession()
@@ -1503,7 +1516,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         progressView.alpha = 1
         progressView.setProgress(0.08, animated: false)
 
-        activeTab.webView.load(URLRequest(url: url))
+        if AdBlockManager.shared.isEnabled && !AdBlockManager.shared.isReady {
+            AdBlockManager.shared.performWhenReady { [weak self] in
+                guard let self = self, self.activeTab.url == url else { return }
+                self.activeTab.webView.load(URLRequest(url: url))
+            }
+        } else {
+            activeTab.webView.load(URLRequest(url: url))
+        }
+
         applyAutoFullscreenIfNeeded(for: url)
 
         if let host = url.host {
