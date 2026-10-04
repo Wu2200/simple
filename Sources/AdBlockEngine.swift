@@ -91,7 +91,7 @@ final class AdBlockManager {
     private let diagnosticKey = "adblock_unsupported_rules_v1"
 
     private let nativeRuleChunkSize = 8000
-    private let maximumCosmeticRulesPerSource = 200000
+    private let maximumCosmeticRulesPerSource = 100000
     private let cosmeticScriptPayloadLimit = 180000
     private let maximumCompilationDuration: TimeInterval = 180
     private let maximumSingleChunkDuration: TimeInterval = 45
@@ -1057,7 +1057,6 @@ final class AdBlockManager {
                 var fallbackRules = [];
                 var styleId = '__simple_browser_adblock_style__';
                 var host = (location.hostname || '').toLowerCase();
-                var rulesInserted = false;
 
                 function matchesDomain(rule) {
                     if (rule.excludedDomains && rule.excludedDomains.length > 0) {
@@ -1161,21 +1160,17 @@ final class AdBlockManager {
                 }
 
                 function insertRules() {
-                    if (rulesInserted) return true;
-                    var target = document.head || document.documentElement;
-                    if (!target) return false;
                     var style = document.getElementById(styleId);
                     if (!style) {
                         style = document.createElement('style');
                         style.id = styleId;
                         style.type = 'text/css';
-                        target.appendChild(style);
+                        (document.head || document.documentElement).appendChild(style);
                     }
                     var sheet = style.sheet;
                     if (!sheet) {
-                        return false;
+                        return;
                     }
-                    rulesInserted = true;
                     for (var i = 0; i < rules.length; i++) {
                         var rule = rules[i];
                         if (!matchesDomain(rule) || isSelectorWhitelisted(rule.selector)) {
@@ -1190,7 +1185,7 @@ final class AdBlockManager {
                             fallbackRules.push(rule);
                         }
                     }
-                    return true;
+                    applyFallbackRules();
                 }
 
                 function scheduleFallbackApply() {
@@ -1204,40 +1199,22 @@ final class AdBlockManager {
                             applyFallbackRules();
                         }, 300);
                     });
-                    var root = document.documentElement || document.body;
-                    if (root) {
-                        observer.observe(root, {
-                            childList: true,
-                            subtree: true
-                        });
-                    }
-                }
-
-                if (!insertRules()) {
-                    var earlyObserver = new MutationObserver(function() {
-                        if (insertRules()) {
-                            earlyObserver.disconnect();
-                        }
+                    observer.observe(document.documentElement, {
+                        childList: true,
+                        subtree: true
                     });
-                    if (document.documentElement) {
-                        earlyObserver.observe(document.documentElement, { childList: true });
-                    } else {
-                        earlyObserver.observe(document, { childList: true, subtree: true });
-                    }
                 }
 
                 if (document.readyState === 'loading') {
                     document.addEventListener('DOMContentLoaded', function() {
                         insertRules();
                         if (fallbackRules.length > 0) {
-                            applyFallbackRules();
                             scheduleFallbackApply();
                         }
                     }, { once: true });
                 } else {
                     insertRules();
                     if (fallbackRules.length > 0) {
-                        applyFallbackRules();
                         scheduleFallbackApply();
                     }
                 }
@@ -1471,7 +1448,6 @@ final class AdBlockManager {
         guard !line.isEmpty,
               !line.hasPrefix("!"),
               !line.hasPrefix("！"),
-              !line.hasPrefix("# "),
               !line.hasPrefix("[") else {
             return AdBlockParsedLine(
                 networkRule: nil,
@@ -1480,18 +1456,6 @@ final class AdBlockManager {
                 cosmeticExceptions: [],
                 isUnsupported: false
             )
-        }
-
-        if line.hasPrefix("127.0.0.1 ") || line.hasPrefix("0.0.0.0 ") || line.hasPrefix("::1 ") {
-            let parts = line.split(whereSeparator: { $0.isWhitespace })
-            if parts.count >= 2 {
-                let host = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                if !host.isEmpty && host != "localhost" && host != "broadcasthost" && !host.contains("#") {
-                    line = "||" + host + "^"
-                } else {
-                    return AdBlockParsedLine(networkRule: nil, isException: false, cosmeticRules: [], cosmeticExceptions: [], isUnsupported: false)
-                }
-            }
         }
 
         if line.contains("##+js") || line.contains("#%#") {
@@ -1619,17 +1583,17 @@ final class AdBlockManager {
                 excludeDomains.append(contentsOf: domains.include)
             } else if option == "script" {
                 resourceTypes.append("script")
-            } else if option == "image" || option == "imageset" {
+            } else if option == "image" {
                 resourceTypes.append("image")
             } else if option == "stylesheet" || option == "css" {
                 resourceTypes.append("style-sheet")
             } else if option == "font" {
                 resourceTypes.append("font")
-            } else if option == "media" || option == "video" || option == "audio" {
+            } else if option == "media" {
                 resourceTypes.append("media")
-            } else if option == "xmlhttprequest" || option == "xhr" || option == "fetch" || option == "ping" || option == "beacon" || option == "websocket" || option == "other" {
+            } else if option == "xmlhttprequest" || option == "xhr" || option == "fetch" || option == "ping" {
                 resourceTypes.append("raw")
-            } else if option == "subdocument" || option == "frame" || option == "iframe" || option == "document" || option == "doc" {
+            } else if option == "subdocument" || option == "frame" || option == "document" || option == "doc" {
                 resourceTypes.append("document")
             } else if option == "popup" {
                 resourceTypes.append("popup")
@@ -1641,7 +1605,7 @@ final class AdBlockManager {
                 loadTypes.append("third-party")
             } else if option == "match-case" {
                 isCaseSensitive = true
-            } else if option == "important" || option.hasPrefix("redirect") || option.hasPrefix("rewrite") || option == "all" || option == "cname" || option == "inline-script" || option == "empty" || option == "donottrack" || option == "generichide" || option == "specifichide" || option == "genericblock" || option == "object" || option == "webrtc" {
+            } else if option == "important" || option.hasPrefix("redirect") || option.hasPrefix("rewrite") {
                 continue
             } else if option.hasPrefix("~") {
                 let negatedType = String(option.dropFirst())
