@@ -359,19 +359,19 @@ final class WebsiteCleaner {
     static let shared = WebsiteCleaner()
     private init() {}
 
-    static let cacheDataTypes: Set<String> = [
-        WKWebsiteDataTypeDiskCache,
-        WKWebsiteDataTypeMemoryCache,
-        WKWebsiteDataTypeOfflineWebApplicationCache,
-        WKWebsiteDataTypeFetchCache
-    ]
-
-    static let nonCookieLoginDataTypes: Set<String> = [
-        WKWebsiteDataTypeLocalStorage,
-        WKWebsiteDataTypeIndexedDBDatabases,
-        WKWebsiteDataTypeWebSQLDatabases,
-        WKWebsiteDataTypeSessionStorage
-    ]
+    static var cacheDataTypes: Set<String> {
+        var types: Set<String> = [
+            WKWebsiteDataTypeDiskCache,
+            WKWebsiteDataTypeMemoryCache,
+            WKWebsiteDataTypeOfflineWebApplicationCache
+        ]
+        for t in WKWebsiteDataStore.allWebsiteDataTypes() {
+            if t.contains("Fetch") || t.contains("Cache") {
+                types.insert(t)
+            }
+        }
+        return types
+    }
 
     func clean(
         cache: Bool,
@@ -401,7 +401,10 @@ final class WebsiteCleaner {
                 }
             }
 
-            store.fetchDataRecords(ofTypes: Self.nonCookieLoginDataTypes) { records in
+            let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+            let typesToRemove = cache ? allTypes : allTypes.subtracting(Self.cacheDataTypes)
+
+            store.fetchDataRecords(ofTypes: allTypes) { records in
                 let unprotectedRecords = records.filter { record in
                     !CookieLockStore.shared.isRecordLoginProtected(recordDisplayName: record.displayName)
                 }
@@ -410,7 +413,7 @@ final class WebsiteCleaner {
 
                 if !unprotectedRecords.isEmpty {
                     subGroup.enter()
-                    store.removeData(ofTypes: Self.nonCookieLoginDataTypes, for: unprotectedRecords) {
+                    store.removeData(ofTypes: typesToRemove, for: unprotectedRecords) {
                         subGroup.leave()
                     }
                 }
@@ -460,8 +463,8 @@ final class WebsiteCleaner {
                 }
             }
         } else {
-            let nonCookieTypes = Self.nonCookieLoginDataTypes.union(Self.cacheDataTypes)
-            store.removeData(ofTypes: nonCookieTypes, for: [record]) {
+            let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+            store.removeData(ofTypes: allTypes, for: [record]) {
                 store.httpCookieStore.getAllCookies { cookies in
                     let group = DispatchGroup()
                     for c in cookies where !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) &&
