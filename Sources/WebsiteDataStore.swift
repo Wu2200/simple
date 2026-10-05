@@ -25,8 +25,8 @@ struct MainDomainGroup {
         return records.contains { $0.dataTypes.contains(WKWebsiteDataTypeCookies) }
     }
 
-    var isUnassociatedGroup: Bool {
-        return mainDomain == "未关联域名"
+    var isOtherDomainsGroup: Bool {
+        return mainDomain == "其他域名"
     }
 }
 
@@ -62,22 +62,6 @@ final class DomainRelationStore {
 }
 
 enum DomainRelationEngine {
-    static let companionMap: [(keyword: String, targetRoot: String)] = [
-        ("asmr-200.com", "asmr.one"),
-        ("kiko-play-niptan.one", "asmr.one"),
-        ("hdslb.com", "bilibili.com"),
-        ("bilivideo.com", "bilibili.com"),
-        ("googlevideo.com", "youtube.com"),
-        ("ytimg.com", "youtube.com"),
-        ("githubassets.com", "github.com"),
-        ("githubusercontent.com", "github.com"),
-        ("bdstatic.com", "baidu.com"),
-        ("baidupcs.com", "baidu.com"),
-        ("zhimg.com", "zhihu.com"),
-        ("oaistatic.com", "chatgpt.com"),
-        ("oaiusercontent.com", "chatgpt.com")
-    ]
-
     static func rootDomain(of domain: String) -> String {
         let clean = domain.trimmingCharacters(in: .whitespaces).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         let parts = clean.split(separator: ".").map(String.init)
@@ -109,18 +93,7 @@ enum DomainRelationEngine {
     static func areDomainsAssociated(_ d1: String, _ d2: String) -> Bool {
         let r1 = rootDomain(of: d1)
         let r2 = rootDomain(of: d2)
-        if !r1.isEmpty && r1 == r2 { return true }
-
-        for item in companionMap {
-            let itemKeyRoot = rootDomain(of: item.keyword)
-            let itemTarRoot = rootDomain(of: item.targetRoot)
-            let match1 = (r1 == itemKeyRoot || r1 == itemTarRoot)
-            let match2 = (r2 == itemKeyRoot || r2 == itemTarRoot)
-            if match1 && match2 {
-                return true
-            }
-        }
-        return false
+        return !r1.isEmpty && r1 == r2
     }
 
     static func groupRecordsIntoMainDomains(_ records: [WKWebsiteDataRecord]) -> [MainDomainGroup] {
@@ -132,19 +105,8 @@ enum DomainRelationEngine {
             dict[root, default: []].append(record)
         }
 
-        for item in companionMap {
-            let compRoot = rootDomain(of: item.keyword)
-            let targetRoot = rootDomain(of: item.targetRoot)
-            if let compRecs = dict[compRoot] {
-                dict[targetRoot, default: []].append(contentsOf: compRecs)
-                dict.removeValue(forKey: compRoot)
-            }
-        }
-
-        let companionTargets = Set(companionMap.map { rootDomain(of: $0.targetRoot) })
-
         var primaryGroups: [MainDomainGroup] = []
-        var unassociatedRecords: [WKWebsiteDataRecord] = []
+        var otherRecords: [WKWebsiteDataRecord] = []
 
         for (domain, groupRecords) in dict {
             var seen = Set<String>()
@@ -179,12 +141,11 @@ enum DomainRelationEngine {
             }
             let isVisitedPrimary = DomainRelationStore.shared.isPrimaryDomain(domain)
             let isLocked = CookieLockStore.shared.isLocked(domain: domain) || sortedRecords.contains { CookieLockStore.shared.isLocked(domain: $0.displayName) }
-            let isCompanionTarget = companionTargets.contains(domain)
 
-            if hasCookies || hasStorage || isVisitedPrimary || isLocked || isCompanionTarget {
+            if hasCookies || hasStorage || isVisitedPrimary || isLocked {
                 primaryGroups.append(MainDomainGroup(mainDomain: domain, records: sortedRecords))
             } else {
-                unassociatedRecords.append(contentsOf: sortedRecords)
+                otherRecords.append(contentsOf: sortedRecords)
             }
         }
 
@@ -198,17 +159,17 @@ enum DomainRelationEngine {
             return g1.mainDomain.localizedCaseInsensitiveCompare(g2.mainDomain) == .orderedAscending
         }
 
-        if !unassociatedRecords.isEmpty {
-            var unassocSeen = Set<String>()
-            var uniqueUnassoc: [WKWebsiteDataRecord] = []
-            for r in unassociatedRecords {
-                if !unassocSeen.contains(r.displayName) {
-                    unassocSeen.insert(r.displayName)
-                    uniqueUnassoc.append(r)
+        if !otherRecords.isEmpty {
+            var otherSeen = Set<String>()
+            var uniqueOther: [WKWebsiteDataRecord] = []
+            for r in otherRecords {
+                if !otherSeen.contains(r.displayName) {
+                    otherSeen.insert(r.displayName)
+                    uniqueOther.append(r)
                 }
             }
-            uniqueUnassoc.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-            primaryGroups.append(MainDomainGroup(mainDomain: "未关联域名", records: uniqueUnassoc))
+            uniqueOther.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            primaryGroups.append(MainDomainGroup(mainDomain: "其他域名", records: uniqueOther))
         }
 
         return primaryGroups
@@ -338,7 +299,6 @@ final class CookieLockStore {
             let r1 = DomainRelationEngine.rootDomain(of: cleanCookie)
             let r2 = DomainRelationEngine.rootDomain(of: l)
             if !r1.isEmpty && r1 == r2 { return true }
-            if DomainRelationEngine.areDomainsAssociated(cleanCookie, l) { return true }
         }
         return false
     }
@@ -354,7 +314,6 @@ final class CookieLockStore {
             let r1 = DomainRelationEngine.rootDomain(of: cleanName)
             let r2 = DomainRelationEngine.rootDomain(of: l)
             if !r1.isEmpty && r1 == r2 { return true }
-            if DomainRelationEngine.areDomainsAssociated(cleanName, l) { return true }
         }
         return false
     }
