@@ -46,7 +46,7 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "锁定的域名仅保护其登录状态，网页缓存文件仍会正常清理以避免积攒占用存储。点击进入可独立锁定或解锁各具体域名。"
+        label.text = "锁定的域名仅保护其登录状态，网页缓存文件仍会正常清理以避免积攒占用存储。点击进入可独立锁定或解锁各具体域名，亦可左滑查询关联域名。"
         label.textColor = .secondaryLabel
         label.font = .systemFont(ofSize: 13, weight: .regular)
         label.numberOfLines = 0
@@ -205,7 +205,152 @@ final class WebsiteDataManagerViewController: UIViewController, UITableViewDataS
             }
         }
 
-        return UISwipeActionsConfiguration(actions: [deleteAction, toggleLockAction])
+        var actions = [deleteAction, toggleLockAction]
+
+        if !group.isOtherDomainsGroup {
+            let queryAction = UIContextualAction(style: .normal, title: "查询关联") { [weak self] _, _, completion in
+                guard let self = self else { return }
+                let queryVC = AssociatedDomainsQueryViewController(mainDomain: group.mainDomain)
+                let nav = UINavigationController(rootViewController: queryVC)
+                self.present(nav, animated: true)
+                completion(true)
+            }
+            queryAction.backgroundColor = .systemBlue
+            actions.insert(queryAction, at: 0)
+        }
+
+        return UISwipeActionsConfiguration(actions: actions)
+    }
+}
+
+final class AssociatedDomainsQueryViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    private let mainDomain: String
+    private var matchedRecords: [WKWebsiteDataRecord] = []
+    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let summaryLabel = UILabel()
+
+    init(mainDomain: String) {
+        self.mainDomain = mainDomain
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        title = "关联域名查询"
+
+        setupNavigationBar()
+        setupHeaderView()
+        setupTableView()
+        fetchAndMatchRecords()
+    }
+
+    private func setupNavigationBar() {
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(handleClose))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "复制全部域名", style: .plain, target: self, action: #selector(handleCopyAllDomains))
+    }
+
+    @objc private func handleClose() {
+        dismiss(animated: true)
+    }
+
+    @objc private func handleCopyAllDomains() {
+        guard !matchedRecords.isEmpty else {
+            showToastNotice("无域名可复制")
+            return
+        }
+        let listText = matchedRecords.map(\.displayName).joined(separator: "\n")
+        UIPasteboard.general.string = listText
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        showToastNotice("已复制全部域名")
+    }
+
+    private func showToastNotice(_ text: String) {
+        let alert = UIAlertController(title: text, message: nil, preferredStyle: .alert)
+        present(alert, animated: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            alert.dismiss(animated: true)
+        }
+    }
+
+    private func setupHeaderView() {
+        let header = UIView()
+        header.backgroundColor = .clear
+
+        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
+        summaryLabel.textColor = .secondaryLabel
+        summaryLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        summaryLabel.numberOfLines = 0
+        summaryLabel.text = "正在查询属于主站或由该站调用的现存域名…"
+
+        header.addSubview(summaryLabel)
+        NSLayoutConstraint.activate([
+            summaryLabel.topAnchor.constraint(equalTo: header.topAnchor, constant: 12),
+            summaryLabel.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -12),
+            summaryLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+            summaryLabel.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16)
+        ])
+
+        let targetSize = CGSize(width: UIScreen.main.bounds.width, height: UIView.layoutFittingCompressedSize.height)
+        let size = header.systemLayoutSizeFitting(targetSize, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        header.frame = CGRect(x: 0, y: 0, width: size.width, height: max(size.height, 46))
+        tableView.tableHeaderView = header
+    }
+
+    private func setupTableView() {
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.backgroundColor = .systemBackground
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(WebsiteDataDetailCell.self, forCellReuseIdentifier: WebsiteDataDetailCell.reuseIdentifier)
+        tableView.rowHeight = 64
+        tableView.separatorInset = UIEdgeInsets(top: 0, left: 60, bottom: 0, right: 0)
+
+        view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+    }
+
+    private func fetchAndMatchRecords() {
+        let types = WKWebsiteDataStore.allWebsiteDataTypes()
+        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: types) { [weak self] records in
+            guard let self = self else { return }
+            let matched = SiteResourceHistoryStore.shared.queryExistingAssociatedRecords(for: self.mainDomain, in: records)
+            DispatchQueue.main.async {
+                self.matchedRecords = matched
+                self.summaryLabel.text = "主站 \(self.mainDomain) 当前存活的关联域名共 \(matched.count) 个。已自动跨分组比对现有及其他域名中的存储数据。"
+                self.tableView.reloadData()
+            }
+        }
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return matchedRecords.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        guard let cell = tableView.dequeueReusableCell(withIdentifier: WebsiteDataDetailCell.reuseIdentifier, for: indexPath) as? WebsiteDataDetailCell else {
+            return UITableViewCell()
+        }
+        let record = matchedRecords[indexPath.row]
+        let isLocked = CookieLockStore.shared.isLocked(domain: record.displayName)
+        cell.configure(record: record, isLocked: isLocked, showChevron: false, countText: "")
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row < matchedRecords.count else { return }
+        let record = matchedRecords[indexPath.row]
+        UIPasteboard.general.string = record.displayName
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        showToastNotice("已复制 \(record.displayName)")
     }
 }
 
@@ -246,12 +391,30 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
     private func updateRightBarButton() {
         let allLocked = !records.isEmpty && records.allSatisfy { CookieLockStore.shared.isLocked(domain: $0.displayName) }
         let title = allLocked ? "全部解锁" : "全部锁定"
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
+        let lockItem = UIBarButtonItem(
             title: title,
             style: .plain,
             target: self,
             action: #selector(handleToggleAllLock)
         )
+
+        if mainDomain != "其他域名" {
+            let queryItem = UIBarButtonItem(
+                title: "查询关联",
+                style: .plain,
+                target: self,
+                action: #selector(handleOpenQuery)
+            )
+            navigationItem.rightBarButtonItems = [lockItem, queryItem]
+        } else {
+            navigationItem.rightBarButtonItems = [lockItem]
+        }
+    }
+
+    @objc private func handleOpenQuery() {
+        let queryVC = AssociatedDomainsQueryViewController(mainDomain: mainDomain)
+        let nav = UINavigationController(rootViewController: queryVC)
+        present(nav, animated: true)
     }
 
     @objc private func handleToggleAllLock() {
@@ -281,12 +444,33 @@ final class WebsiteRelatedDomainsViewController: UIViewController, UITableViewDa
         label.numberOfLines = 0
 
         header.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.topAnchor.constraint(equalTo: header.topAnchor, constant: 12),
-            label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -12),
-            label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
-            label.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16)
-        ])
+
+        if mainDomain != "其他域名" {
+            let queryButton = UIButton(type: .system)
+            queryButton.translatesAutoresizingMaskIntoConstraints = false
+            queryButton.setTitle("查询关联域名", for: .normal)
+            queryButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+            queryButton.addTarget(self, action: #selector(handleOpenQuery), for: .touchUpInside)
+
+            header.addSubview(queryButton)
+
+            NSLayoutConstraint.activate([
+                label.topAnchor.constraint(equalTo: header.topAnchor, constant: 12),
+                label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+                label.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+
+                queryButton.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 8),
+                queryButton.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+                queryButton.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -10)
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                label.topAnchor.constraint(equalTo: header.topAnchor, constant: 12),
+                label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -12),
+                label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+                label.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16)
+            ])
+        }
 
         let targetSize = CGSize(width: UIScreen.main.bounds.width, height: UIView.layoutFittingCompressedSize.height)
         let size = header.systemLayoutSizeFitting(targetSize, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
