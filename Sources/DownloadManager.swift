@@ -1115,7 +1115,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         }
 
         let cell = tableView.cellForRow(at: indexPath) ?? tableView
-        shareFile(item, sourceView: cell)
+        showFileActionMenu(for: item, sourceView: cell)
     }
 
     override func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
@@ -1173,6 +1173,42 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
 
             return UIMenu(title: file.name, children: actions)
         }
+    }
+
+    private func showFileActionMenu(for file: DownloadedItem, sourceView: UIView) {
+        let sheet = UIAlertController(title: file.name, message: nil, preferredStyle: .actionSheet)
+        let ext = file.url.pathExtension.lowercased()
+        let isArchive = (ext == "zip" || ext == "gz")
+
+        if isArchive {
+            sheet.addAction(UIAlertAction(title: "解压", style: .default) { [weak self] _ in
+                self?.unzipArchiveFile(file)
+            })
+        }
+
+        sheet.addAction(UIAlertAction(title: "分享", style: .default) { [weak self] _ in
+            self?.shareFile(file, sourceView: sourceView)
+        })
+
+        if !file.isDirectory {
+            sheet.addAction(UIAlertAction(title: "文件预览", style: .default) { [weak self] _ in
+                self?.previewFile(file)
+            })
+        }
+
+        sheet.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+            self?.deleteFile(file)
+        })
+
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+
+        if let popover = sheet.popoverPresentationController {
+            popover.sourceView = sourceView
+            popover.sourceRect = sourceView.bounds
+            popover.permittedArrowDirections = [.up, .down]
+        }
+
+        present(sheet, animated: true)
     }
 
     private func unzipArchiveFile(_ file: DownloadedItem) {
