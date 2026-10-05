@@ -110,71 +110,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    private static let coreResourceScriptSource = """
-    (function() {
-        if (window.__simple_resource_tracker__) return;
-        window.__simple_resource_tracker__ = true;
-
-        function reportHosts(hosts) {
-            if (!hosts || hosts.length === 0) return;
-            try {
-                window.webkit.messageHandlers.ResourceBridge.postMessage({
-                    main: window.location.hostname,
-                    resources: hosts
-                });
-            } catch(e) {}
-        }
-
-        var reported = {};
-        function scanResources() {
-            try {
-                var found = [];
-                var entries = performance.getEntriesByType('resource');
-                for (var i = 0; i < entries.length; i++) {
-                    try {
-                        var h = new URL(entries[i].name).hostname;
-                        if (h && !reported[h]) {
-                            reported[h] = true;
-                            found.push(h);
-                        }
-                    } catch(e) {}
-                }
-                var nodes = document.querySelectorAll('script[src], link[href], img[src], video[src], audio[src], iframe[src], source[src]');
-                for (var j = 0; j < nodes.length; j++) {
-                    try {
-                        var src = nodes[j].src || nodes[j].href;
-                        if (src) {
-                            var h2 = new URL(src).hostname;
-                            if (h2 && !reported[h2]) {
-                                reported[h2] = true;
-                                found.push(h2);
-                            }
-                        }
-                    } catch(e) {}
-                }
-                if (found.length > 0) {
-                    reportHosts(found);
-                }
-            } catch(e) {}
-        }
-
-        if (window.PerformanceObserver) {
-            try {
-                var observer = new PerformanceObserver(function() {
-                    scanResources();
-                });
-                observer.observe({ entryTypes: ['resource'] });
-            } catch(e) {}
-        }
-
-        document.addEventListener('DOMContentLoaded', scanResources);
-        window.addEventListener('load', scanResources);
-        setTimeout(scanResources, 600);
-        setTimeout(scanResources, 2000);
-        setTimeout(scanResources, 4500);
-    })();
-    """
-
     private static let coreGMPolyfillScriptSource = """
     (function() {
         if (window.__gm_polyfilled__) return;
@@ -553,7 +488,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         userContentController.add(self, name: "DownloadBridge")
         userContentController.add(self, name: "ContextMenuBridge")
         userContentController.add(self, name: "HistoryBridge")
-        userContentController.add(self, name: "ResourceBridge")
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -661,16 +595,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             controller.addUserScript(script)
         }
 
-        let hasResource = controller.userScripts.contains { $0.source.contains("__simple_resource_tracker__") }
-        if !hasResource {
-            let script = WKUserScript(
-                source: Self.coreResourceScriptSource,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            )
-            controller.addUserScript(script)
-        }
-
         let hasGMPolyfill = controller.userScripts.contains { $0.source.contains("__gm_polyfilled__") }
         if !hasGMPolyfill {
             let script = WKUserScript(
@@ -731,7 +655,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "ContextMenuBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "HistoryBridge")
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "ResourceBridge")
         webView.load(URLRequest(url: URL(string: "about:blank")!))
         webView.removeFromSuperview()
         snapshot = nil
@@ -823,14 +746,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "ResourceBridge" {
-            guard let body = message.body as? [String: Any],
-                  let mainHost = body["main"] as? String,
-                  let resources = body["resources"] as? [String] else { return }
-            DomainRelationStore.shared.recordRelations(subDomains: resources, parentDomain: mainHost)
-            return
-        }
-
         if message.name == "HistoryBridge" {
             guard message.frameInfo.isMainFrame else { return }
             guard let body = message.body as? [String: Any],
@@ -1135,43 +1050,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     }
                 }
             }.resume()
-        }
-    }
-
-    func collectAndRecordPageResources() {
-        guard let mainHost = url?.host, !mainHost.isEmpty else { return }
-        DomainRelationStore.shared.recordPrimaryDomain(mainHost)
-        let js = """
-        (function() {
-            try {
-                var hosts = [];
-                var entries = performance.getEntriesByType('resource');
-                for (var i = 0; i < entries.length; i++) {
-                    try {
-                        var h = new URL(entries[i].name).hostname;
-                        if (h) hosts.push(h);
-                    } catch(e) {}
-                }
-                var nodes = document.querySelectorAll('script[src], link[href], img[src], video[src], audio[src], iframe[src], source[src]');
-                for (var j = 0; j < nodes.length; j++) {
-                    try {
-                        var src = nodes[j].src || nodes[j].href;
-                        if (src) {
-                            var h2 = new URL(src).hostname;
-                            if (h2) hosts.push(h2);
-                        }
-                    } catch(e) {}
-                }
-                return hosts;
-            } catch(e) {
-                return [];
-            }
-        })();
-        """
-        webView.evaluateJavaScript(js) { result, _ in
-            if let hosts = result as? [String], !hosts.isEmpty {
-                DomainRelationStore.shared.recordRelations(subDomains: hosts, parentDomain: mainHost)
-            }
         }
     }
 
@@ -1607,7 +1485,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
         }
         extractHighResFaviconIfNeeded()
-        collectAndRecordPageResources()
 
         if userScrolledDuringLoading {
             let currentOffset = webView.scrollView.contentOffset
@@ -1686,8 +1563,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             if let host = targetURL.host {
                 DomainRelationStore.shared.recordPrimaryDomain(host)
             }
-        } else if let subHost = targetURL.host, let parentHost = url?.host {
-            DomainRelationStore.shared.recordRelations(subDomains: [subHost], parentDomain: parentHost)
         }
 
         let selectedItem = UserAgentStore.shared.getSelectedItem()
