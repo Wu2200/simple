@@ -63,7 +63,23 @@ final class BackupManager {
     static let shared = BackupManager()
     private init() {}
 
+    func currentApplicationName() -> String {
+        let bundle = Bundle.main
+        let name = (bundle.infoDictionary?["CFBundleDisplayName"] as? String)
+            ?? (bundle.localizedInfoDictionary?["CFBundleDisplayName"] as? String)
+            ?? (bundle.infoDictionary?["CFBundleName"] as? String)
+            ?? "SimpleBrowser"
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "SimpleBrowser"
+        }
+        let invalidCharacters = CharacterSet(charactersIn: "\\/:*?\"<>|")
+        let sanitized = trimmed.components(separatedBy: invalidCharacters).joined()
+        return sanitized.isEmpty ? "SimpleBrowser" : sanitized
+    }
+
     func createBackupPackage(completion: @escaping (BrowserBackupPackage) -> Void) {
+        let appName = currentApplicationName()
         let bookmarks = BookmarkStore.shared.loadAllNodes()
         let shortcuts = HomeShortcutStore.shared.loadShortcuts()
         let history = BrowserHistoryStore.shared.loadHistory()
@@ -103,7 +119,7 @@ final class BackupManager {
             let package = BrowserBackupPackage(
                 version: 2,
                 exportedAt: Date(),
-                appName: "SimpleBrowser",
+                appName: appName,
                 bookmarks: bookmarks,
                 homeShortcuts: shortcuts,
                 history: history,
@@ -122,6 +138,7 @@ final class BackupManager {
     }
 
     func exportBackupFile(completion: @escaping (Result<URL, Error>) -> Void) {
+        let appName = currentApplicationName()
         createBackupPackage { package in
             do {
                 let encoder = JSONEncoder()
@@ -132,7 +149,7 @@ final class BackupManager {
                 let df = DateFormatter()
                 df.dateFormat = "yyyyMMdd_HHmmss"
                 let timestamp = df.string(from: Date())
-                let filename = "SimpleBrowser_Backup_\(timestamp).json"
+                let filename = "\(appName)_Backup_\(timestamp).json"
 
                 let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
                 try data.write(to: tempURL, options: .atomic)
@@ -221,11 +238,11 @@ extension BrowserViewController {
             preferredStyle: .actionSheet
         )
 
-        sheet.addAction(UIAlertAction(title: "备份并导出文件", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: "备份文件", style: .default) { [weak self] _ in
             self?.performExportBackup()
         })
 
-        sheet.addAction(UIAlertAction(title: "从备份文件恢复", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: "恢复文件", style: .default) { [weak self] _ in
             self?.presentDocumentPickerForRestore()
         })
 
