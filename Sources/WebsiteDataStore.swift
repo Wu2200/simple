@@ -28,12 +28,57 @@ struct MainDomainGroup {
 
 final class DomainRelationStore {
     static let shared = DomainRelationStore()
-    private let key = "browser_domain_relations_v1"
+    private let relationsKey = "browser_domain_relations_v2"
+    private let primaryKey = "browser_primary_domains_v2"
     private var relations: [String: String] = [:]
+    private var primaryDomains: Set<String> = []
     private let lock = NSLock()
 
     private init() {
-        relations = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        relations = UserDefaults.standard.dictionary(forKey: relationsKey) as? [String: String] ?? [:]
+        let primaries = UserDefaults.standard.stringArray(forKey: primaryKey) ?? []
+        primaryDomains = Set(primaries)
+    }
+
+    func recordPrimaryDomain(_ domain: String) {
+        let root = DomainRelationEngine.rootDomain(of: domain)
+        guard !root.isEmpty else { return }
+        lock.lock()
+        primaryDomains.insert(root)
+        relations.removeValue(forKey: root)
+        let primaries = Array(primaryDomains)
+        let copy = relations
+        lock.unlock()
+
+        UserDefaults.standard.set(primaries, forKey: primaryKey)
+        UserDefaults.standard.set(copy, forKey: relationsKey)
+    }
+
+    func recordRelations(subDomains: [String], parentDomain: String) {
+        let parentRoot = DomainRelationEngine.rootDomain(of: parentDomain)
+        guard !parentRoot.isEmpty else { return }
+
+        lock.lock()
+        primaryDomains.insert(parentRoot)
+        var changed = false
+        for sub in subDomains {
+            let subRoot = DomainRelationEngine.rootDomain(of: sub)
+            guard !subRoot.isEmpty, subRoot != parentRoot else { continue }
+            if !primaryDomains.contains(subRoot) {
+                if relations[subRoot] != parentRoot {
+                    relations[subRoot] = parentRoot
+                    changed = true
+                }
+            }
+        }
+        let copy = relations
+        let primaries = Array(primaryDomains)
+        lock.unlock()
+
+        if changed {
+            UserDefaults.standard.set(copy, forKey: relationsKey)
+            UserDefaults.standard.set(primaries, forKey: primaryKey)
+        }
     }
 
     func getParentDomain(for subDomain: String) -> String? {
@@ -41,36 +86,6 @@ final class DomainRelationStore {
         defer { lock.unlock() }
         let subRoot = DomainRelationEngine.rootDomain(of: subDomain)
         return relations[subRoot]
-    }
-
-    func recordRelation(subDomain: String, parentDomain: String) {
-        let subRoot = DomainRelationEngine.rootDomain(of: subDomain)
-        let parentRoot = DomainRelationEngine.rootDomain(of: parentDomain)
-        guard !subRoot.isEmpty, !parentRoot.isEmpty, subRoot != parentRoot else { return }
-
-        let ignoredDomains: Set<String> = [
-            "google.com", "baidu.com", "apple.com", "cloudflare.com", "akamai.net",
-            "jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com", "github.com",
-            "microsoft.com", "qq.com", "alipay.com", "wechat.com"
-        ]
-        if ignoredDomains.contains(subRoot) {
-            return
-        }
-
-        if DomainRelationEngine.companionMap.contains(where: { DomainRelationEngine.rootDomain(of: $0.keyword) == subRoot }) {
-            return
-        }
-
-        lock.lock()
-        if let existing = relations[subRoot], existing != parentRoot {
-            lock.unlock()
-            return
-        }
-        relations[subRoot] = parentRoot
-        let copy = relations
-        lock.unlock()
-
-        UserDefaults.standard.set(copy, forKey: key)
     }
 
     func getAllRelations() -> [String: String] {
@@ -81,26 +96,6 @@ final class DomainRelationStore {
 }
 
 enum DomainRelationEngine {
-    static let companionMap: [(keyword: String, targetRoot: String)] = [
-        ("oaistatic.com", "chatgpt.com"),
-        ("oaiusercontent.com", "chatgpt.com"),
-        ("githubassets.com", "github.com"),
-        ("githubusercontent.com", "github.com"),
-        ("hdslb.com", "bilibili.com"),
-        ("bilivideo.com", "bilibili.com"),
-        ("bdstatic.com", "baidu.com"),
-        ("baidupcs.com", "baidu.com"),
-        ("gstatic.com", "google.com"),
-        ("googleusercontent.com", "google.com"),
-        ("googleapis.com", "google.com"),
-        ("googlevideo.com", "youtube.com"),
-        ("ytimg.com", "youtube.com"),
-        ("zhimg.com", "zhihu.com"),
-        ("uxengine.net", "v2ex.com"),
-        ("asmr-200.com", "asmr.one"),
-        ("kiko-play-niptan.one", "asmr.one")
-    ]
-
     static func rootDomain(of domain: String) -> String {
         let clean = domain.trimmingCharacters(in: .whitespaces).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         let parts = clean.split(separator: ".").map(String.init)
@@ -140,17 +135,6 @@ enum DomainRelationEngine {
         if let p2 = DomainRelationStore.shared.getParentDomain(for: r2), (p2 == r1 || p2 == r2) {
             return true
         }
-
-        for item in companionMap {
-            let itemKeyRoot = rootDomain(of: item.keyword)
-            let itemTarRoot = rootDomain(of: item.targetRoot)
-
-            let match1 = (r1 == itemKeyRoot || r1 == itemTarRoot)
-            let match2 = (r2 == itemKeyRoot || r2 == itemTarRoot)
-            if match1 && match2 {
-                return true
-            }
-        }
         return false
     }
 
@@ -163,18 +147,9 @@ enum DomainRelationEngine {
             dict[root, default: []].append(record)
         }
 
-        for item in companionMap {
-            let compRoot = rootDomain(of: item.keyword)
-            let targetRoot = rootDomain(of: item.targetRoot)
-            if let compRecs = dict[compRoot], dict[targetRoot] != nil {
-                dict[targetRoot]?.append(contentsOf: compRecs)
-                dict.removeValue(forKey: compRoot)
-            }
-        }
-
         let learnedRelations = DomainRelationStore.shared.getAllRelations()
         for (subRoot, parentRoot) in learnedRelations {
-            if let compRecs = dict[subRoot], dict[parentRoot] != nil {
+            if subRoot != parentRoot, let compRecs = dict[subRoot], dict[parentRoot] != nil {
                 dict[parentRoot]?.append(contentsOf: compRecs)
                 dict.removeValue(forKey: subRoot)
             }
