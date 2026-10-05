@@ -24,18 +24,19 @@ struct MainDomainGroup {
     var hasCookies: Bool {
         return records.contains { $0.dataTypes.contains(WKWebsiteDataTypeCookies) }
     }
+
+    var isUnassociatedGroup: Bool {
+        return mainDomain == "未关联域名"
+    }
 }
 
 final class DomainRelationStore {
     static let shared = DomainRelationStore()
-    private let relationsKey = "browser_domain_relations_v2"
-    private let primaryKey = "browser_primary_domains_v2"
-    private var relations: [String: String] = [:]
+    private let primaryKey = "browser_primary_domains_v3"
     private var primaryDomains: Set<String> = []
     private let lock = NSLock()
 
     private init() {
-        relations = UserDefaults.standard.dictionary(forKey: relationsKey) as? [String: String] ?? [:]
         let primaries = UserDefaults.standard.stringArray(forKey: primaryKey) ?? []
         primaryDomains = Set(primaries)
     }
@@ -45,57 +46,38 @@ final class DomainRelationStore {
         guard !root.isEmpty else { return }
         lock.lock()
         primaryDomains.insert(root)
-        relations.removeValue(forKey: root)
         let primaries = Array(primaryDomains)
-        let copy = relations
         lock.unlock()
 
         UserDefaults.standard.set(primaries, forKey: primaryKey)
-        UserDefaults.standard.set(copy, forKey: relationsKey)
     }
 
-    func recordRelations(subDomains: [String], parentDomain: String) {
-        let parentRoot = DomainRelationEngine.rootDomain(of: parentDomain)
-        guard !parentRoot.isEmpty else { return }
-
-        lock.lock()
-        primaryDomains.insert(parentRoot)
-        var changed = false
-        for sub in subDomains {
-            let subRoot = DomainRelationEngine.rootDomain(of: sub)
-            guard !subRoot.isEmpty, subRoot != parentRoot else { continue }
-            if !primaryDomains.contains(subRoot) {
-                if relations[subRoot] != parentRoot {
-                    relations[subRoot] = parentRoot
-                    changed = true
-                }
-            }
-        }
-        let copy = relations
-        let primaries = Array(primaryDomains)
-        lock.unlock()
-
-        if changed {
-            UserDefaults.standard.set(copy, forKey: relationsKey)
-            UserDefaults.standard.set(primaries, forKey: primaryKey)
-        }
-    }
-
-    func getParentDomain(for subDomain: String) -> String? {
+    func isPrimaryDomain(_ domain: String) -> Bool {
+        let root = DomainRelationEngine.rootDomain(of: domain)
+        guard !root.isEmpty else { return false }
         lock.lock()
         defer { lock.unlock() }
-        let subRoot = DomainRelationEngine.rootDomain(of: subDomain)
-        return relations[subRoot]
-    }
-
-    func getAllRelations() -> [String: String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return relations
+        return primaryDomains.contains(root)
     }
 }
 
 enum DomainRelationEngine {
+    static let companionMap: [(keyword: String, targetRoot: String)] = [
+        ("asmr-200.com", "asmr.one"),
+        ("kiko-play-niptan.one", "asmr.one"),
+        ("hdslb.com", "bilibili.com"),
+        ("bilivideo.com", "bilibili.com"),
+        ("googlevideo.com", "youtube.com"),
+        ("ytimg.com", "youtube.com"),
+        ("githubassets.com", "github.com"),
+        ("githubusercontent.com", "github.com"),
+        ("bdstatic.com", "baidu.com"),
+        ("baidupcs.com", "baidu.com"),
+        ("zhimg.com", "zhihu.com"),
+        ("oaistatic.com", "chatgpt.com"),
+        ("oaiusercontent.com", "chatgpt.com")
+    ]
+
     static func rootDomain(of domain: String) -> String {
         let clean = domain.trimmingCharacters(in: .whitespaces).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         let parts = clean.split(separator: ".").map(String.init)
@@ -129,11 +111,14 @@ enum DomainRelationEngine {
         let r2 = rootDomain(of: d2)
         if !r1.isEmpty && r1 == r2 { return true }
 
-        if let p1 = DomainRelationStore.shared.getParentDomain(for: r1), (p1 == r2 || p1 == r1) {
-            return true
-        }
-        if let p2 = DomainRelationStore.shared.getParentDomain(for: r2), (p2 == r1 || p2 == r2) {
-            return true
+        for item in companionMap {
+            let itemKeyRoot = rootDomain(of: item.keyword)
+            let itemTarRoot = rootDomain(of: item.targetRoot)
+            let match1 = (r1 == itemKeyRoot || r1 == itemTarRoot)
+            let match2 = (r2 == itemKeyRoot || r2 == itemTarRoot)
+            if match1 && match2 {
+                return true
+            }
         }
         return false
     }
@@ -147,16 +132,21 @@ enum DomainRelationEngine {
             dict[root, default: []].append(record)
         }
 
-        let learnedRelations = DomainRelationStore.shared.getAllRelations()
-        for (subRoot, parentRoot) in learnedRelations {
-            if subRoot != parentRoot, let compRecs = dict[subRoot], dict[parentRoot] != nil {
-                dict[parentRoot]?.append(contentsOf: compRecs)
-                dict.removeValue(forKey: subRoot)
+        for item in companionMap {
+            let compRoot = rootDomain(of: item.keyword)
+            let targetRoot = rootDomain(of: item.targetRoot)
+            if let compRecs = dict[compRoot] {
+                dict[targetRoot, default: []].append(contentsOf: compRecs)
+                dict.removeValue(forKey: compRoot)
             }
         }
 
-        var groups: [MainDomainGroup] = []
-        for (mainDomain, groupRecords) in dict {
+        let companionTargets = Set(companionMap.map { rootDomain(of: $0.targetRoot) })
+
+        var primaryGroups: [MainDomainGroup] = []
+        var unassociatedRecords: [WKWebsiteDataRecord] = []
+
+        for (domain, groupRecords) in dict {
             var seen = Set<String>()
             var uniqueRecords: [WKWebsiteDataRecord] = []
             for r in groupRecords {
@@ -169,8 +159,8 @@ enum DomainRelationEngine {
             let sortedRecords = uniqueRecords.sorted { r1, r2 in
                 let h1 = r1.displayName.lowercased()
                 let h2 = r2.displayName.lowercased()
-                if h1 == mainDomain { return true }
-                if h2 == mainDomain { return false }
+                if h1 == domain { return true }
+                if h2 == domain { return false }
                 let lock1 = CookieLockStore.shared.isLocked(domain: r1.displayName)
                 let lock2 = CookieLockStore.shared.isLocked(domain: r2.displayName)
                 if lock1 != lock2 { return lock1 && !lock2 }
@@ -180,10 +170,25 @@ enum DomainRelationEngine {
                 return h1 < h2
             }
 
-            groups.append(MainDomainGroup(mainDomain: mainDomain, records: sortedRecords))
+            let hasCookies = sortedRecords.contains { $0.dataTypes.contains(WKWebsiteDataTypeCookies) }
+            let hasStorage = sortedRecords.contains {
+                $0.dataTypes.contains(WKWebsiteDataTypeLocalStorage) ||
+                $0.dataTypes.contains(WKWebsiteDataTypeIndexedDBDatabases) ||
+                $0.dataTypes.contains(WKWebsiteDataTypeWebSQLDatabases) ||
+                $0.dataTypes.contains(WKWebsiteDataTypeSessionStorage)
+            }
+            let isVisitedPrimary = DomainRelationStore.shared.isPrimaryDomain(domain)
+            let isLocked = CookieLockStore.shared.isLocked(domain: domain) || sortedRecords.contains { CookieLockStore.shared.isLocked(domain: $0.displayName) }
+            let isCompanionTarget = companionTargets.contains(domain)
+
+            if hasCookies || hasStorage || isVisitedPrimary || isLocked || isCompanionTarget {
+                primaryGroups.append(MainDomainGroup(mainDomain: domain, records: sortedRecords))
+            } else {
+                unassociatedRecords.append(contentsOf: sortedRecords)
+            }
         }
 
-        return groups.sorted { g1, g2 in
+        primaryGroups.sort { g1, g2 in
             let lock1 = g1.hasLocked
             let lock2 = g2.hasLocked
             if lock1 != lock2 { return lock1 && !lock2 }
@@ -192,6 +197,21 @@ enum DomainRelationEngine {
             if cookie1 != cookie2 { return cookie1 && !cookie2 }
             return g1.mainDomain.localizedCaseInsensitiveCompare(g2.mainDomain) == .orderedAscending
         }
+
+        if !unassociatedRecords.isEmpty {
+            var unassocSeen = Set<String>()
+            var uniqueUnassoc: [WKWebsiteDataRecord] = []
+            for r in unassociatedRecords {
+                if !unassocSeen.contains(r.displayName) {
+                    unassocSeen.insert(r.displayName)
+                    uniqueUnassoc.append(r)
+                }
+            }
+            uniqueUnassoc.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            primaryGroups.append(MainDomainGroup(mainDomain: "未关联域名", records: uniqueUnassoc))
+        }
+
+        return primaryGroups
     }
 }
 
