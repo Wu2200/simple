@@ -30,6 +30,86 @@ struct MainDomainGroup {
     }
 }
 
+final class SiteResourceHistoryStore {
+    static let shared = SiteResourceHistoryStore()
+    private let key = "browser_site_resource_history_v2"
+    private var history: [String: [String]] = [:]
+    private let lock = NSLock()
+
+    private init() {
+        history = UserDefaults.standard.dictionary(forKey: key) as? [String: [String]] ?? [:]
+    }
+
+    func recordResources(subDomains: [String], forMainDomain mainDomain: String) {
+        let parentRoot = DomainRelationEngine.rootDomain(of: mainDomain)
+        guard !parentRoot.isEmpty else { return }
+
+        lock.lock()
+        var existing = Set(history[parentRoot] ?? [])
+        var changed = false
+
+        for sub in subDomains {
+            let cleanSub = sub.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let subRoot = DomainRelationEngine.rootDomain(of: cleanSub)
+            guard !cleanSub.isEmpty, !subRoot.isEmpty, subRoot != parentRoot else { continue }
+            if !existing.contains(cleanSub) {
+                existing.insert(cleanSub)
+                changed = true
+            }
+            if !existing.contains(subRoot) {
+                existing.insert(subRoot)
+                changed = true
+            }
+        }
+
+        if changed {
+            history[parentRoot] = Array(existing)
+            let copy = history
+            lock.unlock()
+            UserDefaults.standard.set(copy, forKey: key)
+        } else {
+            lock.unlock()
+        }
+    }
+
+    func getAssociatedDomains(for mainDomain: String) -> Set<String> {
+        let parentRoot = DomainRelationEngine.rootDomain(of: mainDomain)
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(history[parentRoot] ?? [])
+    }
+
+    func queryExistingAssociatedRecords(for mainDomain: String, in records: [WKWebsiteDataRecord]) -> [WKWebsiteDataRecord] {
+        let parentRoot = DomainRelationEngine.rootDomain(of: mainDomain)
+        let associated = getAssociatedDomains(for: mainDomain)
+
+        var matched: [WKWebsiteDataRecord] = []
+        var seen = Set<String>()
+
+        for record in records {
+            let name = record.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let root = DomainRelationEngine.rootDomain(of: name)
+
+            let isSelf = (root == parentRoot || name == parentRoot || name == mainDomain.lowercased())
+            let isRecordedAssociated = associated.contains(name) || associated.contains(root)
+
+            if isSelf || isRecordedAssociated {
+                if !seen.contains(record.displayName) {
+                    seen.insert(record.displayName)
+                    matched.append(record)
+                }
+            }
+        }
+
+        return matched.sorted { r1, r2 in
+            let isSelf1 = DomainRelationEngine.rootDomain(of: r1.displayName) == parentRoot
+            let isSelf2 = DomainRelationEngine.rootDomain(of: r2.displayName) == parentRoot
+            if isSelf1 != isSelf2 { return isSelf1 && !isSelf2 }
+            return r1.displayName.localizedCaseInsensitiveCompare(r2.displayName) == .orderedAscending
+        }
+    }
+}
+
 final class DomainRelationStore {
     static let shared = DomainRelationStore()
     private let primaryKey = "browser_primary_domains_v3"
