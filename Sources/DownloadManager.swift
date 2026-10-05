@@ -913,6 +913,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
     private var currentDirectory: URL
     private var files: [DownloadedItem] = []
     private var docController: UIDocumentInteractionController?
+    private weak var currentToastView: UIView?
 
     init(directoryURL: URL? = nil) {
         self.currentDirectory = directoryURL ?? DownloadCoordinator.getDownloadsDirectory()
@@ -1211,6 +1212,72 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
         present(sheet, animated: true)
     }
 
+    private func showToastNotice(_ text: String) {
+        currentToastView?.layer.removeAllAnimations()
+        currentToastView?.removeFromSuperview()
+
+        guard let hostView = navigationController?.view ?? view else { return }
+
+        let toast = UIView()
+        toast.translatesAutoresizingMaskIntoConstraints = false
+        toast.backgroundColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1.0) : UIColor.white
+        }
+        toast.layer.cornerRadius = 16
+        toast.layer.cornerCurve = .continuous
+        toast.layer.borderWidth = 0.5
+        toast.layer.borderColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(white: 0.32, alpha: 1.0) : UIColor(white: 0.88, alpha: 1.0)
+        }.cgColor
+        toast.layer.shadowColor = UIColor.black.cgColor
+        toast.layer.shadowOpacity = 0.08
+        toast.layer.shadowOffset = CGSize(width: 0, height: 3)
+        toast.layer.shadowRadius = 8
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = text
+        label.font = .systemFont(ofSize: 13.5, weight: .medium)
+        label.textColor = .label
+        label.textAlignment = .center
+        label.lineBreakMode = .byTruncatingMiddle
+        label.numberOfLines = 1
+        toast.addSubview(label)
+
+        hostView.addSubview(toast)
+        currentToastView = toast
+
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: toast.topAnchor, constant: 9),
+            label.bottomAnchor.constraint(equalTo: toast.bottomAnchor, constant: -9),
+            label.leadingAnchor.constraint(equalTo: toast.leadingAnchor, constant: 18),
+            label.trailingAnchor.constraint(equalTo: toast.trailingAnchor, constant: -18),
+
+            toast.centerXAnchor.constraint(equalTo: hostView.centerXAnchor),
+            toast.leadingAnchor.constraint(greaterThanOrEqualTo: hostView.leadingAnchor, constant: 24),
+            toast.trailingAnchor.constraint(lessThanOrEqualTo: hostView.trailingAnchor, constant: -24),
+            toast.bottomAnchor.constraint(equalTo: hostView.safeAreaLayoutGuide.bottomAnchor, constant: -32)
+        ])
+
+        toast.alpha = 0
+        toast.transform = CGAffineTransform(scaleX: 0.9, y: 0.9)
+
+        UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseOut, animations: {
+            toast.alpha = 1
+            toast.transform = .identity
+        })
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak toast] in
+            guard let toast = toast else { return }
+            UIView.animate(withDuration: 0.2, animations: {
+                toast.alpha = 0
+                toast.transform = CGAffineTransform(scaleX: 0.9, y: 0.9)
+            }) { _ in
+                toast.removeFromSuperview()
+            }
+        }
+    }
+
     private func unzipArchiveFile(_ file: DownloadedItem) {
         let rawBase = (file.name as NSString).deletingPathExtension
         var destDir = currentDirectory.appendingPathComponent(rawBase, isDirectory: true)
@@ -1224,9 +1291,7 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
             try ZipExtractor.unzip(archiveURL: file.url, destinationURL: destDir)
             try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: destDir.path)
             loadDownloadedFiles()
-            let alert = UIAlertController(title: "解压完成", message: "已解压至: \(destDir.lastPathComponent)", preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "确定", style: .default))
-            present(alert, animated: true)
+            showToastNotice("已解压至: \(destDir.lastPathComponent)")
         } catch {
             let alert = UIAlertController(title: "解压失败", message: error.localizedDescription, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "确定", style: .default))
