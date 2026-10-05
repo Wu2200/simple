@@ -26,6 +26,60 @@ struct MainDomainGroup {
     }
 }
 
+final class DomainRelationStore {
+    static let shared = DomainRelationStore()
+    private let key = "browser_domain_relations_v1"
+    private var relations: [String: String] = [:]
+    private let lock = NSLock()
+
+    private init() {
+        relations = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+    }
+
+    func getParentDomain(for subDomain: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let subRoot = DomainRelationEngine.rootDomain(of: subDomain)
+        return relations[subRoot]
+    }
+
+    func recordRelation(subDomain: String, parentDomain: String) {
+        let subRoot = DomainRelationEngine.rootDomain(of: subDomain)
+        let parentRoot = DomainRelationEngine.rootDomain(of: parentDomain)
+        guard !subRoot.isEmpty, !parentRoot.isEmpty, subRoot != parentRoot else { return }
+
+        let ignoredDomains: Set<String> = [
+            "google.com", "baidu.com", "apple.com", "cloudflare.com", "akamai.net",
+            "jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com", "github.com",
+            "microsoft.com", "qq.com", "alipay.com", "wechat.com"
+        ]
+        if ignoredDomains.contains(subRoot) {
+            return
+        }
+
+        if DomainRelationEngine.companionMap.contains(where: { DomainRelationEngine.rootDomain(of: $0.keyword) == subRoot }) {
+            return
+        }
+
+        lock.lock()
+        if let existing = relations[subRoot], existing != parentRoot {
+            lock.unlock()
+            return
+        }
+        relations[subRoot] = parentRoot
+        let copy = relations
+        lock.unlock()
+
+        UserDefaults.standard.set(copy, forKey: key)
+    }
+
+    func getAllRelations() -> [String: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return relations
+    }
+}
+
 enum DomainRelationEngine {
     static let companionMap: [(keyword: String, targetRoot: String)] = [
         ("oaistatic.com", "chatgpt.com"),
@@ -42,7 +96,9 @@ enum DomainRelationEngine {
         ("googlevideo.com", "youtube.com"),
         ("ytimg.com", "youtube.com"),
         ("zhimg.com", "zhihu.com"),
-        ("uxengine.net", "v2ex.com")
+        ("uxengine.net", "v2ex.com"),
+        ("asmr-200.com", "asmr.one"),
+        ("kiko-play-niptan.one", "asmr.one")
     ]
 
     static func rootDomain(of domain: String) -> String {
@@ -78,6 +134,13 @@ enum DomainRelationEngine {
         let r2 = rootDomain(of: d2)
         if !r1.isEmpty && r1 == r2 { return true }
 
+        if let p1 = DomainRelationStore.shared.getParentDomain(for: r1), (p1 == r2 || p1 == r1) {
+            return true
+        }
+        if let p2 = DomainRelationStore.shared.getParentDomain(for: r2), (p2 == r1 || p2 == r2) {
+            return true
+        }
+
         for item in companionMap {
             let itemKeyRoot = rootDomain(of: item.keyword)
             let itemTarRoot = rootDomain(of: item.targetRoot)
@@ -106,6 +169,14 @@ enum DomainRelationEngine {
             if let compRecs = dict[compRoot], dict[targetRoot] != nil {
                 dict[targetRoot]?.append(contentsOf: compRecs)
                 dict.removeValue(forKey: compRoot)
+            }
+        }
+
+        let learnedRelations = DomainRelationStore.shared.getAllRelations()
+        for (subRoot, parentRoot) in learnedRelations {
+            if let compRecs = dict[subRoot], dict[parentRoot] != nil {
+                dict[parentRoot]?.append(contentsOf: compRecs)
+                dict.removeValue(forKey: subRoot)
             }
         }
 
