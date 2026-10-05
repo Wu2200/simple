@@ -25,6 +25,19 @@ struct ActiveDownloadItem {
     var isRetrying: Bool
 }
 
+private var downloadTaskIDKey: UInt8 = 0
+
+extension WKDownload {
+    var associatedTaskID: String? {
+        get {
+            objc_getAssociatedObject(self, &downloadTaskIDKey) as? String
+        }
+        set {
+            objc_setAssociatedObject(self, &downloadTaskIDKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
+}
+
 final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
     let id: String
     let filename: String
@@ -290,6 +303,7 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     private var wkDownloadInstances: [String: WKDownload] = [:]
     private var progressObservations: [ObjectIdentifier: NSKeyValueObservation] = [:]
     private var cancelledTaskIDs: Set<String> = []
+    private var finishedTaskIDs: Set<String> = []
     private var persistedTasks: [String: PersistedDownloadTask] = [:]
     private var lastPersistTime: [String: TimeInterval] = [:]
 
@@ -418,9 +432,40 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         }
     }
 
+    private func finishTask(id: String, filename: String) {
+        finishedTaskIDs.insert(id)
+        activeTasks.removeValue(forKey: id)
+        activeStreamTasks.removeValue(forKey: id)
+        removePersistedTask(id: id)
+
+        if let download = wkDownloadInstances.removeValue(forKey: id) {
+            let downloadID = ObjectIdentifier(download)
+            progressObservations[downloadID]?.invalidate()
+            progressObservations.removeValue(forKey: downloadID)
+            wkDownloads.removeValue(forKey: downloadID)
+        }
+
+        let tempURL = Self.getDownloadsDirectory().appendingPathComponent(".tmp_\(id).part")
+        try? FileManager.default.removeItem(at: tempURL)
+
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DownloadFinishedNotification"),
+                object: filename,
+                userInfo: ["taskId": id]
+            )
+        }
+    }
+
     private func attachCallbacks(to streamTask: StreamDownloadTask) {
         streamTask.onProgress = { [weak self] t in
-            guard let self = self else { return }
+            guard let self = self,
+                  !self.finishedTaskIDs.contains(t.id),
+                  !self.cancelledTaskIDs.contains(t.id),
+                  self.activeTasks[t.id] != nil else {
+                return
+            }
+
             let p = t.totalBytes > 0 ? Float(t.writtenBytes) / Float(t.totalBytes) : 0
             self.activeTasks[t.id] = ActiveDownloadItem(
                 id: t.id,
@@ -447,19 +492,11 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         }
 
         streamTask.onFinished = { [weak self] t, finalName in
-            guard let self = self else { return }
-            self.activeStreamTasks.removeValue(forKey: t.id)
-            self.activeTasks.removeValue(forKey: t.id)
-            self.removePersistedTask(id: t.id)
-            NotificationCenter.default.post(
-                name: NSNotification.Name("DownloadFinishedNotification"),
-                object: finalName,
-                userInfo: ["taskId": t.id]
-            )
+            self?.finishTask(id: t.id, filename: finalName)
         }
 
         streamTask.onFailed = { [weak self] t, err in
-            guard let self = self else { return }
+            guard let self = self, !self.finishedTaskIDs.contains(t.id) else { return }
             self.activeTasks[t.id] = ActiveDownloadItem(
                 id: t.id,
                 filename: t.filename,
@@ -490,6 +527,9 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         let uniqueName = targetURL.lastPathComponent
 
         let taskID = UUID().uuidString
+        finishedTaskIDs.remove(taskID)
+        cancelledTaskIDs.remove(taskID)
+
         let streamTask = StreamDownloadTask(id: taskID, filename: uniqueName, url: url, targetURL: targetURL)
         activeStreamTasks[taskID] = streamTask
 
@@ -557,6 +597,8 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
 
     func manualRetry(taskId: String) {
         cancelledTaskIDs.remove(taskId)
+        finishedTaskIDs.remove(taskId)
+
         if let streamTask = activeStreamTasks[taskId] {
             activeTasks[taskId] = ActiveDownloadItem(
                 id: taskId,
@@ -650,6 +692,10 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
                             let targetURL = Self.uniqueDestinationURL(for: filename, in: destDir)
 
                             let taskID = UUID().uuidString
+                            download.associatedTaskID = taskID
+                            self.finishedTaskIDs.remove(taskID)
+                            self.cancelledTaskIDs.remove(taskID)
+
                             self.wkDownloads[downloadID] = taskID
                             self.wkDownloadInstances[taskID] = download
 
@@ -671,6 +717,12 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
                                 let written = p.completedUnitCount
                                 let total = p.totalUnitCount
                                 DispatchQueue.main.async {
+                                    guard !self.finishedTaskIDs.contains(taskID),
+                                          !self.cancelledTaskIDs.contains(taskID),
+                                          self.activeTasks[taskID] != nil else {
+                                        return
+                                    }
+
                                     self.activeTasks[taskID] = ActiveDownloadItem(
                                         id: taskID,
                                         filename: targetURL.lastPathComponent,
@@ -692,6 +744,20 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
                                             "total": total
                                         ]
                                     )
+
+                                    if currentProgress >= 1.0 || (total > 0 && written >= total) {
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                                            guard let self = self,
+                                                  self.activeTasks[taskID] != nil,
+                                                  !self.finishedTaskIDs.contains(taskID) else {
+                                                return
+                                            }
+                                            let checkFile = destDir.appendingPathComponent(targetURL.lastPathComponent)
+                                            if FileManager.default.fileExists(atPath: checkFile.path) {
+                                                self.finishTask(id: taskID, filename: targetURL.lastPathComponent)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             self.progressObservations[downloadID] = obs
@@ -713,27 +779,21 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
 
     func downloadDidFinish(_ download: WKDownload) {
         let downloadID = ObjectIdentifier(download)
-        guard let taskID = wkDownloads.removeValue(forKey: downloadID) else { return }
-        progressObservations[downloadID]?.invalidate()
-        progressObservations.removeValue(forKey: downloadID)
-        wkDownloadInstances.removeValue(forKey: taskID)
-        let item = activeTasks.removeValue(forKey: taskID)
-
-        NotificationCenter.default.post(
-            name: NSNotification.Name("DownloadFinishedNotification"),
-            object: item?.filename ?? nil,
-            userInfo: ["taskId": taskID]
-        )
+        let taskID = download.associatedTaskID ?? wkDownloads[downloadID]
+        guard let taskID = taskID else { return }
+        let filename = activeTasks[taskID]?.filename ?? "文件"
+        finishTask(id: taskID, filename: filename)
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         let downloadID = ObjectIdentifier(download)
-        guard let taskID = wkDownloads.removeValue(forKey: downloadID) else { return }
+        let taskID = download.associatedTaskID ?? wkDownloads.removeValue(forKey: downloadID)
+        guard let taskID = taskID else { return }
         progressObservations[downloadID]?.invalidate()
         progressObservations.removeValue(forKey: downloadID)
         wkDownloadInstances.removeValue(forKey: taskID)
 
-        if cancelledTaskIDs.contains(taskID) {
+        if cancelledTaskIDs.contains(taskID) || finishedTaskIDs.contains(taskID) {
             activeTasks.removeValue(forKey: taskID)
             return
         }
@@ -956,14 +1016,24 @@ final class DownloadManagerViewController: UITableViewController, UIDocumentInte
     }
 
     @objc private func handleProgressChanged(_ notification: Notification) {
-        guard let taskID = notification.userInfo?["taskId"] as? String,
-              let task = DownloadCoordinator.shared.activeTasks[taskID] else {
+        guard let taskID = notification.userInfo?["taskId"] as? String else {
             return
         }
+        guard let task = DownloadCoordinator.shared.activeTasks[taskID] else {
+            loadDownloadedFiles()
+            return
+        }
+
+        var foundCell = false
         for cell in tableView.visibleCells {
             if let progressCell = cell as? DownloadProgressCell, progressCell.taskID == taskID {
                 progressCell.configure(with: task)
+                foundCell = true
             }
+        }
+
+        if !foundCell {
+            loadDownloadedFiles()
         }
     }
 
