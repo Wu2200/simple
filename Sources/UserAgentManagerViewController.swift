@@ -205,7 +205,7 @@ final class UserAgentManagerViewController: UITableViewController {
         tableView.separatorStyle = .none
         tableView.backgroundColor = .systemGroupedBackground
         tableView.register(UserAgentCardCell.self, forCellReuseIdentifier: "UserAgentCardCell")
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "AddUARowCell")
+        tableView.register(AddUserAgentCardCell.self, forCellReuseIdentifier: "AddUserAgentCardCell")
 
         navigationItem.rightBarButtonItem = nil
         navigationItem.leftBarButtonItem = UIBarButtonItem(
@@ -228,6 +228,7 @@ final class UserAgentManagerViewController: UITableViewController {
     }
 
     @objc private func handleDone() {
+        onUASelected?(UserAgentStore.shared.getSelectedItem())
         dismiss(animated: true)
     }
 
@@ -241,25 +242,21 @@ final class UserAgentManagerViewController: UITableViewController {
             tf.autocapitalizationType = .none
             tf.autocorrectionType = .no
         }
-
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "添加", style: .default) { [weak self] _ in
             guard let name = alert.textFields?[0].text?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
                   let ua = alert.textFields?[1].text?.trimmingCharacters(in: .whitespaces), !ua.isEmpty else { return }
-
             UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: category)
             self?.loadData()
             let allCustom = UserAgentStore.shared.loadCustomItems()
             if let newItem = allCustom.last(where: { $0.name == name && $0.category == category }) {
                 if isMobile {
                     UserAgentStore.shared.setSelectedMobileId(newItem.id)
-                    UserAgentStore.shared.currentMode = .mobile
                 } else {
                     UserAgentStore.shared.setSelectedDesktopId(newItem.id)
-                    UserAgentStore.shared.currentMode = .desktop
                 }
-                self?.onUASelected?(newItem)
-                self?.dismiss(animated: true)
+                self?.tableView.reloadData()
+                self?.onUASelected?(UserAgentStore.shared.getSelectedItem())
             }
         })
         present(alert, animated: true)
@@ -277,15 +274,21 @@ final class UserAgentManagerViewController: UITableViewController {
             tf.autocapitalizationType = .none
             tf.autocorrectionType = .no
         }
-
         alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
             guard let name = alert.textFields?[0].text?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
                   let ua = alert.textFields?[1].text?.trimmingCharacters(in: .whitespaces), !ua.isEmpty else { return }
-
             if item.isCustom {
                 UserAgentStore.shared.updateCustomItem(id: item.id, name: name, uaString: ua)
             } else {
                 UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: item.category)
+                let allCustom = UserAgentStore.shared.loadCustomItems()
+                if let added = allCustom.last(where: { $0.name == name && $0.category == item.category }) {
+                    if item.category == .mobile {
+                        UserAgentStore.shared.setSelectedMobileId(added.id)
+                    } else {
+                        UserAgentStore.shared.setSelectedDesktopId(added.id)
+                    }
+                }
             }
             self?.loadData()
             let currentItem = UserAgentStore.shared.getSelectedItem()
@@ -315,7 +318,7 @@ final class UserAgentManagerViewController: UITableViewController {
         let presetsCount = (indexPath.section == 0) ? mobilePresets.count : desktopPresets.count
         let customsCount = (indexPath.section == 0) ? customMobileItems.count : customDesktopItems.count
         if indexPath.row == presetsCount + customsCount {
-            return 48
+            return 52
         }
         return 68
     }
@@ -327,17 +330,8 @@ final class UserAgentManagerViewController: UITableViewController {
         let totalItems = presets.count + customs.count
 
         if indexPath.row == totalItems {
-            let cell = tableView.dequeueReusableCell(withIdentifier: "AddUARowCell", for: indexPath)
-            var config = cell.defaultContentConfiguration()
-            config.text = isMobile ? "+ 添加自定义移动版标识" : "+ 添加自定义电脑版标识"
-            config.textProperties.color = .systemBlue
-            config.textProperties.alignment = .center
-            config.textProperties.font = .systemFont(ofSize: 15, weight: .medium)
-            cell.contentConfiguration = config
-            cell.backgroundColor = .secondarySystemGroupedBackground
-            cell.layer.cornerRadius = 12
-            cell.clipsToBounds = true
-            cell.selectionStyle = .default
+            let cell = tableView.dequeueReusableCell(withIdentifier: "AddUserAgentCardCell", for: indexPath) as! AddUserAgentCardCell
+            cell.configure(isMobile: isMobile)
             return cell
         }
 
@@ -351,9 +345,9 @@ final class UserAgentManagerViewController: UITableViewController {
 
         let isSelected: Bool
         if isMobile {
-            isSelected = (item.id == UserAgentStore.shared.getSelectedMobileId() && UserAgentStore.shared.currentMode == .mobile)
+            isSelected = (item.id == UserAgentStore.shared.getSelectedMobileId())
         } else {
-            isSelected = (item.id == UserAgentStore.shared.getSelectedDesktopId() && UserAgentStore.shared.currentMode == .desktop)
+            isSelected = (item.id == UserAgentStore.shared.getSelectedDesktopId())
         }
 
         cell.configure(item: item, isSelected: isSelected)
@@ -362,7 +356,6 @@ final class UserAgentManagerViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-
         let isMobile = (indexPath.section == 0)
         let presets = isMobile ? mobilePresets : desktopPresets
         let customs = isMobile ? customMobileItems : customDesktopItems
@@ -382,15 +375,12 @@ final class UserAgentManagerViewController: UITableViewController {
 
         if isMobile {
             UserAgentStore.shared.setSelectedMobileId(item.id)
-            UserAgentStore.shared.currentMode = .mobile
         } else {
             UserAgentStore.shared.setSelectedDesktopId(item.id)
-            UserAgentStore.shared.currentMode = .desktop
         }
-        tableView.reloadData()
 
-        onUASelected?(item)
-        dismiss(animated: true)
+        tableView.reloadData()
+        onUASelected?(UserAgentStore.shared.getSelectedItem())
     }
 
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
@@ -415,7 +405,6 @@ final class UserAgentManagerViewController: UITableViewController {
 
         let customIndex = indexPath.row - presets.count
         let item = customs[customIndex]
-
         let editAction = UIContextualAction(style: .normal, title: "编辑") { [weak self] _, _, completion in
             self?.showEditUAAlert(item: item)
             completion(true)
@@ -497,5 +486,78 @@ final class UserAgentCardCell: UITableViewCell {
         titleLabel.text = item.name
         subtitleLabel.text = item.uaString
         checkmarkImageView.isHidden = !isSelected
+    }
+
+    override func setHighlighted(_ highlighted: Bool, animated: Bool) {
+        super.setHighlighted(highlighted, animated: animated)
+        UIView.animate(withDuration: 0.15) {
+            self.cardView.alpha = highlighted ? 0.7 : 1.0
+        }
+    }
+}
+
+final class AddUserAgentCardCell: UITableViewCell {
+    private let cardView = UIView()
+    private let iconImageView = UIImageView()
+    private let titleLabel = UILabel()
+    private let contentStack = UIStackView()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+        selectionStyle = .none
+
+        cardView.translatesAutoresizingMaskIntoConstraints = false
+        cardView.backgroundColor = .secondarySystemGroupedBackground
+        cardView.layer.cornerRadius = 12
+        cardView.clipsToBounds = true
+
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        iconImageView.image = UIImage(
+            systemName: "plus",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        )
+        iconImageView.tintColor = .systemBlue
+        iconImageView.contentMode = .scaleAspectFit
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        titleLabel.textColor = .systemBlue
+
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.axis = .horizontal
+        contentStack.alignment = .center
+        contentStack.spacing = 6
+        contentStack.addArrangedSubview(iconImageView)
+        contentStack.addArrangedSubview(titleLabel)
+
+        cardView.addSubview(contentStack)
+        contentView.addSubview(cardView)
+
+        NSLayoutConstraint.activate([
+            cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+            cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 4),
+            cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -4),
+
+            contentStack.centerXAnchor.constraint(equalTo: cardView.centerXAnchor),
+            contentStack.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
+
+            iconImageView.widthAnchor.constraint(equalToConstant: 16),
+            iconImageView.heightAnchor.constraint(equalToConstant: 16)
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(isMobile: Bool) {
+        titleLabel.text = isMobile ? "添加自定义移动版标识" : "添加自定义电脑版标识"
+    }
+
+    override func setHighlighted(_ highlighted: Bool, animated: Bool) {
+        super.setHighlighted(highlighted, animated: animated)
+        UIView.animate(withDuration: 0.15) {
+            self.cardView.alpha = highlighted ? 0.7 : 1.0
+        }
     }
 }
