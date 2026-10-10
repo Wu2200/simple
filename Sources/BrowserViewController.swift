@@ -1739,6 +1739,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    private func isIPv4Host(_ host: String) -> Bool {
+        let parts = host.split(separator: ".")
+        guard parts.count == 4 else { return false }
+        for part in parts {
+            guard let num = Int(part), num >= 0 && num <= 255 else { return false }
+        }
+        return true
+    }
+
     func destinationURL(from input: String) -> URL? {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
@@ -1761,12 +1770,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         let lower = value.lowercased()
-        let isLocal = lower.hasPrefix("localhost") || lower.hasPrefix("127.0.0.1")
+        let hostPart = lower.components(separatedBy: "/").first?.components(separatedBy: ":").first ?? ""
+        let isHttpByDefault = isIPv4Host(hostPart) ||
+            hostPart == "localhost" ||
+            hostPart.hasSuffix(".local") ||
+            hostPart == "::1" ||
+            hostPart == "[::1]"
         let hasDot = value.contains(".") && !value.contains(" ")
         let hasPort = value.contains(":") && !value.contains(" ")
 
-        if isLocal || hasDot || hasPort {
-            let scheme = isLocal ? httpScheme : httpsScheme
+        if isHttpByDefault || hasDot || hasPort {
+            let scheme = isHttpByDefault ? httpScheme : httpsScheme
             let prefixed = scheme + value
             if let url = URL(string: prefixed) {
                 return url
