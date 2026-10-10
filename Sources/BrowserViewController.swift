@@ -697,12 +697,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard let url = url else { return "" }
         let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
         if raw.isEmpty || raw == "about:blank" { return "" }
-        if raw.hasPrefix("https://") {
-            return String(raw.dropFirst(8))
-        }
-        if raw.hasPrefix("http://") {
-            return String(raw.dropFirst(7))
-        }
         return raw
     }
 
