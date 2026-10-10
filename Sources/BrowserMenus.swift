@@ -538,7 +538,7 @@ extension BrowserViewController {
 
         let isDesktop = UserAgentStore.shared.currentMode == .desktop
         items.append(CustomBottomSheetItem(
-            title: isDesktop ? "移动版" : "电脑版",
+            title: "电脑版",
             iconName: "desktopcomputer",
             isSwitchOn: isDesktop,
             dismissOnTap: false,
