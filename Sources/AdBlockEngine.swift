@@ -333,16 +333,18 @@ final class AdBlockManager {
             return
         }
 
+        let resolvedURLString = parseValidURL(from: urlString)?.absoluteString ?? urlString
         subscriptions[index].name = name
-        subscriptions[index].urlString = urlString
+        subscriptions[index].urlString = resolvedURLString
         saveSubscriptions(subscriptions)
     }
 
     func addSubscription(name: String, urlString: String) -> AdBlockSubscription {
+        let resolvedURLString = parseValidURL(from: urlString)?.absoluteString ?? urlString
         let subscription = AdBlockSubscription(
             id: UUID().uuidString,
             name: name,
-            urlString: urlString,
+            urlString: resolvedURLString,
             isEnabled: true,
             lastUpdated: nil,
             ruleCount: 0
@@ -504,6 +506,19 @@ final class AdBlockManager {
         }
     }
 
+    private func parseValidURL(from urlString: String) -> URL? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: trimmed), url.scheme != nil, url.host != nil {
+            return url
+        }
+        let decoded = trimmed.removingPercentEncoding ?? trimmed
+        if let encoded = decoded.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let url = URL(string: encoded), url.scheme != nil, url.host != nil {
+            return url
+        }
+        return nil
+    }
+
     func fetchSubscription(
         _ subscription: AdBlockSubscription,
         completion: @escaping (Bool, Int, String?) -> Void
@@ -518,7 +533,7 @@ final class AdBlockManager {
         lastAutoUpdateAttemptBySource[subscription.id] = Date()
         stateLock.unlock()
 
-        guard let url = URL(string: subscription.urlString),
+        guard let url = parseValidURL(from: subscription.urlString),
               let scheme = url.scheme?.lowercased(),
               scheme == "https" || scheme == "http" else {
             stateLock.lock()
@@ -533,21 +548,29 @@ final class AdBlockManager {
             status: "正在下载订阅…"
         )
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 120
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 1800
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.waitsForConnectivity = false
+        configuration.allowsCellularAccess = true
+        configuration.allowsExpensiveNetworkAccess = true
+        configuration.allowsConstrainedNetworkAccess = true
+        configuration.httpMaximumConnectionsPerHost = 6
 
         var request = URLRequest(
             url: url,
             cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
-            timeoutInterval: 120
+            timeoutInterval: 60
         )
 
         request.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Version/17.5 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
             forHTTPHeaderField: "User-Agent"
         )
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("zh-CN,zh-Hans;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
+        request.setValue("keep-alive", forHTTPHeaderField: "Connection")
 
         let session = URLSession(configuration: configuration)
         session.dataTask(with: request) { [weak self] data, response, error in
