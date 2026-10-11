@@ -1492,11 +1492,15 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                         self.progressView.alpha = 1
                     }
                     let currentProgress = self.progressView.progress
-                    let nextProgress = max(currentProgress, progress)
-                    if nextProgress >= 1.0 {
-                        self.completeProgress()
+                    if progress < currentProgress - 0.25 {
+                        self.progressView.setProgress(progress, animated: false)
                     } else {
-                        self.progressView.setProgress(nextProgress, animated: true)
+                        let nextProgress = max(currentProgress, progress)
+                        if nextProgress >= 1.0 {
+                            self.completeProgress()
+                        } else {
+                            self.progressView.setProgress(nextProgress, animated: true)
+                        }
                     }
                 } else {
                     self.completeProgress()
@@ -1819,6 +1823,19 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func updateAddressEditingAppearance() {
+        updateAddressRightButtons()
+    }
+
+    func tabDidRedirect(_ tab: TabItem, to url: URL) {
+        guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex), tab.id == activeTab.id else { return }
+        if !addressField.isFirstResponder {
+            addressField.text = formattedAddress(for: url)
+        }
+        isCompletingProgress = false
+        progressView.layer.removeAllAnimations()
+        progressView.alpha = 1
+        progressView.setProgress(0.12, animated: false)
+        updateUIState()
         updateAddressRightButtons()
     }
 
