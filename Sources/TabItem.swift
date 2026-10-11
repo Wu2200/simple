@@ -4,6 +4,7 @@ import WebKit
 protocol TabItemDelegate: AnyObject {
     func tabDidUpdate(_ tab: TabItem)
     func tabDidFail(_ tab: TabItem, error: Error)
+    func tabDidRedirect(_ tab: TabItem, to url: URL)
     func tabRequestNewTab(url: URL, inBackground: Bool)
     func tabProcessTerminated(_ tab: TabItem)
     func tabRequestGoBack(_ tab: TabItem)
@@ -223,7 +224,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 if (opts.onerror) opts.onerror({ status: 0, responseText: e.toString() });
             }
         };
-        window.__gm_handleXhrResponse = function(id, status, text, headers, finalUrl, base64Data) {
+        window.__handleXhrResponse = function(id, status, text, headers, finalUrl, base64Data) {
             var opts = window.__gm_xhr_callbacks__ && window.__gm_xhr_callbacks__[id];
             if (!opts) return;
             delete window.__gm_xhr_callbacks__[id];
@@ -257,8 +258,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             if (opts.onreadystatechange) opts.onreadystatechange(res);
             if (opts.onload) opts.onload(res);
         };
-        window.__handleXhrResponse = window.__gm_handleXhrResponse;
-        window.__gm_handleXhrError = function(id, errorText) {
+        window.__gm_handleXhrResponse = window.__handleXhrResponse;
+        window.__handleXhrError = function(id, errorText) {
             var opts = window.__gm_xhr_callbacks__ && window.__gm_xhr_callbacks__[id];
             if (!opts) return;
             delete window.__gm_xhr_callbacks__[id];
@@ -272,7 +273,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             };
             if (opts.onerror) opts.onerror(res);
         };
-        window.__handleXhrError = window.__gm_handleXhrError;
+        window.__gm_handleXhrError = window.__handleXhrError;
     })();
     """
 
@@ -1535,6 +1536,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         ensureCoreScripts()
         userScrolledDuringLoading = false
         delegate?.tabDidUpdate(self)
+    }
+
+    func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        if let redirectURL = webView.url, !redirectURL.absoluteString.contains("about:blank") {
+            if previousURL != redirectURL {
+                previousURL = url
+            }
+            url = redirectURL
+            title = redirectURL.host ?? "正在跳转…"
+            if let host = redirectURL.host {
+                DomainRelationStore.shared.recordPrimaryDomain(host)
+            }
+            delegate?.tabDidRedirect(self, to: redirectURL)
+        }
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
