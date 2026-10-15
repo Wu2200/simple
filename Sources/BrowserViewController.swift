@@ -1321,8 +1321,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     func configureKeyboardDismissal() {
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
         tapGesture.cancelsTouchesInView = false
+        tapGesture.delaysTouchesEnded = false
         tapGesture.delegate = self
         view.addGestureRecognizer(tapGesture)
+        keyboardDismissTapGesture = tapGesture
     }
 
     func configureFullscreenExitGesture() {
