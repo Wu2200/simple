@@ -145,6 +145,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     var webBottomFullscreenConstraint: NSLayoutConstraint?
 
     var fullscreenExitGesture: UILongPressGestureRecognizer?
+    var keyboardDismissTapGesture: UITapGestureRecognizer?
 
     var isShowingLongPressMenu = false
     weak var activeCalloutOverlay: UIView?
