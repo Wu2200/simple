@@ -36,6 +36,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
     private var userScrolledDuringLoading = false
+    private var lastNewTabRequestedURL: URL?
+    private var lastNewTabRequestedTime: TimeInterval = 0
 
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
@@ -1276,9 +1278,23 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
+    private func requestNewTabIfNeeded(url: URL) {
+        let now = Date().timeIntervalSince1970
+        if lastNewTabRequestedURL == url && (now - lastNewTabRequestedTime) < 1.0 {
+            return
+        }
+        lastNewTabRequestedURL = url
+        lastNewTabRequestedTime = now
+        delegate?.tabRequestNewTab(url: url, inBackground: false)
+    }
+
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil {
-            webView.load(navigationAction.request)
+            if let targetURL = navigationAction.request.url,
+               let scheme = targetURL.scheme?.lowercased(),
+               ["http", "https"].contains(scheme) {
+                requestNewTabIfNeeded(url: targetURL)
+            }
         }
         return nil
     }
@@ -1701,7 +1717,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if ["http", "https", "about", "data", "blob"].contains(scheme) {
             if navigationAction.targetFrame == nil {
                 decisionHandler(.cancel, preferences)
-                webView.load(navigationAction.request)
+                if ["http", "https"].contains(scheme) {
+                    requestNewTabIfNeeded(url: targetURL)
+                }
                 return
             }
 
