@@ -2048,15 +2048,25 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if gestureRecognizer == fullscreenExitGesture {
             return isFullscreen
         }
-        if touch.view?.isDescendant(of: bottomPanel) == true ||
-           touch.view?.isDescendant(of: homeSearchContainer) == true {
-            return false
+        if gestureRecognizer == keyboardDismissTapGesture {
+            guard addressField.isFirstResponder || homeSearchField.isFirstResponder else {
+                return false
+            }
+            if touch.view?.isDescendant(of: bottomPanel) == true ||
+               touch.view?.isDescendant(of: homeSearchContainer) == true ||
+               touch.view?.isDescendant(of: webContainer) == true {
+                return false
+            }
+            return true
         }
         return true
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer == fullscreenExitGesture {
+            return true
+        }
+        if gestureRecognizer == keyboardDismissTapGesture {
             return true
         }
         return false
