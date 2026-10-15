@@ -1714,7 +1714,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             return
         }
 
-        if ["http", "https", "about", "data", "blob"].contains(scheme) {
+        if ["http", "https", "about", "data", "blob", "javascript"].contains(scheme) {
             if navigationAction.targetFrame == nil {
                 decisionHandler(.cancel, preferences)
                 if ["http", "https"].contains(scheme) {
