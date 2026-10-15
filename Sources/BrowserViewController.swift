@@ -1341,8 +1341,16 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let tab = TabItem()
         tab.sourceTabID = sourceID
         tab.delegate = self
-        tabs.append(tab)
-        switchTab(to: tabs.count - 1)
+
+        let targetIndex: Int
+        if sourceID != nil {
+            targetIndex = min(activeTabIndex + 1, tabs.count)
+            tabs.insert(tab, at: targetIndex)
+        } else {
+            tabs.append(tab)
+            targetIndex = tabs.count - 1
+        }
+        switchTab(to: targetIndex)
 
         if let url = url {
             load(url: url)
@@ -1440,8 +1448,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         if isClosingActiveTab {
-            activeTabIndex = min(index, tabs.count - 1)
-            switchTab(to: activeTabIndex)
+            if let sourceID = tab.sourceTabID,
+               let sourceIndex = tabs.firstIndex(where: { $0.id == sourceID }) {
+                switchTab(to: sourceIndex)
+            } else {
+                activeTabIndex = min(index, tabs.count - 1)
+                switchTab(to: activeTabIndex)
+            }
         } else {
             if index < activeTabIndex {
                 activeTabIndex -= 1
@@ -1868,10 +1881,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         if let url = url {
             alert.addAction(UIAlertAction(title: "新标签打开", style: .default) { [weak self] _ in
-                self?.createNewTab(loadURL: url)
+                guard let self = self else { return }
+                self.createNewTab(loadURL: url, sourceID: self.activeTab.id)
             })
             alert.addAction(UIAlertAction(title: "后台打开", style: .default) { [weak self] _ in
-                self?.createNewTabInBackground(loadURL: url)
+                guard let self = self else { return }
+                self.createNewTabInBackground(loadURL: url, sourceID: self.activeTab.id)
             })
             alert.addAction(UIAlertAction(title: "拷贝链接", style: .default) { [weak self] _ in
                 UIPasteboard.general.string = url.absoluteString
