@@ -126,6 +126,74 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
+    private static let coreStorageAccessScriptSource = """
+    (function() {
+        if (window.__simple_storage_access_hooked__) return;
+        window.__simple_storage_access_hooked__ = true;
+
+        var storageAccessGranted = false;
+
+        function patchProto(proto) {
+            if (!proto) return;
+
+            var origReq = proto.requestStorageAccess;
+            proto.requestStorageAccess = function() {
+                storageAccessGranted = true;
+                if (origReq) {
+                    try {
+                        var p = origReq.apply(this, arguments);
+                        if (p && typeof p.catch === 'function') {
+                            return p.catch(function() {
+                                return Promise.resolve();
+                            });
+                        }
+                    } catch(e) {}
+                }
+                return Promise.resolve();
+            };
+
+            var origHas = proto.hasStorageAccess;
+            proto.hasStorageAccess = function() {
+                if (storageAccessGranted) {
+                    return Promise.resolve(true);
+                }
+                if (origHas) {
+                    try {
+                        var p = origHas.apply(this, arguments);
+                        if (p && typeof p.then === 'function') {
+                            return p.then(function(has) {
+                                return Boolean(has || storageAccessGranted);
+                            }).catch(function() {
+                                return Promise.resolve(storageAccessGranted);
+                            });
+                        }
+                    } catch(e) {}
+                }
+                return Promise.resolve(storageAccessGranted);
+            };
+        }
+
+        try {
+            if (typeof Document !== 'undefined' && Document.prototype) {
+                patchProto(Document.prototype);
+            }
+            if (window.document) {
+                patchProto(Object.getPrototypeOf(window.document));
+            }
+        } catch(e) {}
+
+        document.addEventListener('click', function(e) {
+            var btn = e.target;
+            while (btn && btn.id !== 'grantPermissionButton') {
+                btn = btn.parentElement;
+            }
+            if (btn) {
+                storageAccessGranted = true;
+            }
+        }, true);
+    })();
+    """
+
     private static let coreResourceScriptSource = """
     (function() {
         if (window.__simple_resource_tracker__) return;
@@ -717,6 +785,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if !hasCustomCallout {
             let script = WKUserScript(
                 source: Self.coreContextMenuScriptSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(script)
+        }
+
+        let hasStorageAccess = controller.userScripts.contains { $0.source.contains("__simple_storage_access_hooked__") }
+        if !hasStorageAccess {
+            let script = WKUserScript(
+                source: Self.coreStorageAccessScriptSource,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
@@ -1626,8 +1704,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
         extractHighResFaviconIfNeeded()
 
-        if sourceTabID != nil, let query = (webView.url ?? url)?.query, query.contains("__auto_close=") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+        if sourceTabID != nil,
+           let current = webView.url ?? url,
+           !current.path.contains("__cookie_check"),
+           let query = current.query,
+           query.contains("__auto_close=") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
                 guard let self = self else { return }
                 self.delegate?.tabRequestClose(self)
             }
