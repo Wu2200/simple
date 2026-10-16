@@ -6,6 +6,7 @@ protocol TabItemDelegate: AnyObject {
     func tabDidFail(_ tab: TabItem, error: Error)
     func tabDidRedirect(_ tab: TabItem, to url: URL)
     func tabRequestNewTab(url: URL, inBackground: Bool)
+    func tabRequestClose(_ tab: TabItem)
     func tabProcessTerminated(_ tab: TabItem)
     func tabRequestGoBack(_ tab: TabItem)
     func tabRequestShowToast(_ message: String)
@@ -43,6 +44,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var titleObservation: NSKeyValueObservation?
 
     weak var delegate: TabItemDelegate?
+
+    private static let coreWindowScriptSource = """
+    (function() {
+        if (window.__simple_window_bridge_hooked__) return;
+        window.__simple_window_bridge_hooked__ = true;
+        var origClose = window.close;
+        window.close = function() {
+            try {
+                window.webkit.messageHandlers.WindowBridge.postMessage({ action: 'close' });
+            } catch(e) {}
+            if (origClose) { origClose.apply(this, arguments); }
+        };
+    })();
+    """
 
     private static let coreHistoryScriptSource = """
     (function() {
@@ -554,6 +569,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         ensureCoreScripts()
 
         AdBlockManager.shared.attach(to: webView)
+        userContentController.add(self, name: "WindowBridge")
         userContentController.add(self, name: "GM")
         userContentController.add(self, name: "DownloadBridge")
         userContentController.add(self, name: "ContextMenuBridge")
@@ -656,6 +672,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private func ensureCoreScripts() {
         let controller = webView.configuration.userContentController
 
+        let hasWindow = controller.userScripts.contains { $0.source.contains("__simple_window_bridge_hooked__") }
+        if !hasWindow {
+            let script = WKUserScript(
+                source: Self.coreWindowScriptSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(script)
+        }
+
         let hasHistory = controller.userScripts.contains { $0.source.contains("__simple_history_hooked__") }
         if !hasHistory {
             let script = WKUserScript(
@@ -733,6 +759,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             } catch(e){}
         })();
         """, completionHandler: nil)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "WindowBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "GM")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "ContextMenuBridge")
@@ -829,6 +856,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "WindowBridge" {
+            delegate?.tabRequestClose(self)
+            return
+        }
+
         if message.name == "ResourceBridge" {
             guard let body = message.body as? [String: Any],
                   let mainHost = body["main"] as? String,
@@ -1303,6 +1335,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         return nil
     }
 
+    func webViewDidClose(_ webView: WKWebView) {
+        delegate?.tabRequestClose(self)
+    }
+
     func webView(
         _ webView: WKWebView,
         didReceive challenge: URLAuthenticationChallenge,
@@ -1617,6 +1653,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         delegate?.tabDidUpdate(self)
+
+        if sourceTabID != nil, let finishURL = webView.url, finishURL.query?.contains("__auto_close=1") == true {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                guard let self = self else { return }
+                self.delegate?.tabRequestClose(self)
+            }
+        }
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
