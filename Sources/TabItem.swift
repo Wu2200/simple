@@ -1702,7 +1702,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         delegate?.tabDidUpdate(self)
 
-        if sourceTabID != nil, let finishURL = webView.url, finishURL.query?.contains("__auto_close=1") == true {
+        if sourceTabID != nil,
+           let finishURL = webView.url,
+           !finishURL.path.contains("__cookie_check"),
+           finishURL.query?.contains("__auto_close=1") == true {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                 guard let self = self else { return }
                 self.delegate?.tabRequestClose(self)
