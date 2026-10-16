@@ -6,7 +6,6 @@ protocol TabItemDelegate: AnyObject {
     func tabDidFail(_ tab: TabItem, error: Error)
     func tabDidRedirect(_ tab: TabItem, to url: URL)
     func tabRequestNewTab(url: URL, inBackground: Bool)
-    func tabRequestNewWebView(configuration: WKWebViewConfiguration, sourceTabID: UUID, initialURL: URL?) -> WKWebView?
     func tabProcessTerminated(_ tab: TabItem)
     func tabRequestGoBack(_ tab: TabItem)
     func tabRequestShowToast(_ message: String)
