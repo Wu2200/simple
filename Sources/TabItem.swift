@@ -1297,7 +1297,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         guard navigationAction.targetFrame == nil,
               let targetURL = navigationAction.request.url,
               let scheme = targetURL.scheme?.lowercased(),
-              ["http", "https"].contains(scheme) else {
+              ["http", "https", "about", "data", "blob", "javascript"].contains(scheme) else {
             return nil
         }
 
@@ -1724,11 +1724,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         if ["http", "https", "about", "data", "blob", "javascript"].contains(scheme) {
-            if navigationAction.targetFrame == nil {
-                decisionHandler(["http", "https"].contains(scheme) ? .allow : .cancel, preferences)
-                return
-            }
-
             decisionHandler(.allow, preferences)
             return
         }
