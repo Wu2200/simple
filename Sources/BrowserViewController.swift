@@ -1863,23 +1863,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    func tabRequestNewWebView(configuration: WKWebViewConfiguration, sourceTabID: UUID, initialURL: URL?) -> WKWebView? {
-        let tab = TabItem(configuration: configuration)
-        tab.sourceTabID = sourceTabID
-        tab.delegate = self
-        if let initialURL = initialURL {
-            tab.url = initialURL
-            tab.title = initialURL.host ?? initialURL.absoluteString
-        }
-
-        let targetIndex = min(activeTabIndex + 1, tabs.count)
-        tabs.insert(tab, at: targetIndex)
-        switchTab(to: targetIndex)
-
-        persistCurrentSession()
-        return tab.webView
-    }
-
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?) {
         guard url != nil || (imageURLString != nil && !(imageURLString?.isEmpty ?? true)) else { return }
 
@@ -1937,11 +1920,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     func tabRequestShowToast(_ message: String) {
         showToastNotice(message)
-    }
-
-    func tabRequestClose(_ tab: TabItem) {
-        guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
-        closeTab(at: index)
     }
 
     func tabRequestGoBack(_ tab: TabItem) {
