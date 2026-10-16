@@ -1281,12 +1281,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil {
-            if let targetURL = navigationAction.request.url,
-               let scheme = targetURL.scheme?.lowercased(),
-               ["http", "https"].contains(scheme) {
-                requestNewTabIfNeeded(url: targetURL)
-            }
+        guard navigationAction.targetFrame == nil else { return nil }
+
+        if let targetURL = navigationAction.request.url {
+            webView.load(navigationAction.request)
         }
         return nil
     }
