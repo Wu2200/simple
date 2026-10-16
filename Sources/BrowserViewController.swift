@@ -1863,6 +1863,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    func tabRequestClose(_ tab: TabItem) {
+        if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
+            closeTab(at: index)
+        }
+    }
+
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?) {
         guard url != nil || (imageURLString != nil && !(imageURLString?.isEmpty ?? true)) else { return }
 
