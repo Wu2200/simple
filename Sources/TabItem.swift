@@ -67,19 +67,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         try {
             if (typeof Document !== 'undefined' && Document.prototype) {
+                var origReq = Document.prototype.requestStorageAccess;
                 Document.prototype.requestStorageAccess = function() {
+                    if (origReq) {
+                        return origReq.apply(this, arguments).catch(function() {
+                            return Promise.resolve();
+                        });
+                    }
                     return Promise.resolve();
-                };
-                Document.prototype.hasStorageAccess = function() {
-                    return Promise.resolve(true);
-                };
-            }
-            if (window.document) {
-                window.document.requestStorageAccess = function() {
-                    return Promise.resolve();
-                };
-                window.document.hasStorageAccess = function() {
-                    return Promise.resolve(true);
                 };
             }
         } catch(e) {}
@@ -94,20 +89,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     try {
                         if (typeof redirectToReturnUrl === 'function') {
                             redirectToReturnUrl(false, true);
-                            return;
                         }
                     } catch(err) {}
-
-                    try {
-                        var params = new URLSearchParams(window.location.search);
-                        var initialReturnUrl = params.get('return_url');
-                        if (initialReturnUrl) {
-                            var target = new URL(initialReturnUrl);
-                            target.searchParams.set('__storage_access_granted', '1');
-                            window.location.href = target.toString();
-                        }
-                    } catch(err2) {}
-                }, 100);
+                }, 80);
             }
         }, true);
     })();
