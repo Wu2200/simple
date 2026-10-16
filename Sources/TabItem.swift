@@ -60,42 +60,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    private static let coreCookieAuthBridgeScriptSource = """
-    (function() {
-        if (window.__simple_cookie_auth_bridge__) return;
-        window.__simple_cookie_auth_bridge__ = true;
-
-        try {
-            if (typeof Document !== 'undefined' && Document.prototype) {
-                var origReq = Document.prototype.requestStorageAccess;
-                Document.prototype.requestStorageAccess = function() {
-                    if (origReq) {
-                        return origReq.apply(this, arguments).catch(function() {
-                            return Promise.resolve();
-                        });
-                    }
-                    return Promise.resolve();
-                };
-            }
-        } catch(e) {}
-
-        document.addEventListener('click', function(e) {
-            var el = e.target;
-            while (el && el.id !== 'grantPermissionButton') {
-                el = el.parentElement;
-            }
-            if (el) {
-                setTimeout(function() {
-                    try {
-                        if (typeof redirectToReturnUrl === 'function') {
-                            redirectToReturnUrl(false, true);
-                        }
-                    } catch(err) {}
-                }, 80);
-            }
-        }, true);
-    })();
-    """
 
     private static let coreHistoryScriptSource = """
     (function() {
@@ -770,15 +734,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             controller.addUserScript(script)
         }
 
-        let hasCookieAuthBridge = controller.userScripts.contains { $0.source.contains("__simple_cookie_auth_bridge__") }
-        if !hasCookieAuthBridge {
-            let script = WKUserScript(
-                source: Self.coreCookieAuthBridgeScriptSource,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            )
-            controller.addUserScript(script)
-        }
 
     }
 
