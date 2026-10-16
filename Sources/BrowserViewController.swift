@@ -1415,9 +1415,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 FaviconLoader.shared.preloadFavicon(for: host)
             }
             applyAutoFullscreenIfNeeded(for: url)
-        } else if tab.isPopupWindow {
-            showBrowserUI()
-            addressField.text = formattedAddress(for: tab.webView.url)
         } else {
             showHomeUI()
         }
@@ -1866,24 +1863,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    func tabRequestPopupWebView(configuration: WKWebViewConfiguration, sourceTab: TabItem) -> WKWebView? {
-        let tab = TabItem(configuration: configuration)
-        tab.sourceTabID = sourceTab.id
-        tab.isPopupWindow = true
-        tab.delegate = self
-
-        let insertIndex = tabs.firstIndex(where: { $0.id == sourceTab.id }).map { $0 + 1 }
-            ?? min(activeTabIndex + 1, tabs.count)
-        tabs.insert(tab, at: insertIndex)
-        switchTab(to: insertIndex)
-        return tab.webView
-    }
-
-    func tabRequestClose(_ tab: TabItem) {
-        guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
-        closeTab(at: index)
-    }
-
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?) {
         guard url != nil || (imageURLString != nil && !(imageURLString?.isEmpty ?? true)) else { return }
 
@@ -1965,10 +1944,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex), tab.id == activeTab.id else {
             persistCurrentSession()
             return
-        }
-
-        if tab.isPopupWindow, tab.webView.url != nil {
-            showBrowserUI()
         }
 
         if !tab.isDisplayingFailurePage {
