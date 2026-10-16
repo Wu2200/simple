@@ -65,6 +65,25 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if (window.__simple_cookie_auth_bridge__) return;
         window.__simple_cookie_auth_bridge__ = true;
 
+        try {
+            if (typeof Document !== 'undefined' && Document.prototype) {
+                Document.prototype.requestStorageAccess = function() {
+                    return Promise.resolve();
+                };
+                Document.prototype.hasStorageAccess = function() {
+                    return Promise.resolve(true);
+                };
+            }
+            if (window.document) {
+                window.document.requestStorageAccess = function() {
+                    return Promise.resolve();
+                };
+                window.document.hasStorageAccess = function() {
+                    return Promise.resolve(true);
+                };
+            }
+        } catch(e) {}
+
         document.addEventListener('click', function(e) {
             var el = e.target;
             while (el && el.id !== 'grantPermissionButton') {
@@ -75,9 +94,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     try {
                         if (typeof redirectToReturnUrl === 'function') {
                             redirectToReturnUrl(false, true);
+                            return;
                         }
                     } catch(err) {}
-                }, 200);
+
+                    try {
+                        var params = new URLSearchParams(window.location.search);
+                        var initialReturnUrl = params.get('return_url');
+                        if (initialReturnUrl) {
+                            var target = new URL(initialReturnUrl);
+                            target.searchParams.set('__storage_access_granted', '1');
+                            window.location.href = target.toString();
+                        }
+                    } catch(err2) {}
+                }, 100);
             }
         }, true);
     })();
@@ -750,6 +780,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if !hasCustomCallout {
             let script = WKUserScript(
                 source: Self.coreContextMenuScriptSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(script)
+        }
+
+        let hasCookieAuthBridge = controller.userScripts.contains { $0.source.contains("__simple_cookie_auth_bridge__") }
+        if !hasCookieAuthBridge {
+            let script = WKUserScript(
+                source: Self.coreCookieAuthBridgeScriptSource,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
