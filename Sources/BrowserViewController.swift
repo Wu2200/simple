@@ -1445,13 +1445,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         if isClosingActiveTab {
-            if let sourceID = tab.sourceTabID,
-               let sourceIndex = tabs.firstIndex(where: { $0.id == sourceID }) {
-                switchTab(to: sourceIndex)
-            } else {
-                activeTabIndex = min(index, tabs.count - 1)
-                switchTab(to: activeTabIndex)
-            }
+            activeTabIndex = min(index, tabs.count - 1)
+            switchTab(to: activeTabIndex)
         } else {
             if index < activeTabIndex {
                 activeTabIndex -= 1
