@@ -36,6 +36,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
     private var userScrolledDuringLoading = false
+    private var lastNewTabRequestedURL: URL?
+    private var lastNewTabRequestedTime: TimeInterval = 0
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
 
@@ -526,7 +528,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    override convenience init() {
+    override init() {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
@@ -538,15 +540,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let selectedItem = UserAgentStore.shared.getSelectedItem()
         let isDesktop = selectedItem.category == .desktop || selectedItem.id == "default_mac"
         configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
-
-        self.init(configuration: configuration)
-    }
-
-    init(configuration: WKWebViewConfiguration) {
-        let inheritedUserContentController = configuration.userContentController
-        let userContentController = WKUserContentController()
-        inheritedUserContentController.userScripts.forEach { userContentController.addUserScript($0) }
-        configuration.userContentController = userContentController
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
@@ -1721,9 +1714,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         if ["http", "https", "about", "data", "blob", "javascript"].contains(scheme) {
-            if navigationAction.targetFrame == nil,
-               !["http", "https", "about", "data", "blob"].contains(scheme) {
+            if navigationAction.targetFrame == nil {
                 decisionHandler(.cancel, preferences)
+                if ["http", "https"].contains(scheme) {
+                    requestNewTabIfNeeded(url: targetURL)
+                }
                 return
             }
 
