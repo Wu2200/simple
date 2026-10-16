@@ -1863,33 +1863,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
-    func tabRequestNewWebView(
-        configuration: WKWebViewConfiguration,
-        navigationAction: WKNavigationAction,
-        sourceTab: TabItem
-    ) -> WKWebView? {
-        guard let sourceIndex = tabs.firstIndex(where: { $0.id == sourceTab.id }) else { return nil }
-
-        let tab = TabItem(webViewConfiguration: configuration)
-        tab.sourceTabID = sourceTab.id
-        tab.delegate = self
-        tab.url = navigationAction.request.url
-        tab.title = navigationAction.request.url?.host ?? "新标签页"
-
-        let insertIndex = min(sourceIndex + 1, tabs.count)
-        tabs.insert(tab, at: insertIndex)
-        switchTab(to: insertIndex)
-        persistCurrentSession()
-
-        return tab.webView
-    }
-
-    func tabRequestClose(_ tab: TabItem) {
-        if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
-            closeTab(at: index)
-        }
-    }
-
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?) {
         guard url != nil || (imageURLString != nil && !(imageURLString?.isEmpty ?? true)) else { return }
 
