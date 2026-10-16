@@ -1415,6 +1415,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 FaviconLoader.shared.preloadFavicon(for: host)
             }
             applyAutoFullscreenIfNeeded(for: url)
+        } else if tab.isPopupWindow {
+            showBrowserUI()
+            addressField.text = formattedAddress(for: tab.webView.url)
         } else {
             showHomeUI()
         }
@@ -1866,6 +1869,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     func tabRequestPopupWebView(configuration: WKWebViewConfiguration, sourceTab: TabItem) -> WKWebView? {
         let tab = TabItem(configuration: configuration)
         tab.sourceTabID = sourceTab.id
+        tab.isPopupWindow = true
         tab.delegate = self
 
         let insertIndex = tabs.firstIndex(where: { $0.id == sourceTab.id }).map { $0 + 1 }
