@@ -1967,6 +1967,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             return
         }
 
+        if tab.isPopupWindow, tab.webView.url != nil {
+            showBrowserUI()
+        }
+
         if !tab.isDisplayingFailurePage {
             failureOverlayView.isHidden = true
             if let url = tab.url {
