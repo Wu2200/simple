@@ -1863,6 +1863,24 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    func tabRequestNewWebView(configuration: WKWebViewConfiguration, sourceTabID: UUID, initialURL: URL?) -> WKWebView? {
+        let tab = TabItem(configuration: configuration)
+        tab.sourceTabID = sourceTabID
+        tab.delegate = self
+
+        let targetIndex = min(activeTabIndex + 1, tabs.count)
+        tabs.insert(tab, at: targetIndex)
+        switchTab(to: targetIndex)
+
+        if let initialURL = initialURL {
+            tab.url = initialURL
+            tab.title = initialURL.host ?? initialURL.absoluteString
+            addressField.text = formattedAddress(for: initialURL)
+        }
+        persistCurrentSession()
+        return tab.webView
+    }
+
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?) {
         guard url != nil || (imageURLString != nil && !(imageURLString?.isEmpty ?? true)) else { return }
 
