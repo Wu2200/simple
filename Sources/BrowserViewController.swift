@@ -1345,14 +1345,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         tab.sourceTabID = sourceID
         tab.delegate = self
 
-        let targetIndex: Int
-        if sourceID != nil {
-            targetIndex = min(activeTabIndex + 1, tabs.count)
-            tabs.insert(tab, at: targetIndex)
-        } else {
-            tabs.append(tab)
-            targetIndex = tabs.count - 1
-        }
+        tabs.append(tab)
+        let targetIndex = tabs.count - 1
         switchTab(to: targetIndex)
 
         if let url = url {
