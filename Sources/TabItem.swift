@@ -38,6 +38,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var userScrolledDuringLoading = false
     private var lastNewTabRequestedURL: URL?
     private var lastNewTabRequestedTime: TimeInterval = 0
+
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
 
@@ -109,7 +110,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         document.addEventListener('turbo:render', scheduleNotify, true);
         document.addEventListener('turbolinks:load', scheduleNotify, true);
         document.addEventListener('pjax:end', scheduleNotify, true);
-
     })();
     """
 
@@ -703,8 +703,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             )
             controller.addUserScript(script)
         }
-
-
     }
 
     func destroy() {
@@ -838,9 +836,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         if message.name == "HistoryBridge" {
             guard message.frameInfo.isMainFrame else { return }
-            guard let body = message.body as? [String: Any] else { return }
-
-            guard let urlStr = body["url"] as? String,
+            guard let body = message.body as? [String: Any],
+                  let urlStr = body["url"] as? String,
                   let newURL = URL(string: urlStr) else { return }
 
             if let currentHost = webView.url?.host?.lowercased(),
@@ -1725,6 +1722,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 }
                 return
             }
+
             decisionHandler(.allow, preferences)
             return
         }
