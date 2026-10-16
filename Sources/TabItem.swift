@@ -538,9 +538,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         for script in sourceUserContentController.userScripts {
             userContentController.addUserScript(script)
         }
-        for ruleList in sourceUserContentController.contentRuleLists {
-            userContentController.add(ruleList)
-        }
         configuration.userContentController = userContentController
 
         webView = WKWebView(frame: .zero, configuration: configuration)
