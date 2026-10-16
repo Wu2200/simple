@@ -541,6 +541,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let isDesktop = selectedItem.category == .desktop || selectedItem.id == "default_mac"
         configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
 
+        let userContentController = WKUserContentController()
+        configuration.userContentController = userContentController
+
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
 
