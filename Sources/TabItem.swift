@@ -6,6 +6,8 @@ protocol TabItemDelegate: AnyObject {
     func tabDidFail(_ tab: TabItem, error: Error)
     func tabDidRedirect(_ tab: TabItem, to url: URL)
     func tabRequestNewTab(url: URL, inBackground: Bool)
+    func tabRequestPopupWebView(configuration: WKWebViewConfiguration, sourceTab: TabItem) -> WKWebView?
+    func tabRequestClose(_ tab: TabItem)
     func tabProcessTerminated(_ tab: TabItem)
     func tabRequestGoBack(_ tab: TabItem)
     func tabRequestShowToast(_ message: String)
@@ -36,8 +38,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
     private var userScrolledDuringLoading = false
-    private var lastNewTabRequestedURL: URL?
-    private var lastNewTabRequestedTime: TimeInterval = 0
 
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
@@ -528,20 +528,19 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.allowsInlineMediaPlayback = true
-        configuration.mediaTypesRequiringUserActionForPlayback = []
-        configuration.allowsPictureInPictureMediaPlayback = false
+    override convenience init() {
+        self.init(configuration: Self.makeConfiguration())
+    }
 
-        let selectedItem = UserAgentStore.shared.getSelectedItem()
-        let isDesktop = selectedItem.category == .desktop || selectedItem.id == "default_mac"
-        configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
-
+    init(configuration: WKWebViewConfiguration) {
+        let sourceUserContentController = configuration.userContentController
         let userContentController = WKUserContentController()
+        for script in sourceUserContentController.userScripts {
+            userContentController.addUserScript(script)
+        }
+        for ruleList in sourceUserContentController.contentRuleLists {
+            userContentController.add(ruleList)
+        }
         configuration.userContentController = userContentController
 
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -601,6 +600,22 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             name: NSNotification.Name("SimpleAdBlockRulesApplied"),
             object: nil
         )
+    }
+
+    private static func makeConfiguration() -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.allowsPictureInPictureMediaPlayback = false
+
+        let selectedItem = UserAgentStore.shared.getSelectedItem()
+        let isDesktop = selectedItem.category == .desktop || selectedItem.id == "default_mac"
+        configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
+        configuration.userContentController = WKUserContentController()
+        return configuration
     }
 
     deinit {
@@ -1278,25 +1293,19 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
-    private func requestNewTabIfNeeded(url: URL) {
-        let now = Date().timeIntervalSince1970
-        if lastNewTabRequestedURL == url && (now - lastNewTabRequestedTime) < 1.0 {
-            return
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        guard navigationAction.targetFrame == nil,
+              let targetURL = navigationAction.request.url,
+              let scheme = targetURL.scheme?.lowercased(),
+              ["http", "https"].contains(scheme) else {
+            return nil
         }
-        lastNewTabRequestedURL = url
-        lastNewTabRequestedTime = now
-        delegate?.tabRequestNewTab(url: url, inBackground: false)
+
+        return delegate?.tabRequestPopupWebView(configuration: configuration, sourceTab: self)
     }
 
-    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil {
-            if let targetURL = navigationAction.request.url,
-               let scheme = targetURL.scheme?.lowercased(),
-               ["http", "https"].contains(scheme) {
-                requestNewTabIfNeeded(url: targetURL)
-            }
-        }
-        return nil
+    func webViewDidClose(_ webView: WKWebView) {
+        delegate?.tabRequestClose(self)
     }
 
     func webView(
@@ -1716,10 +1725,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         if ["http", "https", "about", "data", "blob", "javascript"].contains(scheme) {
             if navigationAction.targetFrame == nil {
-                decisionHandler(.cancel, preferences)
-                if ["http", "https"].contains(scheme) {
-                    requestNewTabIfNeeded(url: targetURL)
-                }
+                decisionHandler(["http", "https"].contains(scheme) ? .allow : .cancel, preferences)
                 return
             }
 
