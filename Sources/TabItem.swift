@@ -531,6 +531,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     override init() {
         let configuration = WKWebViewConfiguration()
+        configuration.processPool = Self.sharedProcessPool
         configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
