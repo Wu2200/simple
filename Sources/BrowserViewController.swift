@@ -1345,8 +1345,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         tab.sourceTabID = sourceID
         tab.delegate = self
 
-        tabs.append(tab)
-        let targetIndex = tabs.count - 1
+        let targetIndex: Int
+        if sourceID != nil {
+            targetIndex = min(activeTabIndex + 1, tabs.count)
+            tabs.insert(tab, at: targetIndex)
+        } else {
+            tabs.append(tab)
+            targetIndex = tabs.count - 1
+        }
         switchTab(to: targetIndex)
 
         if let url = url {
@@ -1445,8 +1451,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
 
         if isClosingActiveTab {
-            activeTabIndex = min(index, tabs.count - 1)
-            switchTab(to: activeTabIndex)
+            if let sourceID = tab.sourceTabID,
+               let sourceIndex = tabs.firstIndex(where: { $0.id == sourceID }) {
+                switchTab(to: sourceIndex)
+            } else {
+                activeTabIndex = min(index, tabs.count - 1)
+                switchTab(to: activeTabIndex)
+            }
         } else {
             if index < activeTabIndex {
                 activeTabIndex -= 1
