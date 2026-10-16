@@ -1939,6 +1939,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         showToastNotice(message)
     }
 
+    func tabRequestClose(_ tab: TabItem) {
+        guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        closeTab(at: index)
+    }
+
     func tabRequestGoBack(_ tab: TabItem) {
         goBack()
     }
