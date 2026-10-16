@@ -11,6 +11,7 @@ protocol TabItemDelegate: AnyObject {
     func tabRequestGoBack(_ tab: TabItem)
     func tabRequestShowToast(_ message: String)
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?)
+    func tabRequestClose(_ tab: TabItem)
 }
 
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -854,8 +855,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         if message.name == "HistoryBridge" {
             guard message.frameInfo.isMainFrame else { return }
-            guard let body = message.body as? [String: Any],
-                  let urlStr = body["url"] as? String,
+            guard let body = message.body as? [String: Any] else { return }
+
+            if let action = body["action"] as? String, action == "closeWindow" {
+                delegate?.tabRequestClose(self)
+                return
+            }
+
+            guard let urlStr = body["url"] as? String,
                   let newURL = URL(string: urlStr) else { return }
 
             if let currentHost = webView.url?.host?.lowercased(),
@@ -1312,6 +1319,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         )
     }
 
+    func webViewDidClose(_ webView: WKWebView) {
+        delegate?.tabRequestClose(self)
+    }
+
     func webView(
         _ webView: WKWebView,
         didReceive challenge: URLAuthenticationChallenge,
@@ -1614,6 +1625,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
         }
         extractHighResFaviconIfNeeded()
+
+        if sourceTabID != nil, let query = currentURL.query, query.contains("__auto_close=") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                guard let self = self else { return }
+                self.delegate?.tabRequestClose(self)
+            }
+        }
 
         if userScrolledDuringLoading {
             let currentOffset = webView.scrollView.contentOffset
