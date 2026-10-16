@@ -6,6 +6,7 @@ protocol TabItemDelegate: AnyObject {
     func tabDidFail(_ tab: TabItem, error: Error)
     func tabDidRedirect(_ tab: TabItem, to url: URL)
     func tabRequestNewTab(url: URL, inBackground: Bool)
+    func tabRequestNewWebView(configuration: WKWebViewConfiguration, navigationAction: WKNavigationAction, sourceTab: TabItem) -> WKWebView?
     func tabRequestClose(_ tab: TabItem)
     func tabProcessTerminated(_ tab: TabItem)
     func tabRequestGoBack(_ tab: TabItem)
@@ -38,8 +39,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
     private var userScrolledDuringLoading = false
-    private var lastNewTabRequestedURL: URL?
-    private var lastNewTabRequestedTime: TimeInterval = 0
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
 
@@ -546,10 +545,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.processPool = Self.sharedProcessPool
-        configuration.websiteDataStore = .default()
+    override convenience init() {
+        self.init(webViewConfiguration: nil)
+    }
+
+    init(webViewConfiguration suppliedConfiguration: WKWebViewConfiguration?) {
+        let configuration = suppliedConfiguration ?? WKWebViewConfiguration()
+        if suppliedConfiguration == nil {
+            configuration.processPool = Self.sharedProcessPool
+            configuration.websiteDataStore = .default()
+        }
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.allowsInlineMediaPlayback = true
@@ -1317,25 +1322,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
-    private func requestNewTabIfNeeded(url: URL) {
-        let now = Date().timeIntervalSince1970
-        if lastNewTabRequestedURL == url && (now - lastNewTabRequestedTime) < 1.0 {
-            return
-        }
-        lastNewTabRequestedURL = url
-        lastNewTabRequestedTime = now
-        delegate?.tabRequestNewTab(url: url, inBackground: false)
-    }
-
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil {
-            if let targetURL = navigationAction.request.url,
-               let scheme = targetURL.scheme?.lowercased(),
-               ["http", "https"].contains(scheme) {
-                requestNewTabIfNeeded(url: targetURL)
-            }
-        }
-        return nil
+        guard navigationAction.targetFrame == nil else { return nil }
+        return delegate?.tabRequestNewWebView(
+            configuration: configuration,
+            navigationAction: navigationAction,
+            sourceTab: self
+        )
     }
 
     func webViewDidClose(_ webView: WKWebView) {
@@ -1656,16 +1649,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         delegate?.tabDidUpdate(self)
-
-        if sourceTabID != nil,
-           let finishURL = webView.url,
-           !finishURL.path.contains("__cookie_check"),
-           finishURL.query?.contains("__auto_close=1") == true {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                guard let self = self else { return }
-                self.delegate?.tabRequestClose(self)
-            }
-        }
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -1768,14 +1751,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         if ["http", "https", "about", "data", "blob", "javascript"].contains(scheme) {
-            if navigationAction.targetFrame == nil {
-                decisionHandler(.cancel, preferences)
-                if ["http", "https"].contains(scheme) {
-                    requestNewTabIfNeeded(url: targetURL)
-                }
-                return
-            }
-
             decisionHandler(.allow, preferences)
             return
         }
