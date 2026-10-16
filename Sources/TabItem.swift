@@ -1277,16 +1277,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
-    private func requestNewTabIfNeeded(url: URL) {
-        let now = Date().timeIntervalSince1970
-        if lastNewTabRequestedURL == url && (now - lastNewTabRequestedTime) < 1.0 {
-            return
-        }
-        lastNewTabRequestedURL = url
-        lastNewTabRequestedTime = now
-        delegate?.tabRequestNewTab(url: url, inBackground: false)
-    }
-
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil {
             if let targetURL = navigationAction.request.url,
