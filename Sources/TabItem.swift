@@ -108,6 +108,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         document.addEventListener('turbo:render', scheduleNotify, true);
         document.addEventListener('turbolinks:load', scheduleNotify, true);
         document.addEventListener('pjax:end', scheduleNotify, true);
+
+        var origClose = window.close;
+        window.close = function() {
+            try {
+                window.webkit.messageHandlers.HistoryBridge.postMessage({
+                    action: 'closeWindow'
+                });
+            } catch(e) {}
+            if (origClose) {
+                try {
+                    origClose.apply(window, arguments);
+                } catch(e) {}
+            }
+        };
     })();
     """
 
