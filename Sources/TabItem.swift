@@ -6,8 +6,6 @@ protocol TabItemDelegate: AnyObject {
     func tabDidFail(_ tab: TabItem, error: Error)
     func tabDidRedirect(_ tab: TabItem, to url: URL)
     func tabRequestNewTab(url: URL, inBackground: Bool)
-    func tabRequestNewWebView(configuration: WKWebViewConfiguration, navigationAction: WKNavigationAction, sourceTab: TabItem) -> WKWebView?
-    func tabRequestClose(_ tab: TabItem)
     func tabProcessTerminated(_ tab: TabItem)
     func tabRequestGoBack(_ tab: TabItem)
     func tabRequestShowToast(_ message: String)
@@ -15,7 +13,6 @@ protocol TabItemDelegate: AnyObject {
 }
 
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
-    static let sharedProcessPool = WKProcessPool()
     let id = UUID()
     let webView: WKWebView
     private let reloadCoverView = UIView()
@@ -39,26 +36,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
     private var userScrolledDuringLoading = false
+    private var lastNewTabRequestedURL: URL?
+    private var lastNewTabRequestedTime: TimeInterval = 0
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
 
     weak var delegate: TabItemDelegate?
-
-    private static let coreWindowScriptSource = """
-    (function() {
-        if (window !== window.top) return;
-        if (window.__simple_window_bridge_hooked__) return;
-        window.__simple_window_bridge_hooked__ = true;
-        var origClose = window.close;
-        window.close = function() {
-            try {
-                window.webkit.messageHandlers.WindowBridge.postMessage({ action: 'close' });
-            } catch(e) {}
-            if (origClose) { origClose.apply(this, arguments); }
-        };
-    })();
-    """
-
 
     private static let coreHistoryScriptSource = """
     (function() {
@@ -545,16 +528,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    override convenience init() {
-        self.init(webViewConfiguration: nil)
-    }
-
-    init(webViewConfiguration suppliedConfiguration: WKWebViewConfiguration?) {
-        let configuration = suppliedConfiguration ?? WKWebViewConfiguration()
-        if suppliedConfiguration == nil {
-            configuration.processPool = Self.sharedProcessPool
-            configuration.websiteDataStore = .default()
-        }
+    override init() {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.allowsInlineMediaPlayback = true
@@ -576,7 +552,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         ensureCoreScripts()
 
         AdBlockManager.shared.attach(to: webView)
-        userContentController.add(self, name: "WindowBridge")
         userContentController.add(self, name: "GM")
         userContentController.add(self, name: "DownloadBridge")
         userContentController.add(self, name: "ContextMenuBridge")
@@ -679,16 +654,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private func ensureCoreScripts() {
         let controller = webView.configuration.userContentController
 
-        let hasWindow = controller.userScripts.contains { $0.source.contains("__simple_window_bridge_hooked__") }
-        if !hasWindow {
-            let script = WKUserScript(
-                source: Self.coreWindowScriptSource,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            )
-            controller.addUserScript(script)
-        }
-
         let hasHistory = controller.userScripts.contains { $0.source.contains("__simple_history_hooked__") }
         if !hasHistory {
             let script = WKUserScript(
@@ -767,7 +732,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             } catch(e){}
         })();
         """, completionHandler: nil)
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "WindowBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "GM")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "ContextMenuBridge")
@@ -864,11 +828,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "WindowBridge" {
-            delegate?.tabRequestClose(self)
-            return
-        }
-
         if message.name == "ResourceBridge" {
             guard let body = message.body as? [String: Any],
                   let mainHost = body["main"] as? String,
@@ -1322,17 +1281,25 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
-    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        guard navigationAction.targetFrame == nil else { return nil }
-        return delegate?.tabRequestNewWebView(
-            configuration: configuration,
-            navigationAction: navigationAction,
-            sourceTab: self
-        )
+    private func requestNewTabIfNeeded(url: URL) {
+        let now = Date().timeIntervalSince1970
+        if lastNewTabRequestedURL == url && (now - lastNewTabRequestedTime) < 1.0 {
+            return
+        }
+        lastNewTabRequestedURL = url
+        lastNewTabRequestedTime = now
+        delegate?.tabRequestNewTab(url: url, inBackground: false)
     }
 
-    func webViewDidClose(_ webView: WKWebView) {
-        delegate?.tabRequestClose(self)
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil {
+            if let targetURL = navigationAction.request.url,
+               let scheme = targetURL.scheme?.lowercased(),
+               ["http", "https"].contains(scheme) {
+                requestNewTabIfNeeded(url: targetURL)
+            }
+        }
+        return nil
     }
 
     func webView(
@@ -1751,6 +1718,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         if ["http", "https", "about", "data", "blob", "javascript"].contains(scheme) {
+            if navigationAction.targetFrame == nil {
+                decisionHandler(.cancel, preferences)
+                if ["http", "https"].contains(scheme) {
+                    requestNewTabIfNeeded(url: targetURL)
+                }
+                return
+            }
             decisionHandler(.allow, preferences)
             return
         }
