@@ -62,8 +62,6 @@
     <string>需要访问相机以支持网页拍照、视频或扫描功能</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>需要访问麦克风以支持网页音频或语音输入功能</string>
-    <key>NSCrossWebsiteTrackingUsageDescription</key>
-    <string>需要允许跨网站跟踪以支持嵌入式授权和跨站 Cookie 正常登录</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>需要访问相册以保存网页图片</string>
     <key>NSPhotoLibraryUsageDescription</key>
