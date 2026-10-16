@@ -13,6 +13,7 @@ protocol TabItemDelegate: AnyObject {
 }
 
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    static let sharedProcessPool = WKProcessPool()
     let id = UUID()
     let webView: WKWebView
     private let reloadCoverView = UIView()
