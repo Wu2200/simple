@@ -47,6 +47,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     private static let coreWindowScriptSource = """
     (function() {
+        if (window !== window.top) return;
         if (window.__simple_window_bridge_hooked__) return;
         window.__simple_window_bridge_hooked__ = true;
         var origClose = window.close;
@@ -56,6 +57,29 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             } catch(e) {}
             if (origClose) { origClose.apply(this, arguments); }
         };
+    })();
+    """
+
+    private static let coreCookieAuthBridgeScriptSource = """
+    (function() {
+        if (window.__simple_cookie_auth_bridge__) return;
+        window.__simple_cookie_auth_bridge__ = true;
+
+        document.addEventListener('click', function(e) {
+            var el = e.target;
+            while (el && el.id !== 'grantPermissionButton') {
+                el = el.parentElement;
+            }
+            if (el) {
+                setTimeout(function() {
+                    try {
+                        if (typeof redirectToReturnUrl === 'function') {
+                            redirectToReturnUrl(false, true);
+                        }
+                    } catch(err) {}
+                }, 200);
+            }
+        }, true);
     })();
     """
 
