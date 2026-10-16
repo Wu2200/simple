@@ -10,7 +10,6 @@ protocol TabItemDelegate: AnyObject {
     func tabRequestGoBack(_ tab: TabItem)
     func tabRequestShowToast(_ message: String)
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?)
-    func tabRequestClose(_ tab: TabItem)
 }
 
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -109,19 +108,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         document.addEventListener('turbolinks:load', scheduleNotify, true);
         document.addEventListener('pjax:end', scheduleNotify, true);
 
-        var origClose = window.close;
-        window.close = function() {
-            try {
-                window.webkit.messageHandlers.HistoryBridge.postMessage({
-                    action: 'closeWindow'
-                });
-            } catch(e) {}
-            if (origClose) {
-                try {
-                    origClose.apply(window, arguments);
-                } catch(e) {}
-            }
-        };
     })();
     """
 
@@ -857,11 +843,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             guard message.frameInfo.isMainFrame else { return }
             guard let body = message.body as? [String: Any] else { return }
 
-            if let action = body["action"] as? String, action == "closeWindow" {
-                delegate?.tabRequestClose(self)
-                return
-            }
-
             guard let urlStr = body["url"] as? String,
                   let newURL = URL(string: urlStr) else { return }
 
@@ -1322,10 +1303,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
         }
         return nil
-    }
-
-    func webViewDidClose(_ webView: WKWebView) {
-        delegate?.tabRequestClose(self)
     }
 
     func webView(
