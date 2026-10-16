@@ -1626,7 +1626,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
         extractHighResFaviconIfNeeded()
 
-        if sourceTabID != nil, let query = currentURL.query, query.contains("__auto_close=") {
+        if sourceTabID != nil, let query = (webView.url ?? url)?.query, query.contains("__auto_close=") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                 guard let self = self else { return }
                 self.delegate?.tabRequestClose(self)
