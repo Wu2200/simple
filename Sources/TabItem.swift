@@ -25,6 +25,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     var registeredCommands: [RegisteredMenuCommand] = []
 
     var sourceTabID: UUID?
+    var isPopupWindow = false
     var failedURL: URL?
     var failureError: Error?
     var isDisplayingFailurePage = false
