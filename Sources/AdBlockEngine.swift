@@ -506,17 +506,146 @@ final class AdBlockManager {
         }
     }
 
+    private func isLocalOrPrivateURL(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        if host == "localhost" || host == "::1" || host.hasSuffix(".local") {
+            return true
+        }
+        let parts = host.split(separator: ".")
+        guard parts.count == 4, let first = Int(parts[0]), let second = Int(parts[1]) else {
+            return false
+        }
+        if first == 10 { return true }
+        if first == 172 && (16...31).contains(second) { return true }
+        if first == 192 && second == 168 { return true }
+        if first == 127 { return true }
+        return false
+    }
+
     private func parseValidURL(from urlString: String) -> URL? {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
         if let url = URL(string: trimmed), url.scheme != nil, url.host != nil {
             return url
         }
+
+        let parts = trimmed.components(separatedBy: "?")
+        let basePart = parts[0]
+        let queryPart = parts.count > 1 ? parts[1...].joined(separator: "?") : nil
+
+        var encodedBase = ""
+        let pathAllowed = CharacterSet.urlPathAllowed.union(CharacterSet(charactersIn: ":/"))
+        if let encBase = basePart.addingPercentEncoding(withAllowedCharacters: pathAllowed) {
+            encodedBase = encBase
+        } else {
+            encodedBase = basePart
+        }
+
+        var fullString = encodedBase
+        if let query = queryPart {
+            let queryAllowed = CharacterSet.urlQueryAllowed
+            let encQuery = query.addingPercentEncoding(withAllowedCharacters: queryAllowed) ?? query
+            fullString += "?" + encQuery
+        }
+
+        if let url = URL(string: fullString), url.scheme != nil, url.host != nil {
+            return url
+        }
+
         let decoded = trimmed.removingPercentEncoding ?? trimmed
         if let encoded = decoded.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
            let url = URL(string: encoded), url.scheme != nil, url.host != nil {
             return url
         }
         return nil
+    }
+
+    private func processDownloadedRuleText(
+        _ text: String,
+        subscription: AdBlockSubscription,
+        completion: @escaping (Bool, Int, String?) -> Void
+    ) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmed.isEmpty else {
+            DispatchQueue.main.async {
+                self.stateLock.lock()
+                self.updatingSourceIds.remove(subscription.id)
+                self.stateLock.unlock()
+                self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                completion(false, 0, "订阅内容不是有效文本")
+            }
+            return
+        }
+
+        let hash = computeContentHash(text)
+        self.stateLock.lock()
+        let existingMetadata = self.metadataBySource[subscription.id]
+        let existingLists = self.compiledListsBySource[subscription.id]
+        self.stateLock.unlock()
+
+        if let meta = existingMetadata, meta.contentHash == hash, let lists = existingLists, !lists.isEmpty || !meta.cosmeticRules.isEmpty {
+            DispatchQueue.main.async {
+                self.stateLock.lock()
+                self.updatingSourceIds.remove(subscription.id)
+                self.stateLock.unlock()
+                self.setUpdateStatus(sourceId: subscription.id, status: nil)
+
+                var subscriptions = self.loadSubscriptions()
+                if let index = subscriptions.firstIndex(where: { $0.id == subscription.id }) {
+                    subscriptions[index].lastUpdated = Date()
+                    subscriptions[index].ruleCount = meta.ruleCount
+                    self.saveSubscriptions(subscriptions)
+                }
+                completion(true, meta.ruleCount, nil)
+            }
+            return
+        }
+
+        do {
+            try text.write(
+                to: self.subscriptionFileURL(id: subscription.id),
+                atomically: true,
+                encoding: .utf8
+            )
+        } catch {
+            DispatchQueue.main.async {
+                self.stateLock.lock()
+                self.updatingSourceIds.remove(subscription.id)
+                self.stateLock.unlock()
+                self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                completion(false, 0, "订阅文件保存失败：\(error.localizedDescription)")
+            }
+            return
+        }
+
+        self.setUpdateStatus(
+            sourceId: subscription.id,
+            status: "正在解析规则…"
+        )
+
+        self.compileSource(id: subscription.id, isAlreadyUpdating: true) { success, message in
+            DispatchQueue.main.async {
+                self.stateLock.lock()
+                self.updatingSourceIds.remove(subscription.id)
+                self.stateLock.unlock()
+                self.setUpdateStatus(sourceId: subscription.id, status: nil)
+
+                let count = self.ruleCount(sourceId: subscription.id)
+
+                if success {
+                    var subscriptions = self.loadSubscriptions()
+                    if let index = subscriptions.firstIndex(where: { $0.id == subscription.id }) {
+                        subscriptions[index].lastUpdated = Date()
+                        subscriptions[index].ruleCount = count
+                        self.saveSubscriptions(subscriptions)
+                    }
+                }
+
+                completion(success, count, message)
+            }
+        }
     }
 
     func fetchSubscription(
@@ -548,6 +677,25 @@ final class AdBlockManager {
             status: "正在下载订阅…"
         )
 
+        if isLocalOrPrivateURL(url) {
+            WebKitRuleDownloader.shared.downloadRuleText(from: url) { [weak self] result in
+                guard let self = self else { return }
+                switch result {
+                case .success(let text):
+                    self.processDownloadedRuleText(text, subscription: subscription, completion: completion)
+                case .failure(let error):
+                    DispatchQueue.main.async {
+                        self.stateLock.lock()
+                        self.updatingSourceIds.remove(subscription.id)
+                        self.stateLock.unlock()
+                        self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                        completion(false, 0, error.localizedDescription)
+                    }
+                }
+            }
+            return
+        }
+
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 1800
@@ -578,6 +726,26 @@ final class AdBlockManager {
             guard let self = self else { return }
 
             if let error = error {
+                let ns = error as NSError
+                if ns.domain == NSURLErrorDomain && (ns.code == NSURLErrorNotConnectedToInternet || ns.code == -1009 || ns.code == NSURLErrorCannotConnectToHost) {
+                    WebKitRuleDownloader.shared.downloadRuleText(from: url) { [weak self] result in
+                        guard let self = self else { return }
+                        switch result {
+                        case .success(let text):
+                            self.processDownloadedRuleText(text, subscription: subscription, completion: completion)
+                        case .failure(let fallbackError):
+                            DispatchQueue.main.async {
+                                self.stateLock.lock()
+                                self.updatingSourceIds.remove(subscription.id)
+                                self.stateLock.unlock()
+                                self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                                completion(false, 0, fallbackError.localizedDescription)
+                            }
+                        }
+                    }
+                    return
+                }
+
                 DispatchQueue.main.async {
                     self.stateLock.lock()
                     self.updatingSourceIds.remove(subscription.id)
@@ -622,86 +790,7 @@ final class AdBlockManager {
             }
 
             let text = String(decoding: data, as: UTF8.self)
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            guard !trimmed.isEmpty else {
-                DispatchQueue.main.async {
-                    self.stateLock.lock()
-                    self.updatingSourceIds.remove(subscription.id)
-                    self.stateLock.unlock()
-                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
-                    completion(false, 0, "订阅内容不是有效文本")
-                }
-                return
-            }
-
-            let hash = computeContentHash(text)
-            self.stateLock.lock()
-            let existingMetadata = self.metadataBySource[subscription.id]
-            let existingLists = self.compiledListsBySource[subscription.id]
-            self.stateLock.unlock()
-
-            if let meta = existingMetadata, meta.contentHash == hash, let lists = existingLists, !lists.isEmpty || !meta.cosmeticRules.isEmpty {
-                DispatchQueue.main.async {
-                    self.stateLock.lock()
-                    self.updatingSourceIds.remove(subscription.id)
-                    self.stateLock.unlock()
-                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
-
-                    var subscriptions = self.loadSubscriptions()
-                    if let index = subscriptions.firstIndex(where: { $0.id == subscription.id }) {
-                        subscriptions[index].lastUpdated = Date()
-                        subscriptions[index].ruleCount = meta.ruleCount
-                        self.saveSubscriptions(subscriptions)
-                    }
-                    completion(true, meta.ruleCount, nil)
-                }
-                return
-            }
-
-            do {
-                try text.write(
-                    to: self.subscriptionFileURL(id: subscription.id),
-                    atomically: true,
-                    encoding: .utf8
-                )
-            } catch {
-                DispatchQueue.main.async {
-                    self.stateLock.lock()
-                    self.updatingSourceIds.remove(subscription.id)
-                    self.stateLock.unlock()
-                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
-                    completion(false, 0, "订阅文件保存失败：\(error.localizedDescription)")
-                }
-                return
-            }
-
-            self.setUpdateStatus(
-                sourceId: subscription.id,
-                status: "正在解析规则…"
-            )
-
-            self.compileSource(id: subscription.id, isAlreadyUpdating: true) { success, message in
-                DispatchQueue.main.async {
-                    self.stateLock.lock()
-                    self.updatingSourceIds.remove(subscription.id)
-                    self.stateLock.unlock()
-                    self.setUpdateStatus(sourceId: subscription.id, status: nil)
-
-                    let count = self.ruleCount(sourceId: subscription.id)
-
-                    if success {
-                        var subscriptions = self.loadSubscriptions()
-                        if let index = subscriptions.firstIndex(where: { $0.id == subscription.id }) {
-                            subscriptions[index].lastUpdated = Date()
-                            subscriptions[index].ruleCount = count
-                            self.saveSubscriptions(subscriptions)
-                        }
-                    }
-
-                    completion(success, count, message)
-                }
-            }
+            self.processDownloadedRuleText(text, subscription: subscription, completion: completion)
         }.resume()
     }
 
