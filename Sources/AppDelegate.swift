@@ -8,6 +8,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        LocalNetworkManager.shared.triggerLocalNetworkPrompt()
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = BrowserViewController()
         window.makeKeyAndVisible()
