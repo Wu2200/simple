@@ -188,6 +188,9 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         super.viewDidAppear(animated)
         EyeProtectionManager.shared.restoreState(in: view.window)
         ensureBottomPanelPosition()
+        if !tabs.isEmpty, tabs.indices.contains(activeTabIndex), homeView.alpha < 0.5 {
+            reloadTerminatedTabIfNeeded(activeTab)
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -289,6 +292,13 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     @objc func handleAppDidBecomeActive() {
         ensureBottomPanelPosition()
+        if !tabs.isEmpty, tabs.indices.contains(activeTabIndex) {
+            let currentTab = activeTab
+            let isShowingWeb = homeView.alpha < 0.5 && !currentTab.isDisplayingFailurePage
+            if isShowingWeb {
+                reloadTerminatedTabIfNeeded(currentTab)
+            }
+        }
     }
 
     @objc func handleSessionPersistenceNotification() {
@@ -1428,6 +1438,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             } else {
                 tab.webView.load(URLRequest(url: restoreURL))
             }
+        } else if homeView.alpha < 0.5 && !tab.isDisplayingFailurePage {
+            reloadTerminatedTabIfNeeded(tab)
         }
 
         persistCurrentSession()
@@ -1541,6 +1553,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     func load(url: URL) {
         showBrowserUI()
 
+        activeTab.needsReloadAfterTermination = false
         activeTab.url = url
         activeTab.lastAutoFullscreenCheckedURL = url
         activeTab.title = url.host ?? url.absoluteString
@@ -1927,16 +1940,54 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func tabProcessTerminated(_ tab: TabItem) {
-        guard !tabs.isEmpty, tab.id == activeTab.id else { return }
-        resetProgress()
-        let targetURL = tab.url ?? tab.webView.url
-        if let url = targetURL, url.absoluteString != "about:blank" {
-            tab.url = url
+        guard !tabs.isEmpty else { return }
+
+        let isAppActive = UIApplication.shared.applicationState == .active
+        let isCurrentTab = (tab.id == activeTab.id)
+        let isShowingWeb = homeView.alpha < 0.5 && !tab.isDisplayingFailurePage
+
+        if isAppActive && isCurrentTab && isShowingWeb {
+            if tab.shouldAttemptTerminationReload() {
+                reloadTerminatedTab(tab)
+            }
+        }
+    }
+
+    func reloadTerminatedTabIfNeeded(_ tab: TabItem) {
+        guard !tab.isDisplayingFailurePage else { return }
+
+        let isTerminated = tab.needsReloadAfterTermination ||
+            (tab.url != nil && tab.webView.url == nil && !tab.isLoading)
+
+        guard isTerminated else { return }
+        guard tab.shouldAttemptTerminationReload() else { return }
+
+        reloadTerminatedTab(tab)
+    }
+
+    func reloadTerminatedTab(_ tab: TabItem) {
+        tab.needsReloadAfterTermination = false
+        guard let targetURL = tab.url ?? tab.webView.url ?? tab.previousURL,
+              targetURL.absoluteString != "about:blank" else {
+            return
+        }
+
+        tab.url = targetURL
+        if tab.id == activeTab.id {
             showBrowserUI()
-            tab.webView.load(URLRequest(url: url))
+            addressField.text = formattedAddress(for: targetURL)
+            resetProgress()
+            progressView.alpha = 1
+            progressView.setProgress(0.08, animated: false)
+        }
+
+        if AdBlockManager.shared.isEnabled && !AdBlockManager.shared.isReady {
+            AdBlockManager.shared.performWhenReady { [weak tab] in
+                guard let tab = tab else { return }
+                tab.reloadFromTop()
+            }
         } else {
-            showBrowserUI()
-            activeTab.webView.reload()
+            tab.reloadFromTop()
         }
     }
 
