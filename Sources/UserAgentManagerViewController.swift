@@ -170,6 +170,17 @@ final class UserAgentStore {
         UserDefaults.standard.set(id, forKey: keySelectedDesktopId)
     }
 
+    func select(_ item: UserAgentItem) {
+        switch item.category {
+        case .desktop:
+            setSelectedDesktopId(item.id)
+            currentMode = .desktop
+        case .mobile, .custom:
+            setSelectedMobileId(item.id)
+            currentMode = .mobile
+        }
+    }
+
     func getSelectedUA() -> String {
         let all = loadAllItems()
         let selId = (currentMode == .desktop) ? getSelectedDesktopId() : getSelectedMobileId()
@@ -250,13 +261,9 @@ final class UserAgentManagerViewController: UITableViewController {
             self?.loadData()
             let allCustom = UserAgentStore.shared.loadCustomItems()
             if let newItem = allCustom.last(where: { $0.name == name && $0.category == category }) {
-                if isMobile {
-                    UserAgentStore.shared.setSelectedMobileId(newItem.id)
-                } else {
-                    UserAgentStore.shared.setSelectedDesktopId(newItem.id)
-                }
+                UserAgentStore.shared.select(newItem)
                 self?.tableView.reloadData()
-                self?.onUASelected?(UserAgentStore.shared.getSelectedItem())
+                self?.onUASelected?(newItem)
             }
         })
         present(alert, animated: true)
@@ -283,11 +290,7 @@ final class UserAgentManagerViewController: UITableViewController {
                 UserAgentStore.shared.addCustomItem(name: name, uaString: ua, category: item.category)
                 let allCustom = UserAgentStore.shared.loadCustomItems()
                 if let added = allCustom.last(where: { $0.name == name && $0.category == item.category }) {
-                    if item.category == .mobile {
-                        UserAgentStore.shared.setSelectedMobileId(added.id)
-                    } else {
-                        UserAgentStore.shared.setSelectedDesktopId(added.id)
-                    }
+                    UserAgentStore.shared.select(added)
                 }
             }
             self?.loadData()
@@ -373,14 +376,10 @@ final class UserAgentManagerViewController: UITableViewController {
             item = customs[indexPath.row - presets.count]
         }
 
-        if isMobile {
-            UserAgentStore.shared.setSelectedMobileId(item.id)
-        } else {
-            UserAgentStore.shared.setSelectedDesktopId(item.id)
-        }
+        UserAgentStore.shared.select(item)
 
         tableView.reloadData()
-        onUASelected?(UserAgentStore.shared.getSelectedItem())
+        onUASelected?(item)
     }
 
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
