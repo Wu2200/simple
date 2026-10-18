@@ -1126,7 +1126,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             guard let iconURL = URL(string: iconURLString) else { return }
 
             var req = URLRequest(url: iconURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 4.0)
-            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            req.setValue(webView.customUserAgent ?? UserAgentStore.shared.getSelectedUA(), forHTTPHeaderField: "User-Agent")
 
             URLSession.shared.dataTask(with: req) { data, response, _ in
                 if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
