@@ -1120,7 +1120,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         })();
         """
 
-        webView.evaluateJavaScript(js) { result, _ in
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self = self else { return }
             let httpsScheme = "https:" + String(repeating: "/", count: 2)
             let iconURLString = (result as? String) ?? "\(httpsScheme)\(currentHost)/favicon.ico"
             guard let iconURL = URL(string: iconURLString) else { return }
