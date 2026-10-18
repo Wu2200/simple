@@ -546,15 +546,7 @@ extension BrowserViewController {
                 guard let self = self else { return }
                 let newMode: UserAgentCategory = (UserAgentStore.shared.currentMode == .desktop) ? .mobile : .desktop
                 UserAgentStore.shared.currentMode = newMode
-                let newUA = UserAgentStore.shared.getSelectedUA()
-                self.activeTab.webView.customUserAgent = newUA
-                self.activeTab.webView.configuration.defaultWebpagePreferences.preferredContentMode = (newMode == .desktop) ? .desktop : .mobile
-                let targetURL = self.activeTab.url ?? self.activeTab.webView.url
-                if let currentURL = targetURL, currentURL.absoluteString != "about:blank" {
-                    self.showBrowserUI()
-                    self.activeTab.url = currentURL
-                    self.activeTab.webView.load(URLRequest(url: currentURL))
-                }
+                self.applyUserAgent(UserAgentStore.shared.getSelectedItem(), reloadActiveTab: true)
             },
             longPressHandler: { [weak self] in
                 self?.showUserAgentManager()
@@ -717,20 +709,30 @@ extension BrowserViewController {
     func showUserAgentManager() {
         let manager = UserAgentManagerViewController()
         manager.onUASelected = { [weak self] item in
-            guard let self = self else { return }
-            UserAgentStore.shared.select(item)
-            let isDesktop = item.category == .desktop
-            self.activeTab.webView.customUserAgent = item.uaString
-            self.activeTab.webView.configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
-            let targetURL = self.activeTab.url ?? self.activeTab.webView.url
-            if let currentURL = targetURL, currentURL.absoluteString != "about:blank" {
-                self.showBrowserUI()
-                self.activeTab.url = currentURL
-                self.activeTab.webView.load(URLRequest(url: currentURL))
-            }
+            self?.applyUserAgent(item, reloadActiveTab: true)
         }
         let nav = UINavigationController(rootViewController: manager)
         present(nav, animated: true)
+    }
+
+    private func applyUserAgent(_ item: UserAgentItem, reloadActiveTab: Bool) {
+        UserAgentStore.shared.select(item)
+        let isDesktop = item.category == .desktop
+
+        for tab in tabs {
+            tab.webView.customUserAgent = item.uaString
+            tab.webView.configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
+        }
+
+        // Home has no model URL. Avoid reloading a stale WKWebView.url from its previous page.
+        guard reloadActiveTab,
+              let currentURL = activeTab.url,
+              currentURL.absoluteString != "about:blank" else {
+            return
+        }
+
+        showBrowserUI()
+        activeTab.webView.load(URLRequest(url: currentURL))
     }
 
     func showCleanDataMenu() {
