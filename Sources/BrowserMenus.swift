@@ -718,8 +718,9 @@ extension BrowserViewController {
         let manager = UserAgentManagerViewController()
         manager.onUASelected = { [weak self] item in
             guard let self = self else { return }
-            let isDesktop = UserAgentStore.shared.currentMode == .desktop
-            self.activeTab.webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
+            UserAgentStore.shared.select(item)
+            let isDesktop = item.category == .desktop
+            self.activeTab.webView.customUserAgent = item.uaString
             self.activeTab.webView.configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
             let targetURL = self.activeTab.url ?? self.activeTab.webView.url
             if let currentURL = targetURL, currentURL.absoluteString != "about:blank" {
