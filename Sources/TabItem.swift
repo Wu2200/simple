@@ -31,6 +31,20 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     var lastAutoFullscreenCheckedURL: URL?
     var hasTriggeredAutoFullscreen = false
     private var pendingRestoreURL: URL?
+    var needsReloadAfterTermination = false
+    private var lastTerminationReloadTime: TimeInterval = 0
+    private var rapidTerminationCount: Int = 0
+
+    func shouldAttemptTerminationReload() -> Bool {
+        let now = Date().timeIntervalSince1970
+        if now - lastTerminationReloadTime < 2.0 {
+            rapidTerminationCount += 1
+        } else {
+            rapidTerminationCount = 0
+        }
+        lastTerminationReloadTime = now
+        return rapidTerminationCount < 3
+    }
 
     private var hasInjectedScriptsForCurrentPage = false
     private var isLoadingFailureDocument = false
@@ -635,6 +649,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func reloadFromTop() {
+        needsReloadAfterTermination = false
         userScrolledDuringLoading = false
         lastAutoFullscreenCheckedURL = nil
         webView.scrollView.setContentOffset(.zero, animated: false)
@@ -743,6 +758,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     func clearFailureState() {
         hideReloadCover()
         isDisplayingFailurePage = false
+        needsReloadAfterTermination = false
         failedURL = nil
         failureError = nil
         failureOriginURL = nil
@@ -752,6 +768,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         self.url = url
         self.title = title.isEmpty ? (url?.host ?? "新标签页") : title
         self.pendingRestoreURL = url
+        self.needsReloadAfterTermination = false
         self.isDisplayingFailurePage = false
         self.failedURL = nil
         self.failureError = nil
@@ -1545,6 +1562,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         isLoading = true
+        needsReloadAfterTermination = false
         if !isLoadingFailureDocument {
             isDisplayingFailurePage = false
         }
@@ -1619,6 +1637,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         hideReloadCover()
         isLoading = false
+        needsReloadAfterTermination = true
         delegate?.tabProcessTerminated(self)
     }
 
@@ -1767,6 +1786,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         if nsError.domain == WKError.errorDomain {
             if nsError.code == WKError.Code.webContentProcessTerminated.rawValue {
+                needsReloadAfterTermination = true
                 return true
             }
         }
