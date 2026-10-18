@@ -308,10 +308,7 @@ final class FaviconLoader {
             group.enter()
 
             var req = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 4.0)
-            req.setValue(
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15",
-                forHTTPHeaderField: "User-Agent"
-            )
+            req.setValue(UserAgentStore.shared.getSelectedUA(), forHTTPHeaderField: "User-Agent")
 
             session.dataTask(with: req) { [weak self] data, response, _ in
                 defer { group.leave() }
