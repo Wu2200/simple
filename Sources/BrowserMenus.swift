@@ -213,6 +213,14 @@ extension BrowserViewController {
         }
 
         items.append(CustomBottomSheetItem(
+            title: "脚本注入诊断",
+            iconName: "ladybug",
+            handler: { [weak self] in
+                self?.showUserScriptDiagnostics()
+            }
+        ))
+
+        items.append(CustomBottomSheetItem(
             title: "搜索适合当前网站的脚本",
             iconName: "arrow.down.circle",
             handler: { [weak self] in
@@ -250,6 +258,17 @@ extension BrowserViewController {
             }
         }
         present(panel, animated: true)
+    }
+
+    func showUserScriptDiagnostics() {
+        let controller = UserScriptDiagnosticsViewController(
+            pageURL: activeTab.url ?? activeTab.webView.url,
+            entries: activeTab.userScriptDiagnostics,
+            diagnosticsEnabled: UserScriptStore.shared.isInjectionDiagnosticsEnabled
+        )
+        let nav = UINavigationController(rootViewController: controller)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true)
     }
 
     func showScriptSubMenu(for script: UserScript) {
