@@ -808,19 +808,33 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             let tag = "__userscript_ds_\(script.id)__"
             let alreadyAdded = controller.userScripts.contains { $0.source.contains(tag) }
             if !alreadyAdded {
-                let wrapped = wrapUserScriptForInjection(script: script, identifierTag: tag)
+                let wrapped = wrapUserScriptForInjection(script: script, identifierTag: tag, phase: "document-start")
                 let userScript = WKUserScript(
                     source: wrapped,
                     injectionTime: .atDocumentStart,
                     forMainFrameOnly: false
                 )
                 controller.addUserScript(userScript)
+                recordUserScriptDiagnostic("已注册 document-start 脚本：\(script.name)（\(script.id.prefix(8))）")
+            } else {
+                recordUserScriptDiagnostic("document-start 脚本已注册：\(script.name)（\(script.id.prefix(8))）")
             }
         }
     }
 
-    private func wrapUserScriptForInjection(script: UserScript, identifierTag: String) -> String {
+    private func javascriptStringLiteral(_ value: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [value], options: []),
+              let json = String(data: data, encoding: .utf8),
+              json.count >= 2 else { return "\"\"" }
+        return String(json.dropFirst().dropLast())
+    }
+
+    private func wrapUserScriptForInjection(script: UserScript, identifierTag: String, phase: String) -> String {
         let valuesJSON = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
+        let scriptIdLiteral = javascriptStringLiteral(script.id)
+        let scriptNameLiteral = javascriptStringLiteral(script.name)
+        let phaseLiteral = javascriptStringLiteral(phase)
+        let patternLiteral = javascriptStringLiteral(script.matchPattern)
         let escapedCode = script.code
         let isAllUrls = script.matchPattern == "*" || script.matchPattern == "<all_urls>"
         let matchCheckJS: String
@@ -890,9 +904,31 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         return """
         // \(identifierTag)
         (function() {
+            var __simpleReport = function(eventName, detail) {
+                try {
+                    window.webkit.messageHandlers.UserScriptDebug.postMessage({
+                        action: 'userScriptDiagnostic',
+                        scriptId: \(scriptIdLiteral),
+                        scriptName: \(scriptNameLiteral),
+                        phase: \(phaseLiteral),
+                        event: String(eventName || ''),
+                        detail: String(detail || '').slice(0, 500)
+                    });
+                } catch(e) {}
+            };
+            __simpleReport('开始匹配', '规则：' + \(patternLiteral));
+            var __simpleMatched = false;
             try {
-                if (!(\(matchCheckJS))) return;
-            } catch(e) { return; }
+                __simpleMatched = (\(matchCheckJS));
+            } catch(e) {
+                __simpleReport('匹配判断异常', e && (e.stack || e.message) || String(e));
+                return;
+            }
+            if (!__simpleMatched) {
+                __simpleReport('未匹配', '当前页面不符合脚本匹配规则');
+                return;
+            }
+            __simpleReport('开始执行', '匹配规则通过');
             (function(scriptId, initialValues) {
                 var values = initialValues || {};
                 var GM_info = {
@@ -997,8 +1033,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
                 try {
                     \(escapedCode)
-                } catch(e) {}
-            })('\(script.id)', \(valuesJSON));
+                } catch(e) {
+                    __simpleReport('脚本同步异常', e && (e.stack || e.message) || String(e));
+                }
+            })(\(scriptIdLiteral), \(valuesJSON));
         })();
         """
     }
