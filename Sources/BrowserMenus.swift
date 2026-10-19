@@ -642,6 +642,21 @@ extension BrowserViewController {
             }
         ))
 
+        items.append(CustomBottomSheetItem(
+            title: "英文环境 (en-US)",
+            iconName: "globe.americas",
+            isSwitchOn: BrowserLocaleStore.shared.isEnglishUSEnabled,
+            dismissOnTap: false,
+            handler: { [weak self] in
+                guard let self = self else { return }
+                let enabled = !BrowserLocaleStore.shared.isEnglishUSEnabled
+                BrowserLocaleStore.shared.isEnglishUSEnabled = enabled
+                for tab in self.tabs {
+                    tab.updateLocaleEnvironment(reload: tab.id == self.activeTab.id)
+                }
+            }
+        ))
+
         let currentEngine = SearchEngineStore.shared.currentEngine
         items.append(CustomBottomSheetItem(
             title: currentEngine.name,
