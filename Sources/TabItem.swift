@@ -1659,10 +1659,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
             if UserScriptStore.shared.isScriptMatching(script: script, urlString: currentUrlStr) {
                 matchingScripts.append(script)
-            } else {
             }
-        }
-        if matchingScripts.isEmpty {
         }
 
         var fullJS = Self.coreGMPolyfillScriptSource + "\n"
