@@ -759,6 +759,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             controller.addUserScript(script)
         }
 
+        syncDocumentStartUserScripts()
+
         let hasDownload = controller.userScripts.contains { $0.source.contains("__simple_download_hooked__") }
         if !hasDownload {
             let script = WKUserScript(
@@ -778,6 +780,206 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             )
             controller.addUserScript(script)
         }
+    }
+
+    private func syncDocumentStartUserScripts() {
+        let controller = webView.configuration.userContentController
+        let allScripts = UserScriptStore.shared.loadScripts()
+        let docStartScripts = allScripts.filter { script in
+            guard script.isEnabled else { return false }
+            let runAt = script.runAt?.lowercased() ?? ""
+            return runAt == "document-start"
+        }
+
+        guard !docStartScripts.isEmpty else { return }
+
+        for script in docStartScripts {
+            let tag = "__userscript_ds_\(script.id)__"
+            let alreadyAdded = controller.userScripts.contains { $0.source.contains(tag) }
+            if !alreadyAdded {
+                let wrapped = wrapUserScriptForInjection(script: script, identifierTag: tag)
+                let userScript = WKUserScript(
+                    source: wrapped,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: false
+                )
+                controller.addUserScript(userScript)
+            }
+        }
+    }
+
+    private func wrapUserScriptForInjection(script: UserScript, identifierTag: String) -> String {
+        let valuesJSON = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
+        let escapedCode = script.code
+        let isAllUrls = script.matchPattern == "*" || script.matchPattern == "<all_urls>"
+        let matchCheckJS: String
+        if isAllUrls {
+            matchCheckJS = "true"
+        } else {
+            let rawParts = script.matchPattern.components(separatedBy: CharacterSet(charactersIn: ",\n;"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let partsData = (try? JSONSerialization.data(withJSONObject: rawParts, options: [])) ?? Data()
+            let partsJSON = String(data: partsData, encoding: .utf8) ?? "[]"
+            matchCheckJS = """
+            (function() {
+                var currentUrl = window.location.href;
+                var currentHost = window.location.hostname.toLowerCase();
+                var currentPath = window.location.pathname.toLowerCase();
+                var patterns = \(partsJSON);
+                function matchHost(h, pat) {
+                    if (pat === '*' || pat === '<all_urls>' || !pat) return true;
+                    if (pat.indexOf('://') !== -1) pat = pat.split('://')[1];
+                    if (pat.indexOf('/') !== -1) pat = pat.split('/')[0];
+                    pat = pat.trim().toLowerCase();
+                    if (pat.indexOf('*.') === 0) {
+                        var s = pat.substring(2);
+                        return h === s || h.endsWith('.' + s);
+                    }
+                    if (pat.indexOf('*') === 0) {
+                        var s = pat.substring(1);
+                        return h.endsWith(s);
+                    }
+                    return h === pat || h.endsWith('.' + pat);
+                }
+                function matchUrl(u, rawPat) {
+                    var pat = rawPat.trim().toLowerCase();
+                    if (pat === '*' || pat === '<all_urls>') return true;
+                    if (pat.indexOf('://') !== -1) pat = pat.split('://')[1];
+                    var patHost = pat;
+                    var patPath = null;
+                    var slashIdx = pat.indexOf('/');
+                    if (slashIdx !== -1) {
+                        patHost = pat.substring(0, slashIdx);
+                        patPath = pat.substring(slashIdx);
+                    }
+                    if (!matchHost(currentHost, patHost)) return false;
+                    if (!patPath || patPath === '/*' || patPath === '/') return true;
+                    var regStr = '^' + patPath.replace(/[.+?^${}()|[\\]\\\\]/g, '\\\\$&').replace(/\\*/g, '.*') + '$';
+                    try {
+                        return new RegExp(regStr).test(currentPath);
+                    } catch(e) {
+                        return true;
+                    }
+                }
+                var excludes = patterns.filter(function(p){ return p.indexOf('!') === 0; }).map(function(p){ return p.substring(1); });
+                for (var i = 0; i < excludes.length; i++) {
+                    if (matchUrl(currentUrl, excludes[i])) return false;
+                }
+                var includes = patterns.filter(function(p){ return p.indexOf('!') !== 0; });
+                if (includes.length === 0) return true;
+                for (var j = 0; j < includes.length; j++) {
+                    if (matchUrl(currentUrl, includes[j])) return true;
+                }
+                return false;
+            })()
+            """
+        }
+
+        return """
+        // \(identifierTag)
+        (function() {
+            try {
+                if (!(\(matchCheckJS))) return;
+            } catch(e) { return; }
+            (function(scriptId, initialValues) {
+                var values = initialValues || {};
+                var GM_info = {
+                    scriptHandler: 'Tampermonkey',
+                    version: '5.0.0',
+                    script: { name: scriptId, version: '1.0' }
+                };
+                var GM_setValue = function(name, val) {
+                    values[name] = val;
+                    try {
+                        window.webkit.messageHandlers.GM.postMessage({
+                            action: 'setValue',
+                            scriptId: scriptId,
+                            name: name,
+                            value: val
+                        });
+                    } catch(e) {}
+                };
+                var GM_getValue = function(name, defaultValue) {
+                    return (name in values) ? values[name] : defaultValue;
+                };
+                var GM_deleteValue = function(name) {
+                    delete values[name];
+                    try {
+                        window.webkit.messageHandlers.GM.postMessage({
+                            action: 'deleteValue',
+                            scriptId: scriptId,
+                            name: name
+                        });
+                    } catch(e) {}
+                };
+                var GM_listValues = function() {
+                    return Object.keys(values);
+                };
+                var GM_registerMenuCommand = function(caption, commandFunc) {
+                    var id = Math.floor(Math.random() * 1000000);
+                    window.__gm_menu_commands__[id] = commandFunc;
+                    try {
+                        window.webkit.messageHandlers.GM.postMessage({
+                            action: 'registerMenuCommand',
+                            id: id,
+                            scriptId: scriptId,
+                            caption: caption
+                        });
+                    } catch(e) {}
+                    return id;
+                };
+                var GM_unregisterMenuCommand = function(id) {
+                    delete window.__gm_menu_commands__[id];
+                    try {
+                        window.webkit.messageHandlers.GM.postMessage({
+                            action: 'unregisterMenuCommand',
+                            id: id
+                        });
+                    } catch(e) {}
+                };
+                var GM_cookie = window.GM_cookie;
+                var GM_xmlhttpRequest = window.GM_xmlhttpRequest;
+                var GM_addStyle = window.GM_addStyle;
+                var GM_openInTab = window.GM_openInTab;
+                var GM_setClipboard = window.GM_setClipboard;
+                var GM_notification = window.GM_notification;
+                var GM_log = window.GM_log;
+                var GM = {
+                    info: GM_info,
+                    cookie: GM_cookie,
+                    getValue: function(k, d) { return Promise.resolve(GM_getValue(k, d)); },
+                    setValue: function(k, v) { GM_setValue(k, v); return Promise.resolve(); },
+                    deleteValue: function(k) { GM_deleteValue(k); return Promise.resolve(); },
+                    listValues: function() { return Promise.resolve(GM_listValues()); },
+                    xmlHttpRequest: function(opts) {
+                        return new Promise(function(resolve, reject) {
+                            var origOnload = opts.onload;
+                            var origOnerror = opts.onerror;
+                            opts.onload = function(res) {
+                                if (origOnload) origOnload(res);
+                                resolve(res);
+                            };
+                            opts.onerror = function(error) {
+                                if (origOnerror) origOnerror(error);
+                                reject(error);
+                            };
+                            GM_xmlhttpRequest(opts);
+                        });
+                    },
+                    addStyle: window.GM_addStyle,
+                    openInTab: window.GM_openInTab,
+                    setClipboard: window.GM_setClipboard,
+                    notification: window.GM_notification,
+                    registerMenuCommand: function(c, f) { return Promise.resolve(GM_registerMenuCommand(c, f)); }
+                };
+
+                try {
+                    \(escapedCode)
+                } catch(e) {}
+            })('\(script.id)', \(valuesJSON));
+        })();
+        """
     }
 
     func destroy() {
