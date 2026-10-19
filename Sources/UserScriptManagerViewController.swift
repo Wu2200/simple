@@ -15,13 +15,6 @@ enum GMCookiePermission: String, CaseIterable, Codable {
         }
     }
 
-    var detailDescription: String {
-        switch self {
-        case .disabled: return "最高安全级别。拒绝所有脚本读取 Cookie，防止凭据外泄。"
-        case .sameDomain: return "仅允许脚本读取当前网页所在主机的 Cookie。"
-        case .allDomains: return "允许脚本读取任意域名的 Cookie（包含 HttpOnly 敏感会话凭证），供云端无头模式或受信任脚本使用。"
-        }
-    }
 }
 
 struct UserScript: Codable {
@@ -819,6 +812,7 @@ final class UserScriptEditorViewController: UIViewController {
 final class UserScriptSettingsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private var currentPermission: GMCookiePermission = UserScriptStore.shared.cookiePermission
+    private var isPermissionExpanded = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -854,32 +848,33 @@ final class UserScriptSettingsViewController: UIViewController, UITableViewDataS
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return GMCookiePermission.allCases.count
+        return isPermissionExpanded ? GMCookiePermission.allCases.count : 1
     }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return "高危权限：允许脚本访问 Cookie (GM_cookie)"
+        return "Cookie 访问权限"
     }
 
     func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        return "此设置控制脚本调用 GM_cookie 的权限策略（对标 Tampermonkey 选项）。\n\n• 禁用：完全拦截 GM_cookie，无法读取任何 Cookie。\n• 仅限同域：仅允许脚本查询当前访问主机的 Cookie。\n• 允许所有 (All)：允许脚本读取任意域名的 Cookie（包括 HttpOnly 凭据与 Google 跨域 Cookie，供云端无头模式或受信任脚本使用）。请务必仅在信任当前安装脚本的前提下开启。"
+        return "允许所有域名会开放包括 HttpOnly 在内的登录凭证。仅对信任的脚本开启。"
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let perm = GMCookiePermission.allCases[indexPath.row]
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "CookiePermCell")
+        let permissions = GMCookiePermission.allCases
+        let perm = isPermissionExpanded ? permissions[indexPath.row] : currentPermission
+        let cell = UITableViewCell(style: .default, reuseIdentifier: "CookiePermCell")
         cell.textLabel?.text = perm.title
         cell.textLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
-        cell.detailTextLabel?.text = perm.detailDescription
-        cell.detailTextLabel?.font = .systemFont(ofSize: 12)
-        cell.detailTextLabel?.textColor = .secondaryLabel
-        cell.detailTextLabel?.numberOfLines = 0
 
-        if perm == currentPermission {
-            cell.accessoryType = .checkmark
-            cell.tintColor = perm == .allDomains ? .systemRed : .systemBlue
+        if isPermissionExpanded {
+            if perm == currentPermission {
+                cell.accessoryType = .checkmark
+                cell.tintColor = perm == .allDomains ? .systemRed : .systemBlue
+            } else {
+                cell.accessoryType = .none
+            }
         } else {
-            cell.accessoryType = .none
+            cell.accessoryType = .disclosureIndicator
         }
         return cell
     }
@@ -887,6 +882,11 @@ final class UserScriptSettingsViewController: UIViewController, UITableViewDataS
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         guard indexPath.section == 0 else { return }
+        if !isPermissionExpanded {
+            isPermissionExpanded = true
+            tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
+            return
+        }
         let selectedPerm = GMCookiePermission.allCases[indexPath.row]
 
         if selectedPerm == .allDomains && currentPermission != .allDomains {
