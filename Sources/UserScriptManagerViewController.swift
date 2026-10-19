@@ -468,6 +468,11 @@ final class UserScriptManagerViewController: UIViewController, UITableViewDataSo
             addButton.widthAnchor.constraint(equalToConstant: 28),
             addButton.heightAnchor.constraint(equalToConstant: 28),
 
+            settingsButton.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -16),
+            settingsButton.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
+            settingsButton.widthAnchor.constraint(equalToConstant: 28),
+            settingsButton.heightAnchor.constraint(equalToConstant: 28),
+
             searchContainer.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 14),
             searchContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             searchContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
@@ -510,6 +515,12 @@ final class UserScriptManagerViewController: UIViewController, UITableViewDataSo
 
     @objc private func handleSearchChanged() {
         applyFilter()
+    }
+
+    @objc private func handleOpenSettings() {
+        let vc = UserScriptSettingsViewController()
+        let nav = UINavigationController(rootViewController: vc)
+        present(nav, animated: true)
     }
 
     @objc private func handleAddScript() {
@@ -792,7 +803,8 @@ final class UserScriptEditorViewController: UIViewController {
             name: nameText,
             matchPattern: matchText,
             code: codeText,
-            isEnabled: script?.isEnabled ?? true
+            isEnabled: script?.isEnabled ?? true,
+            runAt: parsed.runAt
         )
 
         onSave?(item)
