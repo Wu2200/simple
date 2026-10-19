@@ -76,22 +76,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         if (window.__simple_english_us_locale__) return;
         window.__simple_english_us_locale__ = true;
 
-        if (window === window.top) {
-            try {
-                var currentURL = new URL(window.location.href);
-                var isGoogleHost = /(^|\\.)google\\.[a-z]{2,}(?:\\.[a-z]{2,})?$/.test(currentURL.hostname.toLowerCase());
-                if (isGoogleHost && currentURL.pathname === '/search') {
-                    var needsLocale = currentURL.searchParams.get('hl') !== 'en' || currentURL.searchParams.get('gl') !== 'us';
-                    if (needsLocale) {
-                        currentURL.searchParams.set('hl', 'en');
-                        currentURL.searchParams.set('gl', 'us');
-                        window.location.replace(currentURL.toString());
-                        return;
-                    }
-                }
-            } catch(e) {}
-        }
-
         function overrideNavigatorValue(name, value) {
             var descriptor = {
                 configurable: true,
