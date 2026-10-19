@@ -279,17 +279,6 @@ extension BrowserViewController {
         present(nav, animated: true)
     }
 
-    func showUserScriptDiagnostics() {
-        let controller = UserScriptDiagnosticsViewController(
-            pageURL: activeTab.url ?? activeTab.webView.url,
-            entries: activeTab.userScriptDiagnostics,
-            diagnosticsEnabled: UserScriptStore.shared.isInjectionDiagnosticsEnabled
-        )
-        let nav = UINavigationController(rootViewController: controller)
-        nav.modalPresentationStyle = .pageSheet
-        present(nav, animated: true)
-    }
-
     func showScriptSubMenu(for script: UserScript) {
         let currentScript = UserScriptStore.shared.loadScripts().first(where: { $0.id == script.id }) ?? script
         let currentHost = activeTab.url?.host ?? ""
