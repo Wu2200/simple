@@ -21,6 +21,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     var isLoading = false
     var snapshot: UIImage?
     var registeredCommands: [RegisteredMenuCommand] = []
+    var userScriptDiagnostics: [String] = []
 
     var sourceTabID: UUID?
     var failedURL: URL?
@@ -627,6 +628,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         AdBlockManager.shared.attach(to: webView)
         userContentController.add(self, name: "GM")
+        userContentController.add(self, name: "UserScriptDebug")
         userContentController.add(self, name: "DownloadBridge")
         userContentController.add(self, name: "ContextMenuBridge")
         userContentController.add(self, name: "HistoryBridge")
@@ -724,6 +726,15 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     @objc private func handleAdBlockRulesAppliedNotification(_ notification: Notification) {
         guard let targetWebView = notification.object as? WKWebView, targetWebView == self.webView else { return }
         ensureCoreScripts()
+    }
+
+    private func recordUserScriptDiagnostic(_ text: String) {
+        guard UserScriptStore.shared.isInjectionDiagnosticsEnabled else { return }
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        userScriptDiagnostics.append("[\(timestamp)] \(text)")
+        if userScriptDiagnostics.count > 300 {
+            userScriptDiagnostics.removeFirst(userScriptDiagnostics.count - 300)
+        }
     }
 
     private func ensureCoreScripts() {
@@ -1018,6 +1029,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         })();
         """, completionHandler: nil)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "GM")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "UserScriptDebug")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "ContextMenuBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "HistoryBridge")
