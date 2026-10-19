@@ -212,21 +212,15 @@ extension BrowserViewController {
             }
         }
 
-        items.append(CustomBottomSheetItem(
-            title: "脚本注入诊断",
-            iconName: "ladybug",
-            handler: { [weak self] in
-                self?.showUserScriptDiagnostics()
-            }
-        ))
-
-        items.append(CustomBottomSheetItem(
-            title: "脚本注入诊断",
-            iconName: "ladybug",
-            handler: { [weak self] in
-                self?.showUserScriptDiagnostics()
-            }
-        ))
+        if UserScriptStore.shared.isInjectionDiagnosticsEnabled {
+            items.append(CustomBottomSheetItem(
+                title: "脚本注入诊断",
+                iconName: "ladybug",
+                handler: { [weak self] in
+                    self?.showUserScriptDiagnostics()
+                }
+            ))
+        }
 
         items.append(CustomBottomSheetItem(
             title: "搜索适合当前网站的脚本",
