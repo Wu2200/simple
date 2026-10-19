@@ -389,6 +389,12 @@ final class UserScriptManagerViewController: UIViewController, UITableViewDataSo
         titleLabel.textColor = .label
         titleLabel.text = "管理面板"
 
+        let settingsButton = TouchButton()
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+        settingsButton.setImage(UIImage(systemName: "gearshape", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+        settingsButton.tintColor = .secondaryLabel
+        settingsButton.addTarget(self, action: #selector(handleOpenSettings), for: .touchUpInside)
+
         let addButton = TouchButton()
         addButton.translatesAutoresizingMaskIntoConstraints = false
         addButton.setImage(UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
@@ -402,6 +408,7 @@ final class UserScriptManagerViewController: UIViewController, UITableViewDataSo
         closeButton.addTarget(self, action: #selector(handleClose), for: .touchUpInside)
 
         headerView.addSubview(titleLabel)
+        headerView.addSubview(settingsButton)
         headerView.addSubview(addButton)
         headerView.addSubview(closeButton)
 
