@@ -1,6 +1,18 @@
 import UIKit
 import WebKit
 
+final class BrowserLocaleStore {
+    static let shared = BrowserLocaleStore()
+    private let englishUSKey = "browser_english_us_locale_enabled_v1"
+
+    var isEnglishUSEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: englishUSKey) }
+        set { UserDefaults.standard.set(newValue, forKey: englishUSKey) }
+    }
+
+    private init() {}
+}
+
 protocol TabItemDelegate: AnyObject {
     func tabDidUpdate(_ tab: TabItem)
     func tabDidFail(_ tab: TabItem, error: Error)
@@ -57,6 +69,78 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var titleObservation: NSKeyValueObservation?
 
     weak var delegate: TabItemDelegate?
+
+    private static let englishUSLocaleScriptMarker = "__simple_english_us_locale__"
+    private static let englishUSLocaleScriptSource = """
+    (function() {
+        if (window.__simple_english_us_locale__) return;
+        window.__simple_english_us_locale__ = true;
+
+        function overrideNavigatorValue(name, value) {
+            var descriptor = {
+                configurable: true,
+                get: function() { return value; }
+            };
+            try {
+                Object.defineProperty(Object.getPrototypeOf(navigator), name, descriptor);
+            } catch(e) {}
+            try {
+                Object.defineProperty(navigator, name, descriptor);
+            } catch(e) {}
+        }
+
+        overrideNavigatorValue('language', 'en-US');
+        overrideNavigatorValue('languages', ['en-US', 'en']);
+        overrideNavigatorValue('userLanguage', 'en-US');
+        overrideNavigatorValue('browserLanguage', 'en-US');
+
+        function patchIntlConstructor(name) {
+            try {
+                var Native = Intl[name];
+                if (typeof Native !== 'function') return;
+                var Wrapped = function(locales, options) {
+                    var target = new.target && new.target !== Wrapped ? new.target : Native;
+                    return Reflect.construct(
+                        Native,
+                        [locales == null ? 'en-US' : locales, options],
+                        target
+                    );
+                };
+                Object.setPrototypeOf(Wrapped, Native);
+                Wrapped.prototype = Native.prototype;
+                Intl[name] = Wrapped;
+            } catch(e) {}
+        }
+
+        [
+            'DateTimeFormat',
+            'NumberFormat',
+            'Collator',
+            'PluralRules',
+            'RelativeTimeFormat',
+            'ListFormat',
+            'DisplayNames'
+        ].forEach(patchIntlConstructor);
+
+        function patchLocaleMethod(prototype, name, localeIndex) {
+            try {
+                var original = prototype[name];
+                if (typeof original !== 'function') return;
+                prototype[name] = function() {
+                    var args = Array.prototype.slice.call(arguments);
+                    if (args[localeIndex] == null) args[localeIndex] = 'en-US';
+                    return original.apply(this, args);
+                };
+            } catch(e) {}
+        }
+
+        patchLocaleMethod(Date.prototype, 'toLocaleString', 0);
+        patchLocaleMethod(Date.prototype, 'toLocaleDateString', 0);
+        patchLocaleMethod(Date.prototype, 'toLocaleTimeString', 0);
+        patchLocaleMethod(Number.prototype, 'toLocaleString', 0);
+        patchLocaleMethod(String.prototype, 'localeCompare', 1);
+    })();
+    """
 
     private static let coreHistoryScriptSource = """
     (function() {
@@ -759,6 +843,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             controller.addUserScript(script)
         }
 
+        syncLocaleEnvironmentScript()
         syncDocumentStartUserScripts()
 
         let hasDownload = controller.userScripts.contains { $0.source.contains("__simple_download_hooked__") }
@@ -780,6 +865,32 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             )
             controller.addUserScript(script)
         }
+    }
+
+    private func syncLocaleEnvironmentScript() {
+        guard BrowserLocaleStore.shared.isEnglishUSEnabled else { return }
+        let controller = webView.configuration.userContentController
+        guard !controller.userScripts.contains(where: { $0.source.contains(Self.englishUSLocaleScriptMarker) }) else { return }
+        controller.addUserScript(
+            WKUserScript(
+                source: Self.englishUSLocaleScriptSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        )
+    }
+
+    private func rebuildUserContentScripts() {
+        webView.configuration.userContentController.removeAllUserScripts()
+        ensureCoreScripts()
+    }
+
+    func updateLocaleEnvironment(reload: Bool) {
+        rebuildUserContentScripts()
+        guard reload else { return }
+        hasInjectedScriptsForCurrentPage = false
+        registeredCommands.removeAll()
+        webView.reload()
     }
 
     private func syncDocumentStartUserScripts() {
@@ -1783,6 +1894,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     func reloadUserScripts() {
         hasInjectedScriptsForCurrentPage = false
         registeredCommands.removeAll()
+        rebuildUserContentScripts()
         webView.reload()
     }
 
