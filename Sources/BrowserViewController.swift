@@ -518,12 +518,12 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 }
                 return
             }
-            let (parsedName, parsedMatch) = UserScriptStore.shared.parseMetadata(from: code)
+            let parsedMetadata = UserScriptStore.shared.parseMetadata(from: code)
 
             DispatchQueue.main.async {
                 let alert = UIAlertController(
                     title: "安装油猴脚本",
-                    message: "脚本名称: \(parsedName)\n匹配规则: \(parsedMatch)\n\n是否确定安装此油猴脚本？",
+                    message: "脚本名称: \(parsedMetadata.name)\n匹配规则: \(parsedMetadata.match)\n运行时机: \(parsedMetadata.runAt)\n\n是否确定安装此油猴脚本？",
                     preferredStyle: .alert
                 )
 
@@ -531,10 +531,11 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                     var scripts = UserScriptStore.shared.loadScripts()
                     let newScript = UserScript(
                         id: UUID().uuidString,
-                        name: parsedName,
-                        matchPattern: parsedMatch,
+                        name: parsedMetadata.name,
+                        matchPattern: parsedMetadata.match,
                         code: code,
-                        isEnabled: true
+                        isEnabled: true,
+                        runAt: parsedMetadata.runAt
                     )
                     scripts.append(newScript)
                     UserScriptStore.shared.saveScripts(scripts)
