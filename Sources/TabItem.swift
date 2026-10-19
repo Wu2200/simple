@@ -1162,6 +1162,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             ScriptDataStore.shared.setValue(scriptId: scriptId, name: name, value: value)
         } else if action == "deleteValue", let scriptId = body["scriptId"] as? String, let name = body["name"] as? String {
             ScriptDataStore.shared.deleteValue(scriptId: scriptId, name: name)
+        } else if action == "cookie_list", let reqId = body["id"] as? String, let details = body["details"] as? [String: Any] {
+            handleCookieList(requestID: reqId, details: details, message: message)
+        } else if action == "cookie_delete", let reqId = body["id"] as? String, let details = body["details"] as? [String: Any] {
+            handleCookieDelete(requestID: reqId, details: details, message: message)
+        } else if action == "cookie_set", let reqId = body["id"] as? String, let details = body["details"] as? [String: Any] {
+            handleCookieSet(requestID: reqId, details: details, message: message)
         } else if action == "xhr", let reqId = body["id"] as? String, let urlString = body["url"] as? String, let targetURL = URL(string: urlString) {
             let method = (body["method"] as? String) ?? "GET"
             let responseType = ((body["responseType"] as? String) ?? "").lowercased()
