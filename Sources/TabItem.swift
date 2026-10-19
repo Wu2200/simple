@@ -221,6 +221,66 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
         };
         window.GM_notification = function() {};
+
+        window.__gm_cookie_callbacks__ = window.__gm_cookie_callbacks__ || {};
+        window.GM_cookie = {
+            list: function(details, callback) {
+                var id = 'ck_' + Math.random().toString(36).substr(2, 9);
+                window.__gm_cookie_callbacks__[id] = callback;
+                try {
+                    window.webkit.messageHandlers.GM.postMessage({
+                        action: 'cookie_list',
+                        id: id,
+                        details: details || {}
+                    });
+                } catch(e) {
+                    if (typeof callback === 'function') callback(null, e.toString());
+                }
+            },
+            delete: function(details, callback) {
+                var id = 'ck_' + Math.random().toString(36).substr(2, 9);
+                window.__gm_cookie_callbacks__[id] = callback;
+                try {
+                    window.webkit.messageHandlers.GM.postMessage({
+                        action: 'cookie_delete',
+                        id: id,
+                        details: details || {}
+                    });
+                } catch(e) {
+                    if (typeof callback === 'function') callback(e.toString());
+                }
+            },
+            set: function(details, callback) {
+                var id = 'ck_' + Math.random().toString(36).substr(2, 9);
+                window.__gm_cookie_callbacks__[id] = callback;
+                try {
+                    window.webkit.messageHandlers.GM.postMessage({
+                        action: 'cookie_set',
+                        id: id,
+                        details: details || {}
+                    });
+                } catch(e) {
+                    if (typeof callback === 'function') callback(e.toString());
+                }
+            }
+        };
+
+        window.__handleCookieListResponse = function(id, cookies, error) {
+            var cb = window.__gm_cookie_callbacks__ && window.__gm_cookie_callbacks__[id];
+            if (!cb) return;
+            delete window.__gm_cookie_callbacks__[id];
+            cb(cookies, error);
+        };
+        window.__gm_handleCookieListResponse = window.__handleCookieListResponse;
+
+        window.__handleCookieOpResponse = function(id, error) {
+            var cb = window.__gm_cookie_callbacks__ && window.__gm_cookie_callbacks__[id];
+            if (!cb) return;
+            delete window.__gm_cookie_callbacks__[id];
+            cb(error);
+        };
+        window.__gm_handleCookieOpResponse = window.__handleCookieOpResponse;
+
         window.GM_xmlhttpRequest = function(opts) {
             var id = 'xhr_' + Math.random().toString(36).substr(2, 9);
             window.__gm_xhr_callbacks__ = window.__gm_xhr_callbacks__ || {};
