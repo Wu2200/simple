@@ -1165,6 +1165,25 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "UserScriptDebug",
+           let body = message.body as? [String: Any],
+           body["action"] as? String == "userScriptDiagnostic" {
+            let scriptName = body["scriptName"] as? String ?? "未知脚本"
+            let scriptID = (body["scriptId"] as? String).map { String($0.prefix(8)) } ?? "未知脚本"
+            let phase = body["phase"] as? String ?? "未知阶段"
+            let event = body["event"] as? String ?? "未知事件"
+            let detail = body["detail"] as? String ?? ""
+            let frameURL = message.frameInfo.request.url.flatMap { url -> String? in
+                guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+                components.query = nil
+                components.fragment = nil
+                return components.string
+            } ?? "未知 frame"
+            let frameType = message.frameInfo.isMainFrame ? "主 frame" : "子 frame"
+            recordUserScriptDiagnostic("\(frameType) · \(scriptName)（\(scriptID)）· \(phase) · \(event)\(detail.isEmpty ? "" : "：\(detail)") · \(frameURL)")
+            return
+        }
+
         if message.name == "ResourceBridge" {
             guard let body = message.body as? [String: Any],
                   let mainHost = body["main"] as? String,
@@ -1686,10 +1705,25 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         applyDesktopViewAdaptationIfNeeded()
         injectInlineVideoHelper()
 
-        let currentUrlStr = url?.absoluteString ?? ""
-        let matchingScripts = UserScriptStore.shared.loadScripts().filter {
-            UserScriptStore.shared.isScriptMatching(script: $0, urlString: currentUrlStr) &&
-                $0.runAt?.lowercased() != "document-start"
+        let currentUrlStr = url?.absoluteString ?? webView.url?.absoluteString ?? ""
+        let candidates = UserScriptStore.shared.loadScripts().filter {
+            $0.runAt?.lowercased() != "document-start"
+        }
+        var matchingScripts: [UserScript] = []
+        for script in candidates {
+            if !script.isEnabled {
+                recordUserScriptDiagnostic("跳过已禁用脚本：\(script.name)（\(script.id.prefix(8))）")
+                continue
+            }
+            if UserScriptStore.shared.isScriptMatching(script: script, urlString: currentUrlStr) {
+                matchingScripts.append(script)
+                recordUserScriptDiagnostic("匹配通过，准备执行 document-idle：\(script.name)（\(script.id.prefix(8))）")
+            } else {
+                recordUserScriptDiagnostic("匹配未通过或当前域名禁用了脚本：\(script.name)（\(script.id.prefix(8))），规则：\(script.matchPattern)")
+            }
+        }
+        if matchingScripts.isEmpty {
+            recordUserScriptDiagnostic("当前页面没有可执行的非 document-start 脚本；候选数：\(candidates.count)")
         }
 
         var fullJS = Self.coreGMPolyfillScriptSource + "\n"
@@ -1800,13 +1834,28 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
                 try {
                     \(script.code)
-                } catch(e) {}
+                } catch(e) {
+                    try {
+                        window.webkit.messageHandlers.UserScriptDebug.postMessage({
+                            action: 'userScriptDiagnostic',
+                            scriptId: scriptId,
+                            scriptName: '\(script.name.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'"))',
+                            phase: 'document-idle',
+                            event: '脚本同步异常',
+                            detail: String(e && (e.stack || e.message) || e).slice(0, 500)
+                        });
+                    } catch(reportError) {}
+                }
             })('\(script.id)', \(valuesJSON));
             \n
             """
         }
 
-        webView.evaluateJavaScript(fullJS, completionHandler: nil)
+        guard !matchingScripts.isEmpty else { return }
+        webView.evaluateJavaScript(fullJS) { [weak self] _, error in
+            guard let error = error else { return }
+            self?.recordUserScriptDiagnostic("document-idle evaluateJavaScript 注入失败：\(error.localizedDescription)")
+        }
     }
 
     func reloadUserScripts() {
@@ -2097,6 +2146,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if UserScriptStore.shared.isInjectionDiagnosticsEnabled {
+            userScriptDiagnostics.removeAll()
+            let targetURL = navigationActionURL ?? webView.url
+            let safeURL = targetURL.map { "\($0.scheme ?? "")://\($0.host ?? "")\($0.path)" } ?? "未知地址"
+            recordUserScriptDiagnostic("开始导航：\(safeURL)")
+        }
         isLoading = true
         needsReloadAfterTermination = false
         if !isLoadingFailureDocument {
