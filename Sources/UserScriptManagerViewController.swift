@@ -44,6 +44,12 @@ final class UserScriptStore {
     static let didUpdateSettingsNotification = NSNotification.Name("UserScriptStoreDidUpdateSettings")
     private let key = "user_tampermonkey_scripts_v5"
     private let cookiePermissionKey = "user_script_gm_cookie_permission_v1"
+    private let injectionDiagnosticsKey = "user_script_injection_diagnostics_v1"
+
+    var isInjectionDiagnosticsEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: injectionDiagnosticsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: injectionDiagnosticsKey) }
+    }
 
     var cookiePermission: GMCookiePermission {
         get {
@@ -850,22 +856,39 @@ final class UserScriptSettingsViewController: UIViewController, UITableViewDataS
     }
 
     func numberOfSections(in tableView: UITableView) -> Int {
-        return 1
+        return 2
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return GMCookiePermission.allCases.count
+        return section == 0 ? GMCookiePermission.allCases.count : 1
     }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return "高危权限：允许脚本访问 Cookie (GM_cookie)"
+        return section == 0 ? "高危权限：允许脚本访问 Cookie (GM_cookie)" : "脚本注入诊断"
     }
 
     func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        if section == 1 {
+            return "开启后记录脚本匹配、注入阶段和可捕获的 JavaScript 错误。记录只保存在当前标签页内存中；更改开关后请重新加载网页再复现问题。"
+        }
         return "此设置控制脚本调用 GM_cookie 的权限策略（对标 Tampermonkey 选项）。\n\n• 禁用：完全拦截 GM_cookie，无法读取任何 Cookie。\n• 仅限同域：仅允许脚本查询当前访问主机的 Cookie。\n• 允许所有 (All)：允许脚本读取任意域名的 Cookie（包括 HttpOnly 凭据与 Google 跨域 Cookie，供云端无头模式或受信任脚本使用）。请务必仅在信任当前安装脚本的前提下开启。"
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        if indexPath.section == 1 {
+            let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "InjectionDiagnosticsCell")
+            cell.textLabel?.text = "记录脚本注入过程"
+            cell.textLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+            cell.detailTextLabel?.text = "日志不包含脚本源代码或 Cookie 值"
+            cell.detailTextLabel?.font = .systemFont(ofSize: 12)
+            cell.detailTextLabel?.textColor = .secondaryLabel
+            let toggle = UISwitch()
+            toggle.isOn = UserScriptStore.shared.isInjectionDiagnosticsEnabled
+            toggle.addTarget(self, action: #selector(handleDiagnosticsChanged(_:)), for: .valueChanged)
+            cell.accessoryView = toggle
+            return cell
+        }
+
         let perm = GMCookiePermission.allCases[indexPath.row]
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "CookiePermCell")
         cell.textLabel?.text = perm.title
@@ -884,8 +907,13 @@ final class UserScriptSettingsViewController: UIViewController, UITableViewDataS
         return cell
     }
 
+    @objc private func handleDiagnosticsChanged(_ sender: UISwitch) {
+        UserScriptStore.shared.isInjectionDiagnosticsEnabled = sender.isOn
+    }
+
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.section == 0 else { return }
         let selectedPerm = GMCookiePermission.allCases[indexPath.row]
 
         if selectedPerm == .allDomains && currentPermission != .allDomains {
@@ -908,5 +936,76 @@ final class UserScriptSettingsViewController: UIViewController, UITableViewDataS
         currentPermission = perm
         UserScriptStore.shared.cookiePermission = perm
         tableView.reloadData()
+    }
+}
+
+final class UserScriptDiagnosticsViewController: UIViewController {
+    private let pageURL: URL?
+    private let entries: [String]
+    private let diagnosticsEnabled: Bool
+    private let textView = UITextView()
+
+    init(pageURL: URL?, entries: [String], diagnosticsEnabled: Bool) {
+        self.pageURL = pageURL
+        self.entries = entries
+        self.diagnosticsEnabled = diagnosticsEnabled
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "脚本注入诊断"
+        view.backgroundColor = .systemBackground
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "关闭",
+            style: .plain,
+            target: self,
+            action: #selector(handleClose)
+        )
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "复制",
+            style: .done,
+            target: self,
+            action: #selector(handleCopy)
+        )
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.isEditable = false
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.text = makeReport()
+        view.addSubview(textView)
+        NSLayoutConstraint.activate([
+            textView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            textView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+        ])
+    }
+
+    private func makeReport() -> String {
+        let urlText: String
+        if let pageURL = pageURL, var components = URLComponents(url: pageURL, resolvingAgainstBaseURL: false) {
+            components.query = nil
+            components.fragment = nil
+            urlText = components.string ?? pageURL.host ?? "未知页面"
+        } else {
+            urlText = "未知页面"
+        }
+        let status = diagnosticsEnabled ? "已开启" : "未开启"
+        let logText = entries.isEmpty ? "暂无记录。请先在油猴设置中开启诊断，再重新加载网页并复现问题。" : entries.joined(separator: "\n")
+        return "脚本注入诊断（\(status)）\n页面：\(urlText)\n记录数：\(entries.count)\n\n\(logText)"
+    }
+
+    @objc private func handleCopy() {
+        UIPasteboard.general.string = makeReport()
+        let alert = UIAlertController(title: "已复制", message: "诊断报告已复制到剪贴板。", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
+    }
+
+    @objc private func handleClose() {
+        dismiss(animated: true)
     }
 }
