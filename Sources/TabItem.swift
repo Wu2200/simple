@@ -1331,7 +1331,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
         if let path = details["path"] as? String, cookie.path != path { return false }
         if let rawURL = details["url"] as? String {
-            guard let targetURL = URL(string: rawURL) else { return false }
+            guard let targetURL = URL(string: rawURL),
+                  ["http", "https"].contains(targetURL.scheme?.lowercased() ?? ""),
+                  permission == .allDomains || targetURL.host?.lowercased() == pageHost else { return false }
             return cookieMatchesURL(cookie, url: targetURL)
         }
         if permission == .sameDomain {
