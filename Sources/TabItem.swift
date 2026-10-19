@@ -938,7 +938,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         });
                     } catch(e) {}
                 };
-                var GM_cookie = window.GM_cookie;
+                var GM_cookie = window.GM_cookie ? {
+                    list: function(details, callback) {
+                        return window.GM_cookie.list(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                    },
+                    delete: function(details, callback) {
+                        return window.GM_cookie.delete(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                    },
+                    set: function(details, callback) {
+                        return window.GM_cookie.set(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                    }
+                } : undefined;
                 var GM_xmlhttpRequest = window.GM_xmlhttpRequest;
                 var GM_addStyle = window.GM_addStyle;
                 var GM_openInTab = window.GM_openInTab;
@@ -1690,6 +1700,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                         });
                     } catch(e) {}
                 };
+                var GM_cookie = window.GM_cookie ? {
+                    list: function(details, callback) {
+                        return window.GM_cookie.list(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                    },
+                    delete: function(details, callback) {
+                        return window.GM_cookie.delete(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                    },
+                    set: function(details, callback) {
+                        return window.GM_cookie.set(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                    }
+                } : undefined;
                 var GM_xmlhttpRequest = window.GM_xmlhttpRequest;
                 var GM_addStyle = window.GM_addStyle;
                 var GM_openInTab = window.GM_openInTab;
@@ -1698,6 +1719,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 var GM_log = window.GM_log;
                 var GM = {
                     info: GM_info,
+                    cookie: GM_cookie,
                     getValue: function(k, d) { return Promise.resolve(GM_getValue(k, d)); },
                     setValue: function(k, v) { GM_setValue(k, v); return Promise.resolve(); },
                     deleteValue: function(k) { GM_deleteValue(k); return Promise.resolve(); },
