@@ -21,7 +21,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     var isLoading = false
     var snapshot: UIImage?
     var registeredCommands: [RegisteredMenuCommand] = []
-    var userScriptDiagnostics: [String] = []
 
     var sourceTabID: UUID?
     var failedURL: URL?
@@ -628,7 +627,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         AdBlockManager.shared.attach(to: webView)
         userContentController.add(self, name: "GM")
-        userContentController.add(self, name: "UserScriptDebug")
         userContentController.add(self, name: "DownloadBridge")
         userContentController.add(self, name: "ContextMenuBridge")
         userContentController.add(self, name: "HistoryBridge")
@@ -728,15 +726,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         ensureCoreScripts()
     }
 
-    private func recordUserScriptDiagnostic(_ text: String) {
-        guard UserScriptStore.shared.isInjectionDiagnosticsEnabled else { return }
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-        userScriptDiagnostics.append("[\(timestamp)] \(text)")
-        if userScriptDiagnostics.count > 300 {
-            userScriptDiagnostics.removeFirst(userScriptDiagnostics.count - 300)
-        }
-    }
-
     private func ensureCoreScripts() {
         let controller = webView.configuration.userContentController
 
@@ -815,9 +804,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                     forMainFrameOnly: false
                 )
                 controller.addUserScript(userScript)
-                recordUserScriptDiagnostic("已注册 document-start 脚本：\(script.name)（\(script.id.prefix(8))）")
-            } else {
-                recordUserScriptDiagnostic("document-start 脚本已注册：\(script.name)（\(script.id.prefix(8))）")
+            }
             }
         }
     }
@@ -904,31 +891,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         return """
         // \(identifierTag)
         (function() {
-            var __simpleReport = function(eventName, detail) {
-                try {
-                    window.webkit.messageHandlers.UserScriptDebug.postMessage({
-                        action: 'userScriptDiagnostic',
-                        scriptId: \(scriptIdLiteral),
-                        scriptName: \(scriptNameLiteral),
-                        phase: \(phaseLiteral),
-                        event: String(eventName || ''),
-                        detail: String(detail || '').slice(0, 500)
-                    });
-                } catch(e) {}
-            };
-            __simpleReport('开始匹配', '规则：' + \(patternLiteral));
             var __simpleMatched = false;
             try {
                 __simpleMatched = (\(matchCheckJS));
             } catch(e) {
-                __simpleReport('匹配判断异常', e && (e.stack || e.message) || String(e));
                 return;
             }
-            if (!__simpleMatched) {
-                __simpleReport('未匹配', '当前页面不符合脚本匹配规则');
-                return;
-            }
-            __simpleReport('开始执行', '匹配规则通过');
+            if (!__simpleMatched) return;
             (function(scriptId, initialValues) {
                 var values = initialValues || {};
                 var GM_info = {
@@ -1033,9 +1002,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
                 try {
                     \(escapedCode)
-                } catch(e) {
-                    __simpleReport('脚本同步异常', e && (e.stack || e.message) || String(e));
-                }
+                } catch(e) {}
             })(\(scriptIdLiteral), \(valuesJSON));
         })();
         """
@@ -1067,7 +1034,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         })();
         """, completionHandler: nil)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "GM")
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "UserScriptDebug")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "DownloadBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "ContextMenuBridge")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "HistoryBridge")
@@ -1165,25 +1131,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "UserScriptDebug",
-           let body = message.body as? [String: Any],
-           body["action"] as? String == "userScriptDiagnostic" {
-            let scriptName = body["scriptName"] as? String ?? "未知脚本"
-            let scriptID = (body["scriptId"] as? String).map { String($0.prefix(8)) } ?? "未知脚本"
-            let phase = body["phase"] as? String ?? "未知阶段"
-            let event = body["event"] as? String ?? "未知事件"
-            let detail = body["detail"] as? String ?? ""
-            let frameURL = message.frameInfo.request.url.flatMap { url -> String? in
-                guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-                components.query = nil
-                components.fragment = nil
-                return components.string
-            } ?? "未知 frame"
-            let frameType = message.frameInfo.isMainFrame ? "主 frame" : "子 frame"
-            recordUserScriptDiagnostic("\(frameType) · \(scriptName)（\(scriptID)）· \(phase) · \(event)\(detail.isEmpty ? "" : "：\(detail)") · \(frameURL)")
-            return
-        }
-
         if message.name == "ResourceBridge" {
             guard let body = message.body as? [String: Any],
                   let mainHost = body["main"] as? String,
@@ -1712,18 +1659,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         var matchingScripts: [UserScript] = []
         for script in candidates {
             if !script.isEnabled {
-                recordUserScriptDiagnostic("跳过已禁用脚本：\(script.name)（\(script.id.prefix(8))）")
                 continue
             }
             if UserScriptStore.shared.isScriptMatching(script: script, urlString: currentUrlStr) {
                 matchingScripts.append(script)
-                recordUserScriptDiagnostic("匹配通过，准备执行 document-idle：\(script.name)（\(script.id.prefix(8))）")
             } else {
-                recordUserScriptDiagnostic("匹配未通过或当前域名禁用了脚本：\(script.name)（\(script.id.prefix(8))），规则：\(script.matchPattern)")
             }
         }
         if matchingScripts.isEmpty {
-            recordUserScriptDiagnostic("当前页面没有可执行的非 document-start 脚本；候选数：\(candidates.count)")
         }
 
         var fullJS = Self.coreGMPolyfillScriptSource + "\n"
@@ -1834,28 +1777,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
                 try {
                     \(script.code)
-                } catch(e) {
-                    try {
-                        window.webkit.messageHandlers.UserScriptDebug.postMessage({
-                            action: 'userScriptDiagnostic',
-                            scriptId: scriptId,
-                            scriptName: '\(script.name.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'"))',
-                            phase: 'document-idle',
-                            event: '脚本同步异常',
-                            detail: String(e && (e.stack || e.message) || e).slice(0, 500)
-                        });
-                    } catch(reportError) {}
-                }
+                } catch(e) {}
             })('\(script.id)', \(valuesJSON));
             \n
             """
         }
 
         guard !matchingScripts.isEmpty else { return }
-        webView.evaluateJavaScript(fullJS) { [weak self] _, error in
-            guard let error = error else { return }
-            self?.recordUserScriptDiagnostic("document-idle evaluateJavaScript 注入失败：\(error.localizedDescription)")
-        }
+        webView.evaluateJavaScript(fullJS, completionHandler: nil)
     }
 
     func reloadUserScripts() {
@@ -2146,12 +2075,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        if UserScriptStore.shared.isInjectionDiagnosticsEnabled {
-            userScriptDiagnostics.removeAll()
-            let targetURL = navigationActionURL ?? webView.url
-            let safeURL = targetURL.map { "\($0.scheme ?? "")://\($0.host ?? "")\($0.path)" } ?? "未知地址"
-            recordUserScriptDiagnostic("开始导航：\(safeURL)")
-        }
         isLoading = true
         needsReloadAfterTermination = false
         if !isLoadingFailureDocument {
