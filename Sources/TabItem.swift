@@ -1427,7 +1427,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         let currentUrlStr = url?.absoluteString ?? ""
         let matchingScripts = UserScriptStore.shared.loadScripts().filter {
-            UserScriptStore.shared.isScriptMatching(script: $0, urlString: currentUrlStr)
+            UserScriptStore.shared.isScriptMatching(script: $0, urlString: currentUrlStr) &&
+                $0.runAt?.lowercased() != "document-start"
         }
 
         var fullJS = Self.coreGMPolyfillScriptSource + "\n"
