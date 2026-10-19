@@ -815,3 +815,98 @@ final class UserScriptEditorViewController: UIViewController {
         dismiss(animated: true)
     }
 }
+
+final class UserScriptSettingsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private var currentPermission: GMCookiePermission = UserScriptStore.shared.cookiePermission
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "油猴设置"
+        view.backgroundColor = .systemGroupedBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "完成",
+            style: .done,
+            target: self,
+            action: #selector(handleDone)
+        )
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        view.addSubview(tableView)
+
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+
+    @objc private func handleDone() {
+        dismiss(animated: true)
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 1
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return GMCookiePermission.allCases.count
+    }
+
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return "高危权限：允许脚本访问 Cookie (GM_cookie)"
+    }
+
+    func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        return "此设置控制脚本调用 GM_cookie 的权限策略（对标 Tampermonkey 选项）。\n\n• 禁用：完全拦截 GM_cookie，无法读取任何 Cookie。\n• 仅限同域：仅允许脚本查询当前访问主机的 Cookie。\n• 允许所有 (All)：允许脚本读取任意域名的 Cookie（包括 HttpOnly 凭据与 Google 跨域 Cookie，供云端无头模式或受信任脚本使用）。请务必仅在信任当前安装脚本的前提下开启。"
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let perm = GMCookiePermission.allCases[indexPath.row]
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "CookiePermCell")
+        cell.textLabel?.text = perm.title
+        cell.textLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        cell.detailTextLabel?.text = perm.detailDescription
+        cell.detailTextLabel?.font = .systemFont(ofSize: 12)
+        cell.detailTextLabel?.textColor = .secondaryLabel
+        cell.detailTextLabel?.numberOfLines = 0
+
+        if perm == currentPermission {
+            cell.accessoryType = .checkmark
+            cell.tintColor = perm == .allDomains ? .systemRed : .systemBlue
+        } else {
+            cell.accessoryType = .none
+        }
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        let selectedPerm = GMCookiePermission.allCases[indexPath.row]
+
+        if selectedPerm == .allDomains && currentPermission != .allDomains {
+            let alert = UIAlertController(
+                title: "⚠️ 警告：高危权限",
+                message: "开启「允许所有域名 Cookie」后，受启用的油猴脚本将能够读取你浏览器中的 HttpOnly 敏感登录会话（包括 Google/各网站登录凭证）。请确保你完全信任已安装的脚本！是否确认开启？",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel, handler: nil))
+            alert.addAction(UIAlertAction(title: "确认开启", style: .destructive, handler: { [weak self] _ in
+                self?.applyPermission(selectedPerm)
+            }))
+            present(alert, animated: true)
+        } else {
+            applyPermission(selectedPerm)
+        }
+    }
+
+    private func applyPermission(_ perm: GMCookiePermission) {
+        currentPermission = perm
+        UserScriptStore.shared.cookiePermission = perm
+        tableView.reloadData()
+    }
+}
