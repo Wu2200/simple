@@ -1229,6 +1229,199 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
+    private func cookiePermissionError(details: [String: Any], message: WKScriptMessage) -> String? {
+        guard message.frameInfo.isMainFrame else {
+            return "GM_cookie is only available to the main frame"
+        }
+        let permission = UserScriptStore.shared.cookiePermission
+        guard permission != .disabled else {
+            return "GM_cookie permission is disabled in UserScript settings"
+        }
+        guard let scriptId = details["__simpleScriptId"] as? String,
+              let script = UserScriptStore.shared.loadScripts().first(where: { $0.id == scriptId && $0.isEnabled }),
+              let pageURL = webView.url,
+              UserScriptStore.shared.isScriptMatching(script: script, urlString: pageURL.absoluteString) else {
+            return "GM_cookie request is not associated with an enabled userscript on this page"
+        }
+
+        let pageHost = pageURL.host?.lowercased() ?? ""
+        if let rawURL = details["url"] as? String {
+            guard let targetURL = URL(string: rawURL),
+                  let targetScheme = targetURL.scheme?.lowercased(),
+                  ["http", "https"].contains(targetScheme),
+                  let targetHost = targetURL.host?.lowercased() else {
+                return "Invalid cookie URL"
+            }
+            if permission == .sameDomain && targetHost != pageHost {
+                return "GM_cookie is restricted to the current domain"
+            }
+        } else if permission == .sameDomain,
+                  let requestedDomain = details["domain"] as? String,
+                  !cookieDomain(requestedDomain, matches: pageHost) {
+            return "GM_cookie is restricted to the current domain"
+        }
+        return nil
+    }
+
+    private func cookieDomain(_ cookieDomain: String, matches host: String) -> Bool {
+        let domain = cookieDomain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+        return !domain.isEmpty && (host == domain || host.hasSuffix("." + domain))
+    }
+
+    private func cookieMatchesURL(_ cookie: HTTPCookie, url: URL) -> Bool {
+        guard let host = url.host?.lowercased(), cookieDomain(cookie.domain, matches: host) else { return false }
+        if cookie.isSecure && url.scheme?.lowercased() != "https" { return false }
+        if let expires = cookie.expiresDate, expires <= Date() { return false }
+        let requestPath = url.path.isEmpty ? "/" : url.path
+        let cookiePath = cookie.path.isEmpty ? "/" : cookie.path
+        guard requestPath.hasPrefix(cookiePath) else { return false }
+        if !cookiePath.hasSuffix("/") && requestPath.count > cookiePath.count {
+            let boundary = requestPath.index(requestPath.startIndex, offsetBy: cookiePath.count)
+            if requestPath[boundary] != "/" { return false }
+        }
+        return true
+    }
+
+    private func cookieDictionary(_ cookie: HTTPCookie) -> [String: Any] {
+        return [
+            "name": cookie.name,
+            "value": cookie.value,
+            "domain": cookie.domain,
+            "path": cookie.path,
+            "expirationDate": cookie.expiresDate?.timeIntervalSince1970 ?? -1,
+            "httpOnly": cookie.isHTTPOnly,
+            "secure": cookie.isSecure,
+            "sameSite": "unspecified"
+        ]
+    }
+
+    private func respondToCookieList(requestID: String, cookies: [[String: Any]]?, error: String?) {
+        let args: [Any] = [requestID, (cookies as Any?) ?? NSNull(), (error as Any?) ?? NSNull()]
+        let data = (try? JSONSerialization.data(withJSONObject: args, options: [.fragmentsAllowed])) ?? Data("[]".utf8)
+        let json = String(data: data, encoding: .utf8) ?? "[]"
+        DispatchQueue.main.async { [weak self] in
+            self?.webView.evaluateJavaScript("if (typeof window.__handleCookieListResponse === 'function') { window.__handleCookieListResponse.apply(null, \(json)); }", completionHandler: nil)
+        }
+    }
+
+    private func respondToCookieOperation(requestID: String, error: String?) {
+        let args: [Any] = [requestID, (error as Any?) ?? NSNull()]
+        let data = (try? JSONSerialization.data(withJSONObject: args, options: [.fragmentsAllowed])) ?? Data("[]".utf8)
+        let json = String(data: data, encoding: .utf8) ?? "[]"
+        DispatchQueue.main.async { [weak self] in
+            self?.webView.evaluateJavaScript("if (typeof window.__handleCookieOpResponse === 'function') { window.__handleCookieOpResponse.apply(null, \(json)); }", completionHandler: nil)
+        }
+    }
+
+    private func matchesCookieDetails(_ cookie: HTTPCookie, details: [String: Any], pageHost: String, permission: GMCookiePermission) -> Bool {
+        if let name = details["name"] as? String, cookie.name != name { return false }
+        if let domain = details["domain"] as? String {
+            let requested = domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+            if cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased() != requested { return false }
+        }
+        if let path = details["path"] as? String, cookie.path != path { return false }
+        if let rawURL = details["url"] as? String {
+            guard let targetURL = URL(string: rawURL) else { return false }
+            return cookieMatchesURL(cookie, url: targetURL)
+        }
+        if permission == .sameDomain {
+            return cookieDomain(cookie.domain, matches: pageHost)
+        }
+        return true
+    }
+
+    private func handleCookieList(requestID: String, details: [String: Any], message: WKScriptMessage) {
+        if let error = cookiePermissionError(details: details, message: message) {
+            respondToCookieList(requestID: requestID, cookies: nil, error: error)
+            return
+        }
+        let permission = UserScriptStore.shared.cookiePermission
+        let pageHost = webView.url?.host?.lowercased() ?? ""
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+            guard let self = self else { return }
+            let result = cookies.filter {
+                self.matchesCookieDetails($0, details: details, pageHost: pageHost, permission: permission)
+            }.map(self.cookieDictionary)
+            self.respondToCookieList(requestID: requestID, cookies: result, error: nil)
+        }
+    }
+
+    private func handleCookieDelete(requestID: String, details: [String: Any], message: WKScriptMessage) {
+        if let error = cookiePermissionError(details: details, message: message) {
+            respondToCookieOperation(requestID: requestID, error: error)
+            return
+        }
+        guard details["name"] is String else {
+            respondToCookieOperation(requestID: requestID, error: "A cookie name is required for deletion")
+            return
+        }
+        let permission = UserScriptStore.shared.cookiePermission
+        let pageHost = webView.url?.host?.lowercased() ?? ""
+        let store = webView.configuration.websiteDataStore.httpCookieStore
+        store.getAllCookies { [weak self] cookies in
+            guard let self = self else { return }
+            let matches = cookies.filter {
+                self.matchesCookieDetails($0, details: details, pageHost: pageHost, permission: permission)
+            }
+            let group = DispatchGroup()
+            for cookie in matches {
+                group.enter()
+                store.delete(cookie) { group.leave() }
+            }
+            group.notify(queue: .main) {
+                self.respondToCookieOperation(requestID: requestID, error: nil)
+            }
+        }
+    }
+
+    private func handleCookieSet(requestID: String, details: [String: Any], message: WKScriptMessage) {
+        if let error = cookiePermissionError(details: details, message: message) {
+            respondToCookieOperation(requestID: requestID, error: error)
+            return
+        }
+        guard let name = details["name"] as? String, !name.isEmpty,
+              let value = details["value"] as? String,
+              let pageURL = webView.url,
+              let pageHost = pageURL.host?.lowercased() else {
+            respondToCookieOperation(requestID: requestID, error: "Cookie name, value and current page are required")
+            return
+        }
+        let targetURL = (details["url"] as? String).flatMap(URL.init(string:)) ?? pageURL
+        guard let targetHost = targetURL.host?.lowercased(),
+              ["http", "https"].contains(targetURL.scheme?.lowercased() ?? "") else {
+            respondToCookieOperation(requestID: requestID, error: "A valid HTTP(S) cookie URL is required")
+            return
+        }
+        let permission = UserScriptStore.shared.cookiePermission
+        if permission == .sameDomain && targetHost != pageHost {
+            respondToCookieOperation(requestID: requestID, error: "GM_cookie is restricted to the current domain")
+            return
+        }
+        let domain = (details["domain"] as? String ?? targetHost).lowercased()
+        guard cookieDomain(domain, matches: targetHost) else {
+            respondToCookieOperation(requestID: requestID, error: "Cookie domain does not match the target URL")
+            return
+        }
+        let path = (details["path"] as? String).flatMap { $0.hasPrefix("/") ? $0 : nil } ?? "/"
+        var properties: [HTTPCookiePropertyKey: Any] = [
+            .domain: domain,
+            .path: path,
+            .name: name,
+            .value: value
+        ]
+        if details["secure"] as? Bool == true { properties[.secure] = "TRUE" }
+        if let expiry = details["expirationDate"] as? NSNumber, expiry.doubleValue > 0 {
+            properties[.expires] = Date(timeIntervalSince1970: expiry.doubleValue)
+        }
+        guard let cookie = HTTPCookie(properties: properties) else {
+            respondToCookieOperation(requestID: requestID, error: "Invalid cookie properties")
+            return
+        }
+        webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) { [weak self] in
+            self?.respondToCookieOperation(requestID: requestID, error: nil)
+        }
+    }
+
     private func handleBlobDataURL(_ dataUrlString: String, filename: String) {
         guard let commaIndex = dataUrlString.firstIndex(of: ",") else { return }
         let base64Part = String(dataUrlString[dataUrlString.index(after: commaIndex)...])
