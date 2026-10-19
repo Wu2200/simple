@@ -1,11 +1,36 @@
 import UIKit
 
+import UIKit
+
+enum GMCookiePermission: String, CaseIterable, Codable {
+    case disabled = "disabled"
+    case sameDomain = "same_domain"
+    case allDomains = "all_domains"
+
+    var title: String {
+        switch self {
+        case .disabled: return "禁用（默认）"
+        case .sameDomain: return "仅限同域 Cookie"
+        case .allDomains: return "允许所有域名 Cookie (All)"
+        }
+    }
+
+    var detailDescription: String {
+        switch self {
+        case .disabled: return "最高安全级别。拒绝所有脚本读取 Cookie，防止凭据外泄。"
+        case .sameDomain: return "仅允许脚本读取当前网页所在主机的 Cookie。"
+        case .allDomains: return "允许脚本读取任意域名的 Cookie（包含 HttpOnly 敏感会话凭证），供云端无头模式或受信任脚本使用。"
+        }
+    }
+}
+
 struct UserScript: Codable {
     var id: String
     var name: String
     var matchPattern: String
     var code: String
     var isEnabled: Bool
+    var runAt: String?
 }
 
 struct RegisteredMenuCommand {
@@ -16,7 +41,23 @@ struct RegisteredMenuCommand {
 
 final class UserScriptStore {
     static let shared = UserScriptStore()
+    static let didUpdateSettingsNotification = NSNotification.Name("UserScriptStoreDidUpdateSettings")
     private let key = "user_tampermonkey_scripts_v5"
+    private let cookiePermissionKey = "user_script_gm_cookie_permission_v1"
+
+    var cookiePermission: GMCookiePermission {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: cookiePermissionKey),
+                  let perm = GMCookiePermission(rawValue: raw) else {
+                return .disabled
+            }
+            return perm
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: cookiePermissionKey)
+            NotificationCenter.default.post(name: Self.didUpdateSettingsNotification, object: nil)
+        }
+    }
 
     private init() {}
 
@@ -106,7 +147,7 @@ final class UserScriptStore {
         }
 
         for pattern in includePatterns {
-            if doesHost(host, matchPattern: pattern) {
+            if doesUrlMatchPattern(urlString: urlString, pattern: pattern) {
                 return true
             }
         }
@@ -114,9 +155,10 @@ final class UserScriptStore {
         return false
     }
 
-    func parseMetadata(from code: String) -> (name: String, match: String) {
+    func parseMetadata(from code: String) -> (name: String, match: String, runAt: String) {
         var nameMap: [String: String] = [:]
         var matches: [String] = []
+        var runAtVal = "document-idle"
         let doubleSlash = String(repeating: "/", count: 2)
 
         let lines = code.components(separatedBy: .newlines)
@@ -143,13 +185,57 @@ final class UserScriptStore {
                 if !val.isEmpty && !matches.contains(exVal) {
                     matches.append(exVal)
                 }
+            } else if tag == "@run-at" {
+                runAtVal = val.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             }
         }
 
         let preferredName = nameMap["@name:zh-CN"] ?? nameMap["@name:zh"] ?? nameMap["@name:zh-TW"] ?? nameMap["@name"] ?? "未命名脚本"
         let preferredMatch = matches.isEmpty ? "*" : matches.joined(separator: ", ")
 
-        return (preferredName, preferredMatch)
+        return (preferredName, preferredMatch, runAtVal)
+    }
+
+    func doesUrlMatchPattern(urlString: String, pattern rawPattern: String) -> Bool {
+        if rawPattern == "*" || rawPattern == "<all_urls>" {
+            return true
+        }
+
+        guard let url = URL(string: urlString), let host = url.host?.lowercased() else {
+            return false
+        }
+
+        let schemeSeparator = ":" + String(repeating: "/", count: 2)
+        var p = rawPattern.lowercased().trimmingCharacters(in: .whitespaces)
+        if let schemeRange = p.range(of: schemeSeparator) {
+            p = String(p[schemeRange.upperBound...])
+        }
+
+        var patternHost = p
+        var patternPath: String? = nil
+
+        if let slashIndex = p.firstIndex(of: "/") {
+            patternHost = String(p[..<slashIndex])
+            patternPath = String(p[slashIndex...])
+        }
+
+        if !doesHost(host, matchPattern: patternHost) {
+            return false
+        }
+
+        guard let targetPathPattern = patternPath, targetPathPattern != "/*", targetPathPattern != "/" else {
+            return true
+        }
+
+        let currentPath = url.path.lowercased()
+        let regexPattern = "^" + NSRegularExpression.escapedPattern(for: targetPathPattern)
+            .replacingOccurrences(of: "\\*", with: ".*") + "$"
+        if let regex = try? NSRegularExpression(pattern: regexPattern, options: []) {
+            let range = NSRange(location: 0, length: currentPath.utf16.count)
+            return regex.firstMatch(in: currentPath, options: [], range: range) != nil
+        }
+
+        return true
     }
 
     private func doesHost(_ host: String, matchPattern rawPattern: String) -> Bool {
@@ -202,7 +288,7 @@ final class UserScriptStore {
         }.filter { !$0.isEmpty }
 
         for ex in excludePatterns {
-            if doesHost(host, matchPattern: ex) {
+            if doesUrlMatchPattern(urlString: urlString, pattern: ex) {
                 return false
             }
         }
@@ -213,7 +299,7 @@ final class UserScriptStore {
         }
 
         for pattern in includePatterns {
-            if doesHost(host, matchPattern: pattern) {
+            if doesUrlMatchPattern(urlString: urlString, pattern: pattern) {
                 return true
             }
         }
