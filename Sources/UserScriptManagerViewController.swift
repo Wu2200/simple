@@ -855,10 +855,6 @@ final class UserScriptSettingsViewController: UIViewController, UITableViewDataS
         return "Cookie 访问权限"
     }
 
-    func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        return "允许所有域名会开放包括 HttpOnly 在内的登录凭证。仅对信任的脚本开启。"
-    }
-
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let permissions = GMCookiePermission.allCases
         let perm = isPermissionExpanded ? permissions[indexPath.row] : currentPermission
@@ -907,6 +903,7 @@ final class UserScriptSettingsViewController: UIViewController, UITableViewDataS
 
     private func applyPermission(_ perm: GMCookiePermission) {
         currentPermission = perm
+        isPermissionExpanded = false
         UserScriptStore.shared.cookiePermission = perm
         tableView.reloadData()
     }
