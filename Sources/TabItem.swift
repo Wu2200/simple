@@ -797,14 +797,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             let tag = "__userscript_ds_\(script.id)__"
             let alreadyAdded = controller.userScripts.contains { $0.source.contains(tag) }
             if !alreadyAdded {
-                let wrapped = wrapUserScriptForInjection(script: script, identifierTag: tag, phase: "document-start")
+                let wrapped = wrapUserScriptForInjection(script: script, identifierTag: tag)
                 let userScript = WKUserScript(
                     source: wrapped,
                     injectionTime: .atDocumentStart,
                     forMainFrameOnly: false
                 )
                 controller.addUserScript(userScript)
-            }
             }
         }
     }
@@ -816,12 +815,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         return String(json.dropFirst().dropLast())
     }
 
-    private func wrapUserScriptForInjection(script: UserScript, identifierTag: String, phase: String) -> String {
+    private func wrapUserScriptForInjection(script: UserScript, identifierTag: String) -> String {
         let valuesJSON = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
         let scriptIdLiteral = javascriptStringLiteral(script.id)
-        let scriptNameLiteral = javascriptStringLiteral(script.name)
-        let phaseLiteral = javascriptStringLiteral(phase)
-        let patternLiteral = javascriptStringLiteral(script.matchPattern)
         let escapedCode = script.code
         let isAllUrls = script.matchPattern == "*" || script.matchPattern == "<all_urls>"
         let matchCheckJS: String
