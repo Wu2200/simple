@@ -31,8 +31,8 @@ jobs:
           ICONSET=Assets.xcassets/AppIcon.appiconset
           SOURCE_ICON=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["images"][0]["filename"])' "$ICONSET/Contents.json")
           test -f "$ICONSET/$SOURCE_ICON"
-          sips -s format png "$ICONSET/$SOURCE_ICON" --out "$ICONSET/icon.png"
-          python3 - "$ICONSET/Contents.json" <<'PY'
+          sips -s format png -z 1024 1024 "$ICONSET/$SOURCE_ICON" --out "$ICONSET/icon.png"
+          python3 - "$ICONSET/Contents.json" "$SOURCE_ICON" <<'PY'
           import json
           import sys
 
