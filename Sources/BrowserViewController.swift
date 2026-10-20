@@ -1932,6 +1932,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let popupTab = TabItem(configuration: configuration)
         popupTab.sourceTabID = tab.id
         popupTab.delegate = self
+        if let initialURL = navigationAction.request.url {
+            popupTab.url = initialURL
+            popupTab.title = initialURL.host ?? "新标签页"
+        }
 
         let insertIndex = min(activeTabIndex + 1, tabs.count)
         tabs.insert(popupTab, at: insertIndex)
