@@ -6,6 +6,8 @@ protocol TabItemDelegate: AnyObject {
     func tabDidFail(_ tab: TabItem, error: Error)
     func tabDidRedirect(_ tab: TabItem, to url: URL)
     func tabRequestNewTab(url: URL, inBackground: Bool)
+    func tabRequestCreatePopupTab(_ tab: TabItem, configuration: WKWebViewConfiguration, navigationAction: WKNavigationAction) -> WKWebView?
+    func tabRequestCloseTab(_ tab: TabItem)
     func tabProcessTerminated(_ tab: TabItem)
     func tabRequestGoBack(_ tab: TabItem)
     func tabRequestShowToast(_ message: String)
@@ -605,9 +607,19 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+    convenience override init() {
+        self.init(configuration: nil)
+    }
+
+    init(configuration passedConfig: WKWebViewConfiguration? = nil) {
+        let configuration: WKWebViewConfiguration
+        if let passed = passedConfig {
+            configuration = passed
+        } else {
+            configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = .default()
+        }
+
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.allowsInlineMediaPlayback = true
@@ -1847,14 +1859,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil {
-            if let targetURL = navigationAction.request.url,
-               let scheme = targetURL.scheme?.lowercased(),
-               ["http", "https"].contains(scheme) {
-                requestNewTabIfNeeded(url: targetURL)
-            }
+        if let popupWebView = delegate?.tabRequestCreatePopupTab(self, configuration: configuration, navigationAction: navigationAction) {
+            return popupWebView
         }
         return nil
+    }
+
+    func webViewDidClose(_ webView: WKWebView) {
+        delegate?.tabRequestCloseTab(self)
     }
 
     func webView(
