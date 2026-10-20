@@ -9,9 +9,9 @@ enum GMCookiePermission: String, CaseIterable, Codable {
 
     var title: String {
         switch self {
-        case .disabled: return "禁用（默认）"
+        case .disabled: return "禁用"
         case .sameDomain: return "仅限同域 Cookie"
-        case .allDomains: return "允许所有域名 Cookie (All)"
+        case .allDomains: return "允许所有域名 Cookie"
         }
     }
 
