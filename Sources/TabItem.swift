@@ -10,6 +10,9 @@ protocol TabItemDelegate: AnyObject {
     func tabRequestGoBack(_ tab: TabItem)
     func tabRequestShowToast(_ message: String)
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?)
+    func tabRequestAlert(_ tab: TabItem, message: String, completionHandler: @escaping () -> Void)
+    func tabRequestConfirm(_ tab: TabItem, message: String, completionHandler: @escaping (Bool) -> Void)
+    func tabRequestPrompt(_ tab: TabItem, prompt: String, defaultText: String?, completionHandler: @escaping (String?) -> Void)
 }
 
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -1894,6 +1897,46 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         decisionHandler: @escaping (WKPermissionDecision) -> Void
     ) {
         decisionHandler(.grant)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptAlertPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping () -> Void
+    ) {
+        if let delegate = delegate {
+            delegate.tabRequestAlert(self, message: message, completionHandler: completionHandler)
+        } else {
+            completionHandler()
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        if let delegate = delegate {
+            delegate.tabRequestConfirm(self, message: message, completionHandler: completionHandler)
+        } else {
+            completionHandler(false)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (String?) -> Void
+    ) {
+        if let delegate = delegate {
+            delegate.tabRequestPrompt(self, prompt: prompt, defaultText: defaultText, completionHandler: completionHandler)
+        } else {
+            completionHandler(nil)
+        }
     }
 
     func saveImageToPhotos(from imageString: String) {
