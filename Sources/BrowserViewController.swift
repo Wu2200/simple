@@ -1928,6 +1928,24 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         }
     }
 
+    func tabRequestCreatePopupTab(_ tab: TabItem, configuration: WKWebViewConfiguration, navigationAction: WKNavigationAction) -> WKWebView? {
+        let popupTab = TabItem(configuration: configuration)
+        popupTab.sourceTabID = tab.id
+        popupTab.delegate = self
+
+        let insertIndex = min(activeTabIndex + 1, tabs.count)
+        tabs.insert(popupTab, at: insertIndex)
+        switchTab(to: insertIndex)
+
+        return popupTab.webView
+    }
+
+    func tabRequestCloseTab(_ tab: TabItem) {
+        if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
+            closeTab(at: index)
+        }
+    }
+
     func tabRequestCustomContextMenu(title: String, url: URL?, imageURLString: String?) {
         guard url != nil || (imageURLString != nil && !(imageURLString?.isEmpty ?? true)) else { return }
 
