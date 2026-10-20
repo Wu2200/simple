@@ -3,9 +3,12 @@ name: Cleanup
 on:
   push:
     branches: [ main, master ]
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -27,4 +30,16 @@ jobs:
           git fetch --tags
           git tag -l | while read -r tag; do
             git push origin ":refs/tags/$tag" || true
+          done
+
+      - name: Delete Completed Workflow Runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" --jq '.workflow_runs[] | select(.status == "completed") | .id' |
+          while IFS= read -r run_id; do
+            [ -n "$run_id" ] || continue
+            [ "$run_id" = "$GITHUB_RUN_ID" ] && continue
+            gh api --silent --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+            echo "Deleted workflow run ${run_id}"
           done
