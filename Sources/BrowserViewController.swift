@@ -518,32 +518,83 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 }
                 return
             }
-            let parsedMetadata = UserScriptStore.shared.parseMetadata(from: code)
+            let metadata = UserScriptStore.shared.parseMetadata(from: code)
 
             DispatchQueue.main.async {
+                guard let self = self else { return }
+                var scripts = UserScriptStore.shared.loadScripts()
+                let existingIndex = UserScriptStore.shared.findExistingScriptIndex(in: scripts, matching: metadata, sourceURL: scriptURL)
+
+                let isUpdate = (existingIndex != nil)
+                let alertTitle = isUpdate ? "更新油猴脚本" : "安装油猴脚本"
+                let actionTitle = isUpdate ? "覆盖更新" : "安装"
+
+                var messageParts: [String] = []
+                messageParts.append("脚本名称: \(metadata.name)")
+                if let newVer = metadata.version, !newVer.isEmpty {
+                    if let idx = existingIndex, let oldVer = scripts[idx].version, !oldVer.isEmpty {
+                        if oldVer == newVer {
+                            messageParts.append("版本: \(newVer)")
+                        } else {
+                            messageParts.append("版本: \(oldVer) ➔ \(newVer)")
+                        }
+                    } else {
+                        messageParts.append("版本: \(newVer)")
+                    }
+                }
+                messageParts.append("匹配规则: \(metadata.match)")
+                messageParts.append("运行时机: \(metadata.runAt)")
+
+                if isUpdate {
+                    messageParts.append("\n检测到已安装此脚本，是否覆盖更新？")
+                } else {
+                    messageParts.append("\n是否确定安装此油猴脚本？")
+                }
+
                 let alert = UIAlertController(
-                    title: "安装油猴脚本",
-                    message: "脚本名称: \(parsedMetadata.name)\n匹配规则: \(parsedMetadata.match)\n运行时机: \(parsedMetadata.runAt)\n\n是否确定安装此油猴脚本？",
+                    title: alertTitle,
+                    message: messageParts.joined(separator: "\n"),
                     preferredStyle: .alert
                 )
 
-                alert.addAction(UIAlertAction(title: "安装", style: .default) { _ in
-                    var scripts = UserScriptStore.shared.loadScripts()
-                    let newScript = UserScript(
-                        id: UUID().uuidString,
-                        name: parsedMetadata.name,
-                        matchPattern: parsedMetadata.match,
-                        code: code,
-                        isEnabled: true,
-                        runAt: parsedMetadata.runAt
-                    )
-                    scripts.append(newScript)
-                    UserScriptStore.shared.saveScripts(scripts)
-                    self?.activeTab.reloadUserScripts()
+                alert.addAction(UIAlertAction(title: actionTitle, style: .default) { [weak self] _ in
+                    guard let self = self else { return }
+                    if let idx = existingIndex, scripts.indices.contains(idx) {
+                        var existing = scripts[idx]
+                        existing.name = metadata.name
+                        existing.matchPattern = metadata.match
+                        existing.code = code
+                        existing.runAt = metadata.runAt
+                        existing.version = metadata.version ?? existing.version
+                        existing.namespace = metadata.namespace ?? existing.namespace
+                        existing.updateURL = metadata.updateURL ?? scriptURL.absoluteString
+                        existing.downloadURL = metadata.downloadURL ?? scriptURL.absoluteString
+                        scripts[idx] = existing
+                        UserScriptStore.shared.saveScripts(scripts)
+                        self.activeTab.reloadUserScripts()
+                        self.showToastNotice("油猴脚本「\(metadata.name)」已更新")
+                    } else {
+                        let newScript = UserScript(
+                            id: UUID().uuidString,
+                            name: metadata.name,
+                            matchPattern: metadata.match,
+                            code: code,
+                            isEnabled: true,
+                            runAt: metadata.runAt,
+                            version: metadata.version,
+                            namespace: metadata.namespace,
+                            updateURL: metadata.updateURL ?? scriptURL.absoluteString,
+                            downloadURL: metadata.downloadURL ?? scriptURL.absoluteString
+                        )
+                        scripts.append(newScript)
+                        UserScriptStore.shared.saveScripts(scripts)
+                        self.activeTab.reloadUserScripts()
+                        self.showToastNotice("油猴脚本「\(metadata.name)」已安装")
+                    }
                 })
                 alert.addAction(UIAlertAction(title: "取消", style: .cancel))
 
-                self?.safePresentAlert(alert)
+                self.safePresentAlert(alert)
             }
         }
         task.resume()
