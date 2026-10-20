@@ -1991,6 +1991,90 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         goBack()
     }
 
+    func tabRequestAlert(_ tab: TabItem, message: String, completionHandler: @escaping () -> Void) {
+        var handled = false
+        let callOnce: () -> Void = {
+            guard !handled else { return }
+            handled = true
+            completionHandler()
+        }
+
+        let host = tab.url?.host ?? tab.webView.url?.host ?? "提示"
+        let alert = UIAlertController(title: host, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default) { _ in
+            callOnce()
+        })
+
+        safePresentJSAlert(alert) {
+            callOnce()
+        }
+    }
+
+    func tabRequestConfirm(_ tab: TabItem, message: String, completionHandler: @escaping (Bool) -> Void) {
+        var handled = false
+        let callOnce: (Bool) -> Void = { result in
+            guard !handled else { return }
+            handled = true
+            completionHandler(result)
+        }
+
+        let host = tab.url?.host ?? tab.webView.url?.host ?? "提示"
+        let alert = UIAlertController(title: host, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in
+            callOnce(true)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            callOnce(false)
+        })
+
+        safePresentJSAlert(alert) {
+            callOnce(false)
+        }
+    }
+
+    func tabRequestPrompt(_ tab: TabItem, prompt: String, defaultText: String?, completionHandler: @escaping (String?) -> Void) {
+        var handled = false
+        let callOnce: (String?) -> Void = { result in
+            guard !handled else { return }
+            handled = true
+            completionHandler(result)
+        }
+
+        let host = tab.url?.host ?? tab.webView.url?.host ?? "提示"
+        let alert = UIAlertController(title: host, message: prompt, preferredStyle: .alert)
+        alert.addTextField { tf in
+            tf.text = defaultText
+        }
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in
+            callOnce(alert.textFields?.first?.text)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            callOnce(nil)
+        })
+
+        safePresentJSAlert(alert) {
+            callOnce(nil)
+        }
+    }
+
+    func safePresentJSAlert(_ alert: UIViewController, retries: Int = 10, fallback: @escaping () -> Void) {
+        guard view.window != nil, retries > 0 else {
+            fallback()
+            return
+        }
+        var topController: UIViewController = self
+        while let presented = topController.presentedViewController, !presented.isBeingDismissed {
+            topController = presented
+        }
+        if topController.isBeingPresented || topController is UIAlertController {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.safePresentJSAlert(alert, retries: retries - 1, fallback: fallback)
+            }
+            return
+        }
+        topController.present(alert, animated: true, completion: nil)
+    }
+
     func tabProcessTerminated(_ tab: TabItem) {
         guard !tabs.isEmpty else { return }
 
