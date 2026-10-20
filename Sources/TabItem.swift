@@ -675,6 +675,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             name: NSNotification.Name("SimpleAdBlockRulesApplied"),
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleUserScriptsUpdatedNotification(_:)),
+            name: UserScriptStore.didUpdateScriptsNotification,
+            object: nil
+        )
     }
 
     deinit {
@@ -726,7 +733,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         ensureCoreScripts()
     }
 
+    @objc private func handleUserScriptsUpdatedNotification(_ notification: Notification) {
+        rebuildUserContentScripts()
+    }
+
     private func ensureCoreScripts() {
+        ensureBaseCoreScripts()
+        syncDocumentStartUserScripts()
+    }
+
+    private func ensureBaseCoreScripts() {
         let controller = webView.configuration.userContentController
 
         let hasHistory = controller.userScripts.contains { $0.source.contains("__simple_history_hooked__") }
@@ -759,8 +775,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             controller.addUserScript(script)
         }
 
-        syncDocumentStartUserScripts()
-
         let hasDownload = controller.userScripts.contains { $0.source.contains("__simple_download_hooked__") }
         if !hasDownload {
             let script = WKUserScript(
@@ -790,18 +804,28 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private func syncDocumentStartUserScripts() {
         let controller = webView.configuration.userContentController
         let allScripts = UserScriptStore.shared.loadScripts()
-        let docStartScripts = allScripts.filter { script in
+        let activeDocStartScripts = allScripts.filter { script in
             guard script.isEnabled else { return false }
             let runAt = script.runAt?.lowercased() ?? ""
             return runAt == "document-start"
         }
 
-        guard !docStartScripts.isEmpty else { return }
+        let expectedTags = Set(activeDocStartScripts.map { "__userscript_ds_\($0.id)__" })
+        var currentTags = Set<String>()
+        for us in controller.userScripts {
+            for script in allScripts {
+                let tag = "__userscript_ds_\(script.id)__"
+                if us.source.contains(tag) {
+                    currentTags.insert(tag)
+                }
+            }
+        }
 
-        for script in docStartScripts {
-            let tag = "__userscript_ds_\(script.id)__"
-            let alreadyAdded = controller.userScripts.contains { $0.source.contains(tag) }
-            if !alreadyAdded {
+        if currentTags != expectedTags {
+            controller.removeAllUserScripts()
+            ensureBaseCoreScripts()
+            for script in activeDocStartScripts {
+                let tag = "__userscript_ds_\(script.id)__"
                 let wrapped = wrapUserScriptForInjection(script: script, identifierTag: tag)
                 let userScript = WKUserScript(
                     source: wrapped,
