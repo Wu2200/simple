@@ -49,6 +49,7 @@ struct RegisteredMenuCommand {
 final class UserScriptStore {
     static let shared = UserScriptStore()
     static let didUpdateSettingsNotification = NSNotification.Name("UserScriptStoreDidUpdateSettings")
+    static let didUpdateScriptsNotification = NSNotification.Name("UserScriptStoreDidUpdateScriptsNotification")
     private let key = "user_tampermonkey_scripts_v5"
     private let cookiePermissionKey = "user_script_gm_cookie_permission_v1"
 
@@ -79,6 +80,7 @@ final class UserScriptStore {
     func saveScripts(_ scripts: [UserScript]) {
         if let data = try? JSONEncoder().encode(scripts) {
             UserDefaults.standard.set(data, forKey: key)
+            NotificationCenter.default.post(name: Self.didUpdateScriptsNotification, object: nil)
         }
     }
 
@@ -710,20 +712,31 @@ final class UserScriptRowCell: UITableViewCell {
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         nameLabel.font = .systemFont(ofSize: 15, weight: .bold)
         nameLabel.textColor = .label
+        nameLabel.numberOfLines = 1
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         matchLabel.translatesAutoresizingMaskIntoConstraints = false
         matchLabel.font = .systemFont(ofSize: 12, weight: .regular)
         matchLabel.textColor = .secondaryLabel
+        matchLabel.numberOfLines = 1
         matchLabel.lineBreakMode = .byTruncatingTail
+        matchLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        matchLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         toggleSwitch.translatesAutoresizingMaskIntoConstraints = false
         toggleSwitch.onTintColor = .systemRed
+        toggleSwitch.setContentHuggingPriority(.required, for: .horizontal)
+        toggleSwitch.setContentCompressionResistancePriority(.required, for: .horizontal)
         toggleSwitch.addTarget(self, action: #selector(handleSwitch), for: .valueChanged)
 
         let labelStack = UIStackView(arrangedSubviews: [nameLabel, matchLabel])
         labelStack.translatesAutoresizingMaskIntoConstraints = false
         labelStack.axis = .vertical
         labelStack.spacing = 3
+        labelStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        labelStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         cardView.addSubview(iconView)
         cardView.addSubview(labelStack)
