@@ -30,25 +30,20 @@ jobs:
             git push origin ":refs/tags/$tag" || true
           done
 
-      - name: Keep Latest 10 Build Runs
+      - name: Keep Latest 10 Build Runs and Delete Other Runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mapfile -t build_runs < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?per_page=100" --jq '.workflow_runs[] | select(.status == "completed") | .id')
-          for run_id in "${build_runs[@]:10}"; do
-            [ -n "$run_id" ] || continue
-            gh api --silent --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
-            echo "Deleted old Build run ${run_id}"
+          declare -A keep_runs=()
+          for run_id in "${build_runs[@]:0:10}"; do
+            [ -n "$run_id" ] && keep_runs["$run_id"]=1
           done
-
-      - name: Delete Previous Cleanup Runs
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/cleanup.yml/runs?per_page=100" --jq '.workflow_runs[] | select(.status == "completed") | .id' |
-          while IFS= read -r run_id; do
+          mapfile -t all_runs < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" --jq '.workflow_runs[] | select(.status == "completed") | .id')
+          for run_id in "${all_runs[@]}"; do
             [ -n "$run_id" ] || continue
-            [ "$run_id" = "$GITHUB_RUN_ID" ] && continue
-            gh api --silent --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
-            echo "Deleted previous Cleanup run ${run_id}"
+            if [[ -z "${keep_runs[$run_id]+x}" ]]; then
+              gh api --silent --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+              echo "Deleted workflow run ${run_id}"
+            fi
           done
