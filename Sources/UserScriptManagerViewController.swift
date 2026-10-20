@@ -17,6 +17,16 @@ enum GMCookiePermission: String, CaseIterable, Codable {
 
 }
 
+struct UserScriptMetadata {
+    var name: String
+    var match: String
+    var runAt: String
+    var version: String?
+    var namespace: String?
+    var updateURL: String?
+    var downloadURL: String?
+}
+
 struct UserScript: Codable {
     var id: String
     var name: String
@@ -24,6 +34,10 @@ struct UserScript: Codable {
     var code: String
     var isEnabled: Bool
     var runAt: String?
+    var version: String?
+    var namespace: String?
+    var updateURL: String?
+    var downloadURL: String?
 }
 
 struct RegisteredMenuCommand {
@@ -148,10 +162,14 @@ final class UserScriptStore {
         return false
     }
 
-    func parseMetadata(from code: String) -> (name: String, match: String, runAt: String) {
+    func parseMetadata(from code: String) -> UserScriptMetadata {
         var nameMap: [String: String] = [:]
         var matches: [String] = []
         var runAtVal = "document-idle"
+        var versionVal: String?
+        var namespaceVal: String?
+        var updateURLVal: String?
+        var downloadURLVal: String?
         let doubleSlash = String(repeating: "/", count: 2)
 
         let lines = code.components(separatedBy: .newlines)
@@ -165,28 +183,98 @@ final class UserScriptStore {
             guard components.count >= 2 else { continue }
 
             let tag = components[0]
+            let lowerTag = tag.lowercased()
             let val = components.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespaces)
 
             if tag.hasPrefix("@name") {
                 nameMap[tag] = val
-            } else if tag == "@match" || tag == "@include" {
+            } else if lowerTag == "@match" || lowerTag == "@include" {
                 if !val.isEmpty && !matches.contains(val) {
                     matches.append(val)
                 }
-            } else if tag == "@exclude" || tag == "@exclude-match" {
+            } else if lowerTag == "@exclude" || lowerTag == "@exclude-match" {
                 let exVal = "!" + val
                 if !val.isEmpty && !matches.contains(exVal) {
                     matches.append(exVal)
                 }
-            } else if tag == "@run-at" {
+            } else if lowerTag == "@run-at" {
                 runAtVal = val.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            } else if lowerTag == "@version" {
+                versionVal = val.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if lowerTag == "@namespace" {
+                namespaceVal = val.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if lowerTag == "@updateurl" {
+                updateURLVal = val.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if lowerTag == "@downloadurl" {
+                downloadURLVal = val.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
 
         let preferredName = nameMap["@name:zh-CN"] ?? nameMap["@name:zh"] ?? nameMap["@name:zh-TW"] ?? nameMap["@name"] ?? "未命名脚本"
         let preferredMatch = matches.isEmpty ? "*" : matches.joined(separator: ", ")
 
-        return (preferredName, preferredMatch, runAtVal)
+        return UserScriptMetadata(
+            name: preferredName,
+            match: preferredMatch,
+            runAt: runAtVal,
+            version: versionVal,
+            namespace: namespaceVal,
+            updateURL: updateURLVal,
+            downloadURL: downloadURLVal
+        )
+    }
+
+    func findExistingScriptIndex(in scripts: [UserScript], matching metadata: UserScriptMetadata, sourceURL: URL?) -> Int? {
+        let cleanName = metadata.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanNamespace = metadata.namespace?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sourceURLString = sourceURL?.absoluteString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let downloadURLString = metadata.downloadURL?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let updateURLString = metadata.updateURL?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if let sURL = sourceURLString, !sURL.isEmpty {
+            if let idx = scripts.firstIndex(where: {
+                $0.downloadURL?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == sURL ||
+                $0.updateURL?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == sURL
+            }) {
+                return idx
+            }
+        }
+        if let dURL = downloadURLString, !dURL.isEmpty {
+            if let idx = scripts.firstIndex(where: {
+                $0.downloadURL?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == dURL ||
+                $0.updateURL?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == dURL
+            }) {
+                return idx
+            }
+        }
+        if let uURL = updateURLString, !uURL.isEmpty {
+            if let idx = scripts.firstIndex(where: {
+                $0.downloadURL?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == uURL ||
+                $0.updateURL?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == uURL
+            }) {
+                return idx
+            }
+        }
+
+        if let ns = cleanNamespace, !ns.isEmpty, !cleanName.isEmpty {
+            if let idx = scripts.firstIndex(where: {
+                let existingName = $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let existingNs = $0.namespace?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return existingName == cleanName && existingNs == ns
+            }) {
+                return idx
+            }
+        }
+
+        if !cleanName.isEmpty && cleanName != "未命名脚本" {
+            if let idx = scripts.firstIndex(where: {
+                $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == cleanName
+            }) {
+                return idx
+            }
+        }
+
+        return nil
     }
 
     func doesUrlMatchPattern(urlString: String, pattern rawPattern: String) -> Bool {
@@ -797,7 +885,11 @@ final class UserScriptEditorViewController: UIViewController {
             matchPattern: matchText,
             code: codeText,
             isEnabled: script?.isEnabled ?? true,
-            runAt: parsed.runAt
+            runAt: parsed.runAt,
+            version: parsed.version ?? script?.version,
+            namespace: parsed.namespace ?? script?.namespace,
+            updateURL: parsed.updateURL ?? script?.updateURL,
+            downloadURL: parsed.downloadURL ?? script?.downloadURL
         )
 
         onSave?(item)
