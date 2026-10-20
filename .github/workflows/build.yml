@@ -36,7 +36,7 @@ jobs:
           import json
           import sys
 
-          path = sys.argv[1]
+          path, source_icon = sys.argv[1:]
           with open(path, encoding="utf-8") as file:
               data = json.load(file)
           for image in data["images"]:
@@ -44,6 +44,9 @@ jobs:
           with open(path, "w", encoding="utf-8") as file:
               json.dump(data, file, indent=2)
               file.write("\n")
+          if source_icon != "icon.png":
+              import os
+              os.remove(os.path.join(os.path.dirname(path), source_icon))
           PY
 
       - name: Generate Xcode Project
