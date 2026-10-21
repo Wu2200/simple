@@ -34,7 +34,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mapfile -t build_runs < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?per_page=100" --jq '.workflow_runs[] | select(.status == "completed") | .id')
+          mapfile -t build_runs < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?per_page=100" --jq '.workflow_runs[] | select(.status == "completed" and .conclusion == "success") | .id')
           declare -A keep_runs=()
           for run_id in "${build_runs[@]:0:10}"; do
             [ -n "$run_id" ] && keep_runs["$run_id"]=1
