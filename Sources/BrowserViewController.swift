@@ -155,7 +155,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
     private var queuedDownloadPrompts: [DownloadPromptRequest] = []
     private var activeDownloadPromptRequest: DownloadPromptRequest?
-    private var downloadPromptOverlay: UIView?
+    private var activeDownloadPromptAlert: UIAlertController?
+    private var downloadPromptRetryScheduled = false
 
     var isShowingLongPressMenu = false
     weak var activeCalloutOverlay: UIView?
@@ -201,6 +202,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if !tabs.isEmpty, tabs.indices.contains(activeTabIndex), homeView.alpha < 0.5 {
             reloadTerminatedTabIfNeeded(activeTab)
         }
+        presentNextDownloadPromptIfNeeded()
     }
 
     override func viewDidLayoutSubviews() {
@@ -445,147 +447,58 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     private func presentNextDownloadPromptIfNeeded() {
-        guard activeDownloadPromptRequest == nil,
-              !queuedDownloadPrompts.isEmpty,
-              view.window != nil,
+        guard activeDownloadPromptRequest == nil, !queuedDownloadPrompts.isEmpty else { return }
+        guard view.window != nil else { return }
+        guard !isBeingPresented,
+              !isBeingDismissed,
+              transitionCoordinator == nil,
               presentedViewController == nil,
-              !isBeingPresented else {
+              activeDownloadPromptAlert == nil else {
+            scheduleDownloadPromptRetry()
             return
         }
 
         let request = queuedDownloadPrompts.removeFirst()
         activeDownloadPromptRequest = request
-
-        let overlay = UIView()
-        overlay.translatesAutoresizingMaskIntoConstraints = false
-        overlay.backgroundColor = UIColor.black.withAlphaComponent(0.12)
-
-        let card = UIView()
-        card.translatesAutoresizingMaskIntoConstraints = false
-        card.backgroundColor = .secondarySystemGroupedBackground
-        card.layer.cornerRadius = 24
-        card.layer.cornerCurve = .continuous
-        card.layer.shadowColor = UIColor.black.cgColor
-        card.layer.shadowOpacity = 0.12
-        card.layer.shadowRadius = 20
-        card.layer.shadowOffset = CGSize(width: 0, height: 6)
-
-        let titleLabel = UILabel()
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "下载文件"
-        titleLabel.font = .systemFont(ofSize: 24, weight: .semibold)
-        titleLabel.textColor = .label
-        titleLabel.textAlignment = .center
-
-        let filenameLabel = UILabel()
-        filenameLabel.translatesAutoresizingMaskIntoConstraints = false
-        filenameLabel.text = request.filename
-        filenameLabel.font = .systemFont(ofSize: 19, weight: .regular)
-        filenameLabel.textColor = .label
-        filenameLabel.textAlignment = .center
-        filenameLabel.numberOfLines = 2
-        filenameLabel.lineBreakMode = .byTruncatingMiddle
-
-        let sourceLabel = UILabel()
-        sourceLabel.translatesAutoresizingMaskIntoConstraints = false
-        sourceLabel.text = "来源：\n\(request.url?.host ?? request.url?.absoluteString ?? "未知来源")"
-        sourceLabel.font = .systemFont(ofSize: 16, weight: .regular)
-        sourceLabel.textColor = .secondaryLabel
-        sourceLabel.textAlignment = .center
-        sourceLabel.numberOfLines = 3
-        sourceLabel.lineBreakMode = .byTruncatingMiddle
-
-        let actionsStack = UIStackView()
-        actionsStack.translatesAutoresizingMaskIntoConstraints = false
-        actionsStack.axis = .vertical
-        actionsStack.distribution = .fillEqually
-        actionsStack.spacing = 0
-
-        let actionTitles = ["下载文件", "复制下载链接", "取消"]
-        for (index, title) in actionTitles.enumerated() {
-            let button = UIButton(type: .system)
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.setTitle(title, for: .normal)
-            button.titleLabel?.font = .systemFont(ofSize: 20, weight: index == 2 ? .medium : .regular)
-            button.setTitleColor(index == 2 ? .secondaryLabel : .systemBlue, for: .normal)
-            button.tag = index
-            button.addTarget(self, action: #selector(handleDownloadPromptAction(_:)), for: .touchUpInside)
-            actionsStack.addArrangedSubview(button)
-
-            if index < actionTitles.count - 1 {
-                let separator = UIView()
-                separator.translatesAutoresizingMaskIntoConstraints = false
-                separator.backgroundColor = .separator
-                actionsStack.addSubview(separator)
-                NSLayoutConstraint.activate([
-                    separator.leadingAnchor.constraint(equalTo: actionsStack.leadingAnchor),
-                    separator.trailingAnchor.constraint(equalTo: actionsStack.trailingAnchor),
-                    separator.topAnchor.constraint(equalTo: button.bottomAnchor),
-                    separator.heightAnchor.constraint(equalToConstant: 0.5)
-                ])
-            }
-        }
-
-        let contentStack = UIStackView(arrangedSubviews: [titleLabel, filenameLabel, sourceLabel, actionsStack])
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        contentStack.axis = .vertical
-        contentStack.alignment = .fill
-        contentStack.spacing = 12
-        contentStack.setCustomSpacing(20, after: sourceLabel)
-
-        card.addSubview(contentStack)
-        overlay.addSubview(card)
-        view.addSubview(overlay)
-        downloadPromptOverlay = overlay
-
-        NSLayoutConstraint.activate([
-            overlay.topAnchor.constraint(equalTo: webContainer.topAnchor),
-            overlay.leadingAnchor.constraint(equalTo: webContainer.leadingAnchor),
-            overlay.trailingAnchor.constraint(equalTo: webContainer.trailingAnchor),
-            overlay.bottomAnchor.constraint(equalTo: webContainer.bottomAnchor),
-
-            card.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
-            card.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
-            card.leadingAnchor.constraint(greaterThanOrEqualTo: overlay.leadingAnchor, constant: 24),
-            card.trailingAnchor.constraint(lessThanOrEqualTo: overlay.trailingAnchor, constant: -24),
-            card.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
-            card.topAnchor.constraint(greaterThanOrEqualTo: overlay.topAnchor, constant: 24),
-            card.bottomAnchor.constraint(lessThanOrEqualTo: overlay.bottomAnchor, constant: -24),
-
-            contentStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 24),
-            contentStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
-            contentStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
-            contentStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-
-            actionsStack.heightAnchor.constraint(equalToConstant: 174)
-        ])
-    }
-
-    @objc private func handleDownloadPromptAction(_ sender: UIButton) {
-        guard let request = activeDownloadPromptRequest else { return }
-
-        switch sender.tag {
-        case 0:
-            finishDownloadPrompt(shouldDownload: true)
-        case 1:
+        let alert = UIAlertController(
+            title: "下载文件",
+            message: "\(request.filename)\n\n来源: \(request.url?.host ?? request.url?.absoluteString ?? "未知来源")",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "下载文件", style: .default) { [weak self] _ in
+            self?.finishDownloadPrompt(shouldDownload: true)
+        })
+        alert.addAction(UIAlertAction(title: "复制下载链接", style: .default) { [weak self] _ in
             if let url = request.url {
                 UIPasteboard.general.string = url.absoluteString
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
-            finishDownloadPrompt(shouldDownload: false)
+            self?.finishDownloadPrompt(shouldDownload: false)
             if request.url != nil {
-                showToastNotice("复制成功")
+                self?.showToastNotice("复制成功")
             }
-        default:
-            finishDownloadPrompt(shouldDownload: false)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+            self?.finishDownloadPrompt(shouldDownload: false)
+        })
+
+        activeDownloadPromptAlert = alert
+        present(alert, animated: true)
+    }
+
+    private func scheduleDownloadPromptRetry() {
+        guard !downloadPromptRetryScheduled else { return }
+        downloadPromptRetryScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self = self else { return }
+            self.downloadPromptRetryScheduled = false
+            self.presentNextDownloadPromptIfNeeded()
         }
     }
 
     private func finishDownloadPrompt(shouldDownload: Bool) {
         guard let request = activeDownloadPromptRequest else { return }
         activeDownloadPromptRequest = nil
-        downloadPromptOverlay?.removeFromSuperview()
-        downloadPromptOverlay = nil
 
         if let onConfirm = request.onConfirm {
             onConfirm(shouldDownload)
@@ -593,8 +506,10 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             DownloadCoordinator.shared.startDownload(url: url, filename: request.filename)
         }
 
-        DispatchQueue.main.async { [weak self] in
-            self?.presentNextDownloadPromptIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self = self else { return }
+            self.activeDownloadPromptAlert = nil
+            self.presentNextDownloadPromptIfNeeded()
         }
     }
 
