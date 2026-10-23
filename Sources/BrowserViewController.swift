@@ -1663,25 +1663,17 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         updateAddressRightButtons()
     }
 
-    func isCertificateError(_ error: Error?) -> Bool {
-        guard let nsError = error as NSError? else { return false }
-        if nsError.domain == NSURLErrorDomain {
-            switch nsError.code {
-            case NSURLErrorServerCertificateUntrusted,
-                 NSURLErrorServerCertificateHasBadDate,
-                 NSURLErrorServerCertificateNotYetValid,
-                 NSURLErrorServerCertificateHasUnknownRoot,
-                 NSURLErrorClientCertificateRejected,
-                 NSURLErrorClientCertificateRequired,
-                 NSURLErrorSecureConnectionFailed,
-                 -1200, -1201, -1202, -1203, -1204, -1205, -1206:
-                return true
-            default:
-                break
-            }
+    func isServerCertificateError(_ error: Error?) -> Bool {
+        guard let nsError = error as NSError?, nsError.domain == NSURLErrorDomain else { return false }
+        switch nsError.code {
+        case NSURLErrorServerCertificateUntrusted,
+             NSURLErrorServerCertificateHasBadDate,
+             NSURLErrorServerCertificateNotYetValid,
+             NSURLErrorServerCertificateHasUnknownRoot:
+            return true
+        default:
+            return false
         }
-        let desc = nsError.localizedDescription.lowercased()
-        return desc.contains("certificate") || desc.contains("证书") || desc.contains("ssl") || desc.contains("tls")
     }
 
     func showFailureUI(for tab: TabItem) {
@@ -1690,7 +1682,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         failureOverlayView.isHidden = false
         let targetURL = tab.failedURL ?? tab.url
         failureURLLabel.text = targetURL?.absoluteString.removingPercentEncoding ?? targetURL?.absoluteString ?? ""
-        let isCertErr = isCertificateError(tab.failureError)
+        let isCertErr = isServerCertificateError(tab.failureError)
         if isCertErr {
             failureTitleLabel.text = "非私人连接"
             failureIconView.image = UIImage(
@@ -1698,6 +1690,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .semibold)
             )
             failureContinueButton.isHidden = false
+            failureReasonLabel.text = "此网站的安全证书无效或不受信任，无法确认连接的安全性。"
         } else {
             failureTitleLabel.text = "无法打开网页"
             failureIconView.image = UIImage(
@@ -1705,9 +1698,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .semibold)
             )
             failureContinueButton.isHidden = true
-        }
-        if let err = tab.failureError as NSError? {
-            failureReasonLabel.text = err.localizedDescription
+            failureReasonLabel.text = (tab.failureError as NSError?)?.localizedDescription ?? "请检查网络连接或网址后重试。"
         }
         addressField.text = formattedAddress(for: targetURL)
         resetProgress()
