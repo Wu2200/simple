@@ -633,8 +633,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let userContentController = WKUserContentController()
         configuration.userContentController = userContentController
 
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        let safeWebView = SafeDropWebView(frame: .zero, configuration: configuration)
+        webView = safeWebView
         super.init()
+
+        safeWebView.onDropNotice = { [weak self] message in
+            self?.delegate?.tabRequestShowToast(message)
+        }
 
         webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
 
