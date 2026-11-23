@@ -155,6 +155,8 @@ final class AdBlockManager {
             UserDefaults.standard.set(true, forKey: enabledKey)
         }
 
+        migrateCustomRulesIfNeeded()
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAppDidBecomeActive),
@@ -310,8 +312,28 @@ final class AdBlockManager {
         }
     }
 
+    private func customRulesFileURL() -> URL {
+        storageDirectoryURL().appendingPathComponent("custom_rules_v2.txt")
+    }
+
+    private func migrateCustomRulesIfNeeded() {
+        let fileURL = customRulesFileURL()
+        guard !FileManager.default.fileExists(atPath: fileURL.path),
+              let legacyRules = UserDefaults.standard.string(forKey: customRulesKey) else {
+            return
+        }
+        try? legacyRules.write(to: fileURL, atomically: true, encoding: .utf8)
+        UserDefaults.standard.removeObject(forKey: customRulesKey)
+    }
+
     func getCustomRules() -> String {
-        UserDefaults.standard.string(forKey: customRulesKey) ?? ""
+        migrateCustomRulesIfNeeded()
+        return (try? String(contentsOf: customRulesFileURL(), encoding: .utf8)) ?? ""
+    }
+
+    func restoreCustomRulesFromBackup(_ rules: String) {
+        try? rules.write(to: customRulesFileURL(), atomically: true, encoding: .utf8)
+        UserDefaults.standard.removeObject(forKey: customRulesKey)
     }
 
     func saveCustomRules(
@@ -327,7 +349,14 @@ final class AdBlockManager {
             return
         }
 
-        UserDefaults.standard.set(rules, forKey: customRulesKey)
+        do {
+            try rules.write(to: customRulesFileURL(), atomically: true, encoding: .utf8)
+            UserDefaults.standard.removeObject(forKey: customRulesKey)
+        } catch {
+            completion?(false, "自定义规则保存失败：\(error.localizedDescription)")
+            return
+        }
+
         setUpdateStatus(
             sourceId: Self.customSourceId,
             status: "正在解析自定义规则…"
@@ -1431,6 +1460,7 @@ final class AdBlockManager {
     }
 
     private static func cosmeticCoreBootstrapJS() -> String {
+        """
         var host = (location.hostname || '').toLowerCase();
         if (!host) {
             return;
@@ -1517,6 +1547,7 @@ final class AdBlockManager {
                     var cssText = chunks.join('\\n');
                     style.appendChild(document.createTextNode(cssText + '\\n'));
                 },
+                isWhitelisted: function(sel) {
                     var x = window.__sb_ab_core__.exceptions;
                     if (!x || x.length === 0) {
                         return false;
@@ -2024,7 +2055,7 @@ final class AdBlockManager {
         )
     }
 
-    private func isValidWebKitPattern(_ pattern: String) -> Bool {
+    func isValidWebKitPattern(_ pattern: String) -> Bool {
         guard !pattern.isEmpty,
               pattern.count < 1024,
               pattern.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value <= 0x7E }),
@@ -2219,7 +2250,7 @@ final class AdBlockManager {
         return (line.trimmingCharacters(in: .whitespacesAndNewlines), [])
     }
 
-    private func parseRule(_ rawLine: String) -> AdBlockParsedLine {
+    func parseRule(_ rawLine: String) -> AdBlockParsedLine {
         var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let emptyIgnored = AdBlockParsedLine(
@@ -2621,7 +2652,7 @@ final class AdBlockManager {
         return result
     }
 
-    private func isValidWebKitDomain(_ domain: String) -> Bool {
+    func isValidWebKitDomain(_ domain: String) -> Bool {
         guard !domain.isEmpty,
               domain.count <= 253,
               !domain.contains(".."),
@@ -2642,7 +2673,7 @@ final class AdBlockManager {
         return true
     }
 
-    private func normalizedWebKitDomains(
+    func normalizedWebKitDomains(
         from text: String,
         separator: Character = "|"
     ) -> (include: [String], exclude: [String], hasInvalidExclude: Bool) {
@@ -2712,7 +2743,7 @@ final class AdBlockManager {
         return (include, exclude)
     }
 
-    private func urlFilterPattern(from pattern: String) -> String {
+    func urlFilterPattern(from pattern: String) -> String {
         var p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !p.isEmpty else { return "" }
 
@@ -3146,7 +3177,7 @@ private struct AdBlockSourcePayload {
     var contentHash: String?
 }
 
-private struct AdBlockParsedLine {
+struct AdBlockParsedLine {
     var networkRule: [String: Any]?
     var isException: Bool
     var cosmeticRules: [AdBlockCosmeticRule]
@@ -3154,7 +3185,7 @@ private struct AdBlockParsedLine {
     var isUnsupported: Bool
 }
 
-private struct AdBlockNetworkRule {
+struct AdBlockNetworkRule {
     var rawRule: String
     var compiledRule: [String: Any]
     var isException: Bool
