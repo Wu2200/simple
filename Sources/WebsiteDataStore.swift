@@ -542,6 +542,8 @@ final class WebsiteCleaner {
         clean(cache: true, loginAndData: true, completion: completion)
     }
     static func cookieDomain(_ cookieDomain: String, matchesRecordDomain recordDomain: String) -> Bool {
+        let cleanCookie = cookieDomain
+            .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
         let cleanRecord = recordDomain
