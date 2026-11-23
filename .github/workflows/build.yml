@@ -54,6 +54,33 @@ jobs:
           xcodegen generate
           sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' SimpleBrowser.xcodeproj/project.pbxproj || true
 
+      - name: Run Unit Tests
+        run: |
+          set -o pipefail
+          SIM_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; data=json.load(sys.stdin); devs=[(rt, d["udid"]) for rt, list_ in data.get("devices", {}).items() if "iOS" in rt for d in list_ if d.get("isAvailable") and "iPhone" in d.get("name", "")]; devs.sort(reverse=True); print(devs[0][1] if devs else "")')
+          echo "Selected Simulator UDID: ${SIM_ID}"
+          if [ -z "$SIM_ID" ]; then
+            echo "No available iPhone simulator found"
+            exit 1
+          fi
+          xcodebuild test \
+            -project SimpleBrowser.xcodeproj \
+            -scheme SimpleBrowser \
+            -destination "platform=iOS Simulator,id=${SIM_ID}" \
+            -configuration Debug \
+            -derivedDataPath build-tests \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            2>&1 | tee xcodetest.log
+
+      - name: Upload Test Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleBrowser-Test-Log
+          path: xcodetest.log
+
       - name: Build Application
         run: |
           set -o pipefail

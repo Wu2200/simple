@@ -27,3 +27,38 @@ targets:
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGN_IDENTITY: ""
         ENABLE_PREVIEWS: NO
+      configs:
+        Debug:
+          ENABLE_TESTABILITY: YES
+
+  SimpleBrowserTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: SimpleBrowser
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.SimpleBrowserTests
+        PRODUCT_NAME: SimpleBrowserTests
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_REQUIRED: NO
+
+schemes:
+  SimpleBrowser:
+    build:
+      targets:
+        SimpleBrowser: all
+        SimpleBrowserTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - SimpleBrowserTests
+    archive:
+      config: Release
