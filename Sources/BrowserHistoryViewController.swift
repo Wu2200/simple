@@ -33,44 +33,76 @@ final class BookmarkStore {
     static let shared = BookmarkStore()
     private let keyTree = "browser_bookmarks_tree_v3"
     private let keyLegacy = "browser_bookmarks_v1"
+    private let lock = NSLock()
+    private let storageURL: URL
+    private var cachedNodes: [BookmarkItem]?
+
     private init() {
+        let fm = FileManager.default
+        let baseDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = baseDir.appendingPathComponent("SimpleBrowser", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        storageURL = dir.appendingPathComponent("bookmarks_v3.json")
         migrateLegacyIfNeeded()
     }
 
     private func migrateLegacyIfNeeded() {
-        if UserDefaults.standard.data(forKey: keyTree) == nil {
-            if let oldData = UserDefaults.standard.data(forKey: keyLegacy) {
-                struct LegacyBookmarkItem: Codable {
-                    var id: String
-                    var title: String
-                    var urlString: String
-                    var createdAt: Date
-                }
-                if let oldItems = try? JSONDecoder().decode([LegacyBookmarkItem].self, from: oldData), !oldItems.isEmpty {
-                    var newNodes: [BookmarkItem] = []
-                    for (index, old) in oldItems.enumerated() {
-                        newNodes.append(BookmarkItem(
-                            id: old.id,
-                            title: old.title,
-                            urlString: old.urlString,
-                            isFolder: false,
-                            parentId: nil,
-                            createdAt: old.createdAt,
-                            order: index
-                        ))
-                    }
-                    saveNodes(newNodes)
-                }
+        guard !FileManager.default.fileExists(atPath: storageURL.path) else { return }
+
+        if let data = UserDefaults.standard.data(forKey: keyTree),
+           let nodes = try? JSONDecoder().decode([BookmarkItem].self, from: data) {
+            saveNodesLocked(nodes)
+            UserDefaults.standard.removeObject(forKey: keyTree)
+            UserDefaults.standard.removeObject(forKey: keyLegacy)
+            return
+        }
+
+        if let oldData = UserDefaults.standard.data(forKey: keyLegacy) {
+            struct LegacyBookmarkItem: Codable {
+                var id: String
+                var title: String
+                var urlString: String
+                var createdAt: Date
             }
+            if let oldItems = try? JSONDecoder().decode([LegacyBookmarkItem].self, from: oldData), !oldItems.isEmpty {
+                var newNodes: [BookmarkItem] = []
+                for (index, old) in oldItems.enumerated() {
+                    newNodes.append(BookmarkItem(
+                        id: old.id,
+                        title: old.title,
+                        urlString: old.urlString,
+                        isFolder: false,
+                        parentId: nil,
+                        createdAt: old.createdAt,
+                        order: index
+                    ))
+                }
+                saveNodesLocked(newNodes)
+            }
+            UserDefaults.standard.removeObject(forKey: keyLegacy)
         }
     }
 
-    func loadAllNodes() -> [BookmarkItem] {
-        guard let data = UserDefaults.standard.data(forKey: keyTree),
+    private func loadAllNodesLocked() -> [BookmarkItem] {
+        if let cached = cachedNodes {
+            return cached.sorted { $0.order < $1.order }
+        }
+        guard let data = try? Data(contentsOf: storageURL),
               let nodes = try? JSONDecoder().decode([BookmarkItem].self, from: data) else {
             return []
         }
+        cachedNodes = nodes
         return nodes.sorted { $0.order < $1.order }
+    }
+
+    func loadAllNodes() -> [BookmarkItem] {
+        lock.lock()
+        let nodes = loadAllNodesLocked()
+        lock.unlock()
+        return nodes
     }
 
     func loadBookmarks() -> [BookmarkItem] {
@@ -101,7 +133,8 @@ final class BookmarkStore {
     }
 
     func addBookmark(title: String, urlString: String, parentId: String? = nil) {
-        var all = loadAllNodes()
+        lock.lock()
+        var all = loadAllNodesLocked()
         let resolvedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (URL(string: urlString)?.host ?? urlString) : title
         let maxOrder = all.filter { $0.parentId == parentId }.map { $0.order }.max() ?? -1
         let item = BookmarkItem(
@@ -114,14 +147,17 @@ final class BookmarkStore {
             order: maxOrder + 1
         )
         all.append(item)
-        saveNodes(all)
+        saveNodesLocked(all)
+        lock.unlock()
+
         if let url = URL(string: urlString), let host = url.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
     }
 
     func createFolder(title: String, parentId: String? = nil) -> BookmarkItem {
-        var all = loadAllNodes()
+        lock.lock()
+        var all = loadAllNodesLocked()
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "新建文件夹" : title
         let maxOrder = all.filter { $0.parentId == parentId }.map { $0.order }.max() ?? -1
         let folder = BookmarkItem(
@@ -134,12 +170,14 @@ final class BookmarkStore {
             order: maxOrder + 1
         )
         all.append(folder)
-        saveNodes(all)
+        saveNodesLocked(all)
+        lock.unlock()
         return folder
     }
 
     func updateNode(id: String, title: String, urlString: String? = nil) {
-        var all = loadAllNodes()
+        lock.lock()
+        var all = loadAllNodesLocked()
         if let idx = all.firstIndex(where: { $0.id == id }) {
             let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             if !cleanTitle.isEmpty {
@@ -148,12 +186,14 @@ final class BookmarkStore {
             if let u = urlString, !all[idx].isFolder {
                 all[idx].urlString = u.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            saveNodes(all)
+            saveNodesLocked(all)
         }
+        lock.unlock()
     }
 
     func deleteNode(id: String) {
-        var all = loadAllNodes()
+        lock.lock()
+        var all = loadAllNodesLocked()
         var idsToDelete: Set<String> = [id]
         var queue: [String] = [id]
         while !queue.isEmpty {
@@ -163,7 +203,8 @@ final class BookmarkStore {
             queue.append(contentsOf: children)
         }
         all.removeAll { idsToDelete.contains($0.id) }
-        saveNodes(all)
+        saveNodesLocked(all)
+        lock.unlock()
     }
 
     func deleteBookmark(id: String) {
@@ -175,19 +216,25 @@ final class BookmarkStore {
     }
 
     func clearBookmarks() {
+        lock.lock()
+        cachedNodes = []
+        try? FileManager.default.removeItem(at: storageURL)
+        lock.unlock()
         UserDefaults.standard.removeObject(forKey: keyTree)
         UserDefaults.standard.removeObject(forKey: keyLegacy)
     }
 
     func saveAllNodes(_ items: [BookmarkItem]) {
-        saveNodes(items)
+        lock.lock()
+        saveNodesLocked(items)
+        lock.unlock()
     }
 
-    private func saveNodes(_ items: [BookmarkItem]) {
+    private func saveNodesLocked(_ items: [BookmarkItem]) {
+        cachedNodes = items
         guard let data = try? JSONEncoder().encode(items) else { return }
-        UserDefaults.standard.set(data, forKey: keyTree)
+        try? data.write(to: storageURL, options: .atomic)
     }
-
     func exportToAlookHTML() -> String {
         var html = """
         <!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -282,16 +329,49 @@ struct BrowserHistoryItem: Codable, Equatable {
 final class BrowserHistoryStore {
     static let shared = BrowserHistoryStore()
 
-    private let key = "browser_visit_history_v1"
+    private let legacyKey = "browser_visit_history_v1"
     private let maximumCount = 500
+    private let lock = NSLock()
+    private let storageURL: URL
+    private var cachedHistory: [BrowserHistoryItem]?
 
-    private init() {}
+    private init() {
+        let fm = FileManager.default
+        let baseDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = baseDir.appendingPathComponent("SimpleBrowser", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        storageURL = dir.appendingPathComponent("history_v1.json")
+        migrateFromUserDefaultsIfNeeded()
+    }
 
-    func loadHistory() -> [BrowserHistoryItem] {
-        guard let data = UserDefaults.standard.data(forKey: key),
+    private func migrateFromUserDefaultsIfNeeded() {
+        guard !FileManager.default.fileExists(atPath: storageURL.path) else { return }
+        if let legacyData = UserDefaults.standard.data(forKey: legacyKey),
+           let items = try? JSONDecoder().decode([BrowserHistoryItem].self, from: legacyData) {
+            saveHistoryLocked(items)
+            UserDefaults.standard.removeObject(forKey: legacyKey)
+        }
+    }
+
+    private func loadHistoryLocked() -> [BrowserHistoryItem] {
+        if let cached = cachedHistory {
+            return cached
+        }
+        guard let data = try? Data(contentsOf: storageURL),
               let items = try? JSONDecoder().decode([BrowserHistoryItem].self, from: data) else {
             return []
         }
+        cachedHistory = items
+        return items
+    }
+
+    func loadHistory() -> [BrowserHistoryItem] {
+        lock.lock()
+        let items = loadHistoryLocked()
+        lock.unlock()
         return items
     }
 
@@ -305,7 +385,8 @@ final class BrowserHistoryStore {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
 
-        var items = loadHistory()
+        lock.lock()
+        var items = loadHistoryLocked()
         let urlString = url.absoluteString
         let resolvedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? (url.host ?? urlString)
@@ -326,28 +407,38 @@ final class BrowserHistoryStore {
             items = Array(items.prefix(maximumCount))
         }
 
-        saveHistory(items)
+        saveHistoryLocked(items)
+        lock.unlock()
     }
 
     func delete(id: String) {
-        var items = loadHistory()
+        lock.lock()
+        var items = loadHistoryLocked()
         items.removeAll { $0.id == id }
-        saveHistory(items)
+        saveHistoryLocked(items)
+        lock.unlock()
     }
 
     func clearHistory() {
-        UserDefaults.standard.removeObject(forKey: key)
+        lock.lock()
+        cachedHistory = []
+        try? FileManager.default.removeItem(at: storageURL)
+        lock.unlock()
+        UserDefaults.standard.removeObject(forKey: legacyKey)
     }
 
     func saveAllHistory(_ items: [BrowserHistoryItem]) {
-        saveHistory(items)
+        lock.lock()
+        saveHistoryLocked(items)
+        lock.unlock()
     }
 
-    private func saveHistory(_ items: [BrowserHistoryItem]) {
+    private func saveHistoryLocked(_ items: [BrowserHistoryItem]) {
+        cachedHistory = items
         guard let data = try? JSONEncoder().encode(items) else {
             return
         }
-        UserDefaults.standard.set(data, forKey: key)
+        try? data.write(to: storageURL, options: .atomic)
     }
 }
 
