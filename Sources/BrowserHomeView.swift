@@ -16,7 +16,10 @@ struct HomeShortcutItem: Codable, Equatable {
 
 final class HomeShortcutStore {
     static let shared = HomeShortcutStore()
-    private let key = "browser_home_shortcuts_v2"
+    private let legacyKey = "browser_home_shortcuts_v2"
+    private let lock = NSLock()
+    private let storageURL: URL
+    private var cachedShortcuts: [HomeShortcutItem]?
 
     private let defaultItems: [HomeShortcutItem] = [
         HomeShortcutItem(id: "1", title: "百度", urlString: "https://www.baidu.com"),
@@ -29,31 +32,80 @@ final class HomeShortcutStore {
         HomeShortcutItem(id: "8", title: "V2EX", urlString: "https://www.v2ex.com")
     ]
 
-    private init() {}
+    private init() {
+        let fm = FileManager.default
+        let baseDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = baseDir.appendingPathComponent("SimpleBrowser", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        storageURL = dir.appendingPathComponent("home_shortcuts_v2.json")
+        migrateFromUserDefaultsIfNeeded()
+    }
+
+    private func migrateFromUserDefaultsIfNeeded() {
+        guard !FileManager.default.fileExists(atPath: storageURL.path) else { return }
+        if let legacyData = UserDefaults.standard.data(forKey: legacyKey),
+           let items = try? JSONDecoder().decode([HomeShortcutItem].self, from: legacyData) {
+            cachedShortcuts = items
+            if let encoded = try? JSONEncoder().encode(items) {
+                try? encoded.write(to: storageURL, options: .atomic)
+            }
+            UserDefaults.standard.removeObject(forKey: legacyKey)
+        }
+    }
+
+    private func loadStoredShortcutsLocked() -> [HomeShortcutItem] {
+        if let cached = cachedShortcuts {
+            return cached
+        }
+        if let data = try? Data(contentsOf: storageURL),
+           let items = try? JSONDecoder().decode([HomeShortcutItem].self, from: data) {
+            cachedShortcuts = items
+            return items
+        }
+        return []
+    }
+
+    private func saveShortcutsLocked(_ items: [HomeShortcutItem]) {
+        cachedShortcuts = items
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        try? data.write(to: storageURL, options: .atomic)
+    }
 
     func loadShortcuts() -> [HomeShortcutItem] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let items = try? JSONDecoder().decode([HomeShortcutItem].self, from: data),
-              !items.isEmpty else {
-            return defaultItems
-        }
-        return items
+        lock.lock()
+        let items = loadStoredShortcutsLocked()
+        lock.unlock()
+        return items.isEmpty ? defaultItems : items
     }
 
     func addShortcut(title: String, urlString: String, customIconData: Data? = nil) {
-        var items = loadShortcuts()
+        lock.lock()
+        var items = loadStoredShortcutsLocked()
+        if items.isEmpty {
+            items = defaultItems
+        }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = cleanTitle.isEmpty ? (URL(string: urlString)?.host ?? urlString) : cleanTitle
         items.removeAll { $0.urlString == urlString }
         items.append(HomeShortcutItem(id: UUID().uuidString, title: resolvedTitle, urlString: urlString, customIconData: customIconData))
-        saveShortcuts(items)
+        saveShortcutsLocked(items)
+        lock.unlock()
+
         if customIconData == nil, let url = URL(string: urlString), let host = url.host {
             FaviconLoader.shared.preloadFavicon(for: host)
         }
     }
 
     func updateShortcut(id: String, title: String, urlString: String, customIconData: Data? = nil) {
-        var items = loadShortcuts()
+        lock.lock()
+        var items = loadStoredShortcutsLocked()
+        if items.isEmpty {
+            items = defaultItems
+        }
+        var shouldPreloadHost: String?
         if let idx = items.firstIndex(where: { $0.id == id }) {
             let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             let resolvedTitle = cleanTitle.isEmpty ? (URL(string: urlString)?.host ?? urlString) : cleanTitle
@@ -62,34 +114,46 @@ final class HomeShortcutStore {
             if let customIconData = customIconData {
                 items[idx].customIconData = customIconData
             }
-            saveShortcuts(items)
+            saveShortcutsLocked(items)
             if items[idx].customIconData == nil, let url = URL(string: urlString), let host = url.host {
-                FaviconLoader.shared.preloadFavicon(for: host)
+                shouldPreloadHost = host
             }
+        }
+        lock.unlock()
+
+        if let host = shouldPreloadHost {
+            FaviconLoader.shared.preloadFavicon(for: host)
         }
     }
 
     func updateShortcutIcon(id: String, customIconData: Data?) {
-        var items = loadShortcuts()
+        lock.lock()
+        var items = loadStoredShortcutsLocked()
+        if items.isEmpty {
+            items = defaultItems
+        }
         if let idx = items.firstIndex(where: { $0.id == id }) {
             items[idx].customIconData = customIconData
-            saveShortcuts(items)
+            saveShortcutsLocked(items)
         }
+        lock.unlock()
     }
 
     func deleteShortcut(id: String) {
-        var items = loadShortcuts()
+        lock.lock()
+        var items = loadStoredShortcutsLocked()
+        if items.isEmpty {
+            items = defaultItems
+        }
         items.removeAll { $0.id == id }
-        saveShortcuts(items)
+        saveShortcutsLocked(items)
+        lock.unlock()
     }
 
     func saveAllShortcuts(_ items: [HomeShortcutItem]) {
-        saveShortcuts(items)
-    }
-
-    private func saveShortcuts(_ items: [HomeShortcutItem]) {
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+        lock.lock()
+        saveShortcutsLocked(items)
+        lock.unlock()
     }
 }
 
