@@ -399,12 +399,9 @@ extension BrowserViewController {
         navigationController.modalPresentationStyle = .pageSheet
         self.present(navigationController, animated: true)
 
-        let tabToSnapshot = activeTab
-        if !tabToSnapshot.isLoading {
-            tabToSnapshot.updateSnapshot { [weak manager] in
-                DispatchQueue.main.async {
-                    manager?.reloadGrid()
-                }
+        captureActiveTabSnapshot { [weak manager] in
+            DispatchQueue.main.async {
+                manager?.reloadGrid()
             }
         }
     }
