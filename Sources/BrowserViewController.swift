@@ -1244,7 +1244,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         overlay.addGestureRecognizer(tapDismiss)
 
         let menuView = AddressCalloutMenuView(arrowDirection: arrowDir, arrowOffset: arrowOffset)
-        menuView.frame = CGRect(x: menuX, y: menuY, width: menuWidth, height: mechanicalWidth(menuWidth))
+        menuView.frame = CGRect(x: menuX, y: menuY, width: menuWidth, height: menuHeight)
 
         menuView.onCopy = { [weak self] in
             self?.dismissCalloutMenuAnimated(menuView, overlay: overlay) {
@@ -1281,10 +1281,6 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             menuView.alpha = 1
             menuView.transform = .identity
         }
-    }
-
-    private func mechanicalWidth(_ base: CGFloat) -> CGFloat {
-        51
     }
 
     @objc func dismissCalloutMenu() {
