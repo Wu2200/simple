@@ -17,10 +17,50 @@ protocol TabItemDelegate: AnyObject {
     func tabRequestPrompt(_ tab: TabItem, prompt: String, defaultText: String?, completionHandler: @escaping (String?) -> Void)
 }
 
+private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+
+    init(target: WKScriptMessageHandler) {
+        self.target = target
+        super.init()
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(userContentController, didReceive: message)
+    }
+}
+
+private final class SafeGMURLSessionDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let scheme = request.url?.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+}
+
 final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    private static let safeGMURLSessionDelegate = SafeGMURLSessionDelegate()
+    private static let gmURLSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieAcceptPolicy = .never
+        config.httpShouldSetCookies = false
+        config.timeoutIntervalForRequest = 30.0
+        return URLSession(configuration: config, delegate: safeGMURLSessionDelegate, delegateQueue: nil)
+    }()
+
     let id = UUID()
     let webView: WKWebView
     private let reloadCoverView = UIView()
+    private let gmBridgeToken = UUID().uuidString
     var title = "主页"
     var url: URL?
     var isLoading = false
@@ -52,6 +92,8 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     private var hasInjectedScriptsForCurrentPage = false
+    private var injectedRuntimeScriptIDs = Set<String>()
+    private var isSuspendingToBlank = false
     private var isLoadingFailureDocument = false
     private var navigationActionURL: URL?
     private var userScrolledDuringLoading = false
@@ -63,7 +105,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var titleObservation: NSKeyValueObservation?
 
     weak var delegate: TabItemDelegate?
-
     private static let coreHistoryScriptSource = """
     (function() {
         if (window !== window.top) return;
@@ -198,166 +239,201 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     })();
     """
 
-    private static let coreGMPolyfillScriptSource = """
-    (function() {
-        if (window.__gm_polyfilled__) return;
-        window.__gm_polyfilled__ = true;
-        window.unsafeWindow = window;
-        window.__gm_menu_commands__ = window.__gm_menu_commands__ || {};
-        window.__gm_xhr_callbacks__ = window.__gm_xhr_callbacks__ || {};
+    private static func makeCoreGMPolyfillScriptSource(bridgeToken: String) -> String {
+        let tokenData = (try? JSONSerialization.data(withJSONObject: [bridgeToken], options: [])) ?? Data("[\"\"]".utf8)
+        let tokenArrayJSON = String(data: tokenData, encoding: .utf8) ?? "[\"\"]"
+        let tokenLiteral = String(tokenArrayJSON.dropFirst().dropLast())
 
-        window.__gm_invokeMenuCommand = function(id) {
-            var fn = window.__gm_menu_commands__[id];
-            if (typeof fn === 'function') { fn(); }
-        };
-        window.GM_addStyle = function(css) {
-            var style = document.createElement('style');
-            style.type = 'text/css';
-            style.appendChild(document.createTextNode(css));
-            (document.head || document.documentElement).appendChild(style);
-            return style;
-        };
-        window.GM_log = function(msg) {};
-        window.GM_openInTab = function(url) {
-            window.open(url, '_blank');
-        };
-        window.GM_setClipboard = function(text) {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(String(text || ''));
+        return """
+        (function() {
+            if (window.__gm_polyfilled__) return;
+            window.__gm_polyfilled__ = true;
+            window.unsafeWindow = window;
+
+            var __expectedBridgeToken = \(tokenLiteral);
+            var __gmHandler = (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.GM) ? window.webkit.messageHandlers.GM : null;
+            var __menuCommands = {};
+            var __xhrCallbacks = {};
+            var __cookieCallbacks = {};
+
+            function postGMMessage(payload) {
+                try {
+                    if (__gmHandler) {
+                        __gmHandler.postMessage(payload);
+                        return true;
+                    }
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.GM) {
+                        window.webkit.messageHandlers.GM.postMessage(payload);
+                        return true;
+                    }
+                } catch(e) {}
+                return false;
             }
-        };
-        window.GM_notification = function() {};
 
-        window.__gm_cookie_callbacks__ = window.__gm_cookie_callbacks__ || {};
-        window.GM_cookie = {
-            list: function(details, callback) {
-                var id = 'ck_' + Math.random().toString(36).substr(2, 9);
-                window.__gm_cookie_callbacks__[id] = callback;
-                try {
-                    window.webkit.messageHandlers.GM.postMessage({
-                        action: 'cookie_list',
-                        id: id,
-                        details: details || {}
-                    });
-                } catch(e) {
-                    if (typeof callback === 'function') callback(null, e.toString());
+            window.__gm_invokeMenuCommand = function(id) {
+                var fn = __menuCommands[id];
+                if (typeof fn === 'function') { fn(); }
+            };
+
+            window.__handleCookieListResponse = function(id, cookies, error) {
+                var cb = __cookieCallbacks[id];
+                if (!cb) return;
+                delete __cookieCallbacks[id];
+                cb(cookies, error);
+            };
+            window.__gm_handleCookieListResponse = window.__handleCookieListResponse;
+
+            window.__handleCookieOpResponse = function(id, error) {
+                var cb = __cookieCallbacks[id];
+                if (!cb) return;
+                delete __cookieCallbacks[id];
+                cb(error);
+            };
+            window.__gm_handleCookieOpResponse = window.__handleCookieOpResponse;
+
+            window.__handleXhrResponse = function(id, status, text, headers, finalUrl, base64Data) {
+                var opts = __xhrCallbacks[id];
+                if (!opts) return;
+                delete __xhrCallbacks[id];
+                var responseVal = text;
+                if (opts.responseType === 'json') {
+                    try {
+                        responseVal = JSON.parse(text);
+                    } catch(e) {
+                        responseVal = null;
+                    }
+                } else if ((opts.responseType === 'arraybuffer' || opts.responseType === 'blob') && base64Data) {
+                    try {
+                        var binStr = atob(base64Data);
+                        var len = binStr.length;
+                        var bytes = new Uint8Array(len);
+                        for (var i = 0; i < len; i++) {
+                            bytes[i] = binStr.charCodeAt(i);
+                        }
+                        responseVal = opts.responseType === 'blob' ? new Blob([bytes]) : bytes.buffer;
+                    } catch(e) {}
                 }
-            },
-            delete: function(details, callback) {
-                var id = 'ck_' + Math.random().toString(36).substr(2, 9);
-                window.__gm_cookie_callbacks__[id] = callback;
-                try {
-                    window.webkit.messageHandlers.GM.postMessage({
-                        action: 'cookie_delete',
+                var res = {
+                    status: status,
+                    statusText: (status >= 200 && status < 300) ? 'OK' : 'Error',
+                    responseText: text,
+                    response: responseVal,
+                    responseHeaders: headers || '',
+                    readyState: 4,
+                    finalUrl: finalUrl || opts.url
+                };
+                if (opts.onreadystatechange) opts.onreadystatechange(res);
+                if (opts.onload) opts.onload(res);
+            };
+            window.__gm_handleXhrResponse = window.__handleXhrResponse;
+
+            window.__handleXhrError = function(id, errorText) {
+                var opts = __xhrCallbacks[id];
+                if (!opts) return;
+                delete __xhrCallbacks[id];
+                var res = {
+                    status: 0,
+                    statusText: errorText,
+                    responseText: errorText,
+                    response: null,
+                    responseHeaders: '',
+                    readyState: 4
+                };
+                if (opts.onerror) opts.onerror(res);
+            };
+            window.__gm_handleXhrError = window.__handleXhrError;
+
+            var bridge = {
+                postValue: function(token, payload) {
+                    if (token !== __expectedBridgeToken || !payload) return;
+                    postGMMessage(payload);
+                },
+                registerMenu: function(token, scriptId, caption, commandFunc) {
+                    if (token !== __expectedBridgeToken) return -1;
+                    var id = Math.floor(Math.random() * 1000000);
+                    __menuCommands[id] = commandFunc;
+                    postGMMessage({
+                        action: 'registerMenuCommand',
                         id: id,
-                        details: details || {}
+                        scriptId: scriptId,
+                        caption: caption
                     });
-                } catch(e) {
-                    if (typeof callback === 'function') callback(e.toString());
-                }
-            },
-            set: function(details, callback) {
-                var id = 'ck_' + Math.random().toString(36).substr(2, 9);
-                window.__gm_cookie_callbacks__[id] = callback;
-                try {
-                    window.webkit.messageHandlers.GM.postMessage({
-                        action: 'cookie_set',
+                    return id;
+                },
+                unregisterMenu: function(token, id) {
+                    if (token !== __expectedBridgeToken) return;
+                    delete __menuCommands[id];
+                    postGMMessage({
+                        action: 'unregisterMenuCommand',
+                        id: id
+                    });
+                },
+                cookieOp: function(token, scriptId, actionName, details, callback) {
+                    if (token !== __expectedBridgeToken) {
+                        if (typeof callback === 'function') {
+                            if (actionName === 'cookie_list') callback(null, 'Unauthorized');
+                            else callback('Unauthorized');
+                        }
+                        return;
+                    }
+                    var id = 'ck_' + Math.random().toString(36).substr(2, 9);
+                    if (typeof callback === 'function') {
+                        __cookieCallbacks[id] = callback;
+                    }
+                    var payloadDetails = Object.assign({}, details || {}, {
+                        __simpleScriptId: scriptId,
+                        __bridgeToken: token
+                    });
+                    if (!postGMMessage({
+                        action: actionName,
                         id: id,
-                        details: details || {}
-                    });
-                } catch(e) {
-                    if (typeof callback === 'function') callback(e.toString());
+                        details: payloadDetails
+                    })) {
+                        delete __cookieCallbacks[id];
+                        if (typeof callback === 'function') {
+                            if (actionName === 'cookie_list') callback(null, 'Bridge unavailable');
+                            else callback('Bridge unavailable');
+                        }
+                    }
+                },
+                xhr: function(token, scriptId, opts) {
+                    if (token !== __expectedBridgeToken || !opts) {
+                        if (opts && opts.onerror) opts.onerror({ status: 0, statusText: 'Unauthorized', responseText: 'Unauthorized', response: null, responseHeaders: '', readyState: 4 });
+                        return;
+                    }
+                    var id = 'xhr_' + Math.random().toString(36).substr(2, 9);
+                    __xhrCallbacks[id] = opts;
+                    if (!postGMMessage({
+                        action: 'xhr',
+                        id: id,
+                        scriptId: scriptId,
+                        bridgeToken: token,
+                        method: opts.method || 'GET',
+                        url: opts.url,
+                        headers: opts.headers || {},
+                        data: opts.data || null,
+                        responseType: opts.responseType || '',
+                        timeout: opts.timeout || 0
+                    })) {
+                        delete __xhrCallbacks[id];
+                        if (opts.onerror) opts.onerror({ status: 0, statusText: 'Bridge unavailable', responseText: 'Bridge unavailable', response: null, responseHeaders: '', readyState: 4 });
+                    }
                 }
-            }
-        };
+            };
 
-        window.__handleCookieListResponse = function(id, cookies, error) {
-            var cb = window.__gm_cookie_callbacks__ && window.__gm_cookie_callbacks__[id];
-            if (!cb) return;
-            delete window.__gm_cookie_callbacks__[id];
-            cb(cookies, error);
-        };
-        window.__gm_handleCookieListResponse = window.__handleCookieListResponse;
-
-        window.__handleCookieOpResponse = function(id, error) {
-            var cb = window.__gm_cookie_callbacks__ && window.__gm_cookie_callbacks__[id];
-            if (!cb) return;
-            delete window.__gm_cookie_callbacks__[id];
-            cb(error);
-        };
-        window.__gm_handleCookieOpResponse = window.__handleCookieOpResponse;
-
-        window.GM_xmlhttpRequest = function(opts) {
-            var id = 'xhr_' + Math.random().toString(36).substr(2, 9);
-            window.__gm_xhr_callbacks__ = window.__gm_xhr_callbacks__ || {};
-            window.__gm_xhr_callbacks__[id] = opts;
             try {
-                window.webkit.messageHandlers.GM.postMessage({
-                    action: 'xhr',
-                    id: id,
-                    method: opts.method || 'GET',
-                    url: opts.url,
-                    headers: opts.headers || {},
-                    data: opts.data || null,
-                    responseType: opts.responseType || '',
-                    timeout: opts.timeout || 0
+                Object.defineProperty(window, '__simple_gm_bridge__', {
+                    value: bridge,
+                    enumerable: false,
+                    configurable: false,
+                    writable: false
                 });
             } catch(e) {
-                if (opts.onerror) opts.onerror({ status: 0, responseText: e.toString() });
+                window.__simple_gm_bridge__ = bridge;
             }
-        };
-        window.__handleXhrResponse = function(id, status, text, headers, finalUrl, base64Data) {
-            var opts = window.__gm_xhr_callbacks__ && window.__gm_xhr_callbacks__[id];
-            if (!opts) return;
-            delete window.__gm_xhr_callbacks__[id];
-            var responseVal = text;
-            if (opts.responseType === 'json') {
-                try {
-                    responseVal = JSON.parse(text);
-                } catch(e) {
-                    responseVal = null;
-                }
-            } else if ((opts.responseType === 'arraybuffer' || opts.responseType === 'blob') && base64Data) {
-                try {
-                    var binStr = atob(base64Data);
-                    var len = binStr.length;
-                    var bytes = new Uint8Array(len);
-                    for (var i = 0; i < len; i++) {
-                        bytes[i] = binStr.charCodeAt(i);
-                    }
-                    responseVal = opts.responseType === 'blob' ? new Blob([bytes]) : bytes.buffer;
-                } catch(e) {}
-            }
-            var res = {
-                status: status,
-                statusText: (status >= 200 && status < 300) ? 'OK' : 'Error',
-                responseText: text,
-                response: responseVal,
-                responseHeaders: headers || '',
-                readyState: 4,
-                finalUrl: finalUrl || opts.url
-            };
-            if (opts.onreadystatechange) opts.onreadystatechange(res);
-            if (opts.onload) opts.onload(res);
-        };
-        window.__gm_handleXhrResponse = window.__handleXhrResponse;
-        window.__handleXhrError = function(id, errorText) {
-            var opts = window.__gm_xhr_callbacks__ && window.__gm_xhr_callbacks__[id];
-            if (!opts) return;
-            delete window.__gm_xhr_callbacks__[id];
-            var res = {
-                status: 0,
-                statusText: errorText,
-                responseText: errorText,
-                response: null,
-                responseHeaders: '',
-                readyState: 4
-            };
-            if (opts.onerror) opts.onerror(res);
-        };
-        window.__gm_handleXhrError = window.__handleXhrError;
-    })();
-    """
+        })();
+        """
+    }
 
     private static let coreDownloadScriptSource = """
     (function() {
@@ -631,8 +707,16 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let isDesktop = selectedItem.category == .desktop || selectedItem.id == "default_mac"
         configuration.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
 
-        let userContentController = WKUserContentController()
-        configuration.userContentController = userContentController
+        let userContentController: WKUserContentController
+        if passedConfig != nil {
+            userContentController = configuration.userContentController
+            for name in ["GM", "DownloadBridge", "ContextMenuBridge", "HistoryBridge", "ResourceBridge"] {
+                userContentController.removeScriptMessageHandler(forName: name)
+            }
+        } else {
+            userContentController = WKUserContentController()
+            configuration.userContentController = userContentController
+        }
 
         let safeWebView = SafeDropWebView(frame: .zero, configuration: configuration)
         webView = safeWebView
@@ -644,11 +728,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
 
-        userContentController.add(self, name: "GM")
-        userContentController.add(self, name: "DownloadBridge")
-        userContentController.add(self, name: "ContextMenuBridge")
-        userContentController.add(self, name: "HistoryBridge")
-        userContentController.add(self, name: "ResourceBridge")
+        userContentController.add(WeakScriptMessageHandler(target: self), name: "GM")
+        userContentController.add(WeakScriptMessageHandler(target: self), name: "DownloadBridge")
+        userContentController.add(WeakScriptMessageHandler(target: self), name: "ContextMenuBridge")
+        userContentController.add(WeakScriptMessageHandler(target: self), name: "HistoryBridge")
+        userContentController.add(WeakScriptMessageHandler(target: self), name: "ResourceBridge")
 
         NotificationCenter.default.addObserver(
             self,
@@ -661,6 +745,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             self,
             selector: #selector(handleUserScriptsUpdatedNotification(_:)),
             name: UserScriptStore.didUpdateScriptsNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMemoryWarningNotification),
+            name: UIApplication.didReceiveMemoryWarningNotification,
             object: nil
         )
 
@@ -735,10 +826,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.stopLoading()
     }
 
+    @objc private func handleMemoryWarningNotification() {
+        guard webView.window == nil else { return }
+        suspendForMemoryWarning()
+    }
+
     func reloadFromTop() {
+        isSuspendingToBlank = false
         needsReloadAfterTermination = false
         userScrolledDuringLoading = false
         lastAutoFullscreenCheckedURL = nil
+        injectedRuntimeScriptIDs.removeAll()
         webView.scrollView.setContentOffset(.zero, animated: false)
         showReloadCover()
         if let currentURL = url ?? webView.url {
@@ -798,7 +896,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         let hasGMPolyfill = controller.userScripts.contains { $0.source.contains("__gm_polyfilled__") }
         if !hasGMPolyfill {
             let script = WKUserScript(
-                source: Self.coreGMPolyfillScriptSource,
+                source: Self.makeCoreGMPolyfillScriptSource(bridgeToken: gmBridgeToken),
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
@@ -889,6 +987,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private func wrapUserScriptForInjection(script: UserScript, identifierTag: String) -> String {
         let valuesJSON = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
         let scriptIdLiteral = javascriptStringLiteral(script.id)
+        let bridgeTokenLiteral = javascriptStringLiteral(gmBridgeToken)
+        let scriptNameLiteral = javascriptStringLiteral(script.name)
+        let scriptVersionLiteral = javascriptStringLiteral(script.version ?? "1.0")
+        let runAtMode = (script.runAt ?? "document-idle").lowercased()
+        let runAtLiteral = javascriptStringLiteral(runAtMode)
         let escapedCode = script.code
         let isAllUrls = script.matchPattern == "*" || script.matchPattern == "<all_urls>"
         let matchCheckJS: String
@@ -965,79 +1068,87 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 return;
             }
             if (!__simpleMatched) return;
-            (function(scriptId, initialValues) {
+            var __execScript = function(scriptId, bridgeToken, scriptName, scriptVersion, initialValues) {
                 var values = initialValues || {};
+                var bridge = window.__simple_gm_bridge__;
                 var GM_info = {
                     scriptHandler: 'Tampermonkey',
                     version: '5.0.0',
-                    script: { name: scriptId, version: '1.0' }
+                    script: { name: scriptName, version: scriptVersion }
                 };
+                var GM_addStyle = function(css) {
+                    var style = document.createElement('style');
+                    style.type = 'text/css';
+                    style.appendChild(document.createTextNode(css));
+                    (document.head || document.documentElement).appendChild(style);
+                    return style;
+                };
+                var GM_log = function() {};
+                var GM_openInTab = function(url) {
+                    window.open(url, '_blank');
+                };
+                var GM_setClipboard = function(text) {
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(String(text || ''));
+                    }
+                };
+                var GM_notification = function() {};
                 var GM_setValue = function(name, val) {
                     values[name] = val;
-                    try {
-                        window.webkit.messageHandlers.GM.postMessage({
+                    if (bridge) {
+                        bridge.postValue(bridgeToken, {
                             action: 'setValue',
                             scriptId: scriptId,
                             name: name,
                             value: val
                         });
-                    } catch(e) {}
+                    }
                 };
                 var GM_getValue = function(name, defaultValue) {
                     return (name in values) ? values[name] : defaultValue;
                 };
                 var GM_deleteValue = function(name) {
                     delete values[name];
-                    try {
-                        window.webkit.messageHandlers.GM.postMessage({
+                    if (bridge) {
+                        bridge.postValue(bridgeToken, {
                             action: 'deleteValue',
                             scriptId: scriptId,
                             name: name
                         });
-                    } catch(e) {}
+                    }
                 };
                 var GM_listValues = function() {
                     return Object.keys(values);
                 };
                 var GM_registerMenuCommand = function(caption, commandFunc) {
-                    var id = Math.floor(Math.random() * 1000000);
-                    window.__gm_menu_commands__[id] = commandFunc;
-                    try {
-                        window.webkit.messageHandlers.GM.postMessage({
-                            action: 'registerMenuCommand',
-                            id: id,
-                            scriptId: scriptId,
-                            caption: caption
-                        });
-                    } catch(e) {}
-                    return id;
+                    if (bridge) {
+                        return bridge.registerMenu(bridgeToken, scriptId, caption, commandFunc);
+                    }
+                    return -1;
                 };
                 var GM_unregisterMenuCommand = function(id) {
-                    delete window.__gm_menu_commands__[id];
-                    try {
-                        window.webkit.messageHandlers.GM.postMessage({
-                            action: 'unregisterMenuCommand',
-                            id: id
-                        });
-                    } catch(e) {}
+                    if (bridge) {
+                        bridge.unregisterMenu(bridgeToken, id);
+                    }
                 };
-                var GM_cookie = window.GM_cookie ? {
+                var GM_cookie = bridge ? {
                     list: function(details, callback) {
-                        return window.GM_cookie.list(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                        return bridge.cookieOp(bridgeToken, scriptId, 'cookie_list', details, callback);
                     },
                     delete: function(details, callback) {
-                        return window.GM_cookie.delete(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                        return bridge.cookieOp(bridgeToken, scriptId, 'cookie_delete', details, callback);
                     },
                     set: function(details, callback) {
-                        return window.GM_cookie.set(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
+                        return bridge.cookieOp(bridgeToken, scriptId, 'cookie_set', details, callback);
                     }
                 } : undefined;
-                var GM_xmlhttpRequest = window.GM_xmlhttpRequest;
-                var GM_addStyle = window.GM_addStyle;
-                var GM_openInTab = window.GM_openInTab;
-                var GM_setClipboard = window.GM_setClipboard;
-                var GM_notification = window.GM_notification;
-                var GM_log = window.GM_log;
+                var GM_xmlhttpRequest = function(opts) {
+                    if (bridge) {
+                        bridge.xhr(bridgeToken, scriptId, opts);
+                    } else if (opts && opts.onerror) {
+                        opts.onerror({ status: 0, statusText: 'Bridge unavailable', responseText: 'Bridge unavailable', response: null, responseHeaders: '', readyState: 4 });
+                    }
+                };
                 var GM = {
                     info: GM_info,
                     cookie: GM_cookie,
@@ -1060,17 +1171,60 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                             GM_xmlhttpRequest(opts);
                         });
                     },
-                    addStyle: window.GM_addStyle,
-                    openInTab: window.GM_openInTab,
-                    setClipboard: window.GM_setClipboard,
-                    notification: window.GM_notification,
+                    addStyle: GM_addStyle,
+                    openInTab: GM_openInTab,
+                    setClipboard: GM_setClipboard,
+                    notification: GM_notification,
                     registerMenuCommand: function(c, f) { return Promise.resolve(GM_registerMenuCommand(c, f)); }
                 };
 
                 try {
                     \(escapedCode)
                 } catch(e) {}
-            })(\(scriptIdLiteral), \(valuesJSON));
+            };
+
+            var __runAt = \(runAtLiteral);
+            var __ran = false;
+            function __invokeOnce() {
+                if (__ran) return;
+                __ran = true;
+                __execScript(\(scriptIdLiteral), \(bridgeTokenLiteral), \(scriptNameLiteral), \(scriptVersionLiteral), \(valuesJSON));
+            }
+            if (__runAt === 'document-start') {
+                __invokeOnce();
+            } else if (__runAt === 'document-body') {
+                if (document.body) {
+                    __invokeOnce();
+                } else {
+                    var __bodyObs = new MutationObserver(function() {
+                        if (document.body) {
+                            __bodyObs.disconnect();
+                            __invokeOnce();
+                        }
+                    });
+                    __bodyObs.observe(document.documentElement || document, { childList: true, subtree: true });
+                    document.addEventListener('DOMContentLoaded', function() {
+                        __bodyObs.disconnect();
+                        __invokeOnce();
+                    }, { once: true });
+                }
+            } else if (__runAt === 'document-end') {
+                if (document.readyState !== 'loading') {
+                    __invokeOnce();
+                } else {
+                    document.addEventListener('DOMContentLoaded', __invokeOnce, { once: true });
+                }
+            } else {
+                if (document.readyState === 'complete') {
+                    __invokeOnce();
+                } else if (document.readyState === 'interactive') {
+                    setTimeout(__invokeOnce, 0);
+                } else {
+                    document.addEventListener('DOMContentLoaded', function() {
+                        setTimeout(__invokeOnce, 0);
+                    }, { once: true });
+                }
+            }
         })();
         """
     }
@@ -1131,11 +1285,26 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func consumePendingRestoreURL() -> URL? {
+        isSuspendingToBlank = false
         let url = pendingRestoreURL
         pendingRestoreURL = nil
         return url
     }
 
+    func suspendForMemoryWarning() {
+        guard !isDisplayingFailurePage else { return }
+        guard let target = sessionURL() else { return }
+        snapshot = nil
+        url = target
+        pendingRestoreURL = target
+        isLoading = false
+        needsReloadAfterTermination = false
+        isSuspendingToBlank = true
+        injectedRuntimeScriptIDs.removeAll()
+        hideReloadCover()
+        webView.stopLoading()
+        webView.load(URLRequest(url: URL(string: "about:blank")!))
+    }
     func sessionURL() -> URL? {
         if isDisplayingFailurePage {
             return failedURL ?? url
@@ -1261,11 +1430,30 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             handleCookieDelete(requestID: reqId, details: details, message: message)
         } else if action == "cookie_set", let reqId = body["id"] as? String, let details = body["details"] as? [String: Any] {
             handleCookieSet(requestID: reqId, details: details, message: message)
-        } else if action == "xhr", let reqId = body["id"] as? String, let urlString = body["url"] as? String, let targetURL = URL(string: urlString) {
+        } else if action == "xhr", let reqId = body["id"] as? String {
+            if let permErr = xhrPermissionError(body: body, message: message) {
+                respondToXhrError(requestID: reqId, errorText: permErr)
+                return
+            }
+            guard let urlString = body["url"] as? String,
+                  let targetURL = URL(string: urlString),
+                  let targetScheme = targetURL.scheme?.lowercased(),
+                  targetScheme == "http" || targetScheme == "https" else {
+                respondToXhrError(requestID: reqId, errorText: "Invalid or unsupported URL scheme")
+                return
+            }
+
             let method = (body["method"] as? String) ?? "GET"
             let responseType = ((body["responseType"] as? String) ?? "").lowercased()
             var request = URLRequest(url: targetURL)
             request.httpMethod = method
+
+            let rawTimeout = (body["timeout"] as? NSNumber)?.doubleValue ?? 0
+            if rawTimeout > 0 {
+                request.timeoutInterval = min(max(rawTimeout / 1000.0, 1.0), 120.0)
+            } else {
+                request.timeoutInterval = 30.0
+            }
 
             if let headers = body["headers"] as? [String: Any] {
                 for (k, v) in headers {
@@ -1281,13 +1469,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 request.httpBody = dataString.data(using: .utf8)
             }
 
-            let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            let task = Self.gmURLSession.dataTask(with: request) { [weak self] data, response, error in
                 DispatchQueue.main.async {
                     if let error = error {
-                        let errArgs: [Any] = [reqId, error.localizedDescription]
-                        let errData = (try? JSONSerialization.data(withJSONObject: errArgs, options: [])) ?? Data()
-                        let errJSON = String(data: errData, encoding: .utf8) ?? "[]"
-                        self?.webView.evaluateJavaScript("if (typeof window.__gm_handleXhrError === 'function') { window.__gm_handleXhrError.apply(null, \(errJSON)); }", completionHandler: nil)
+                        self?.respondToXhrError(requestID: reqId, errorText: error.localizedDescription)
                         return
                     }
 
@@ -1322,7 +1507,42 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
+    private func respondToXhrError(requestID: String, errorText: String) {
+        let errArgs: [Any] = [requestID, errorText]
+        let errData = (try? JSONSerialization.data(withJSONObject: errArgs, options: [])) ?? Data()
+        let errJSON = String(data: errData, encoding: .utf8) ?? "[]"
+        DispatchQueue.main.async { [weak self] in
+            self?.webView.evaluateJavaScript("if (typeof window.__gm_handleXhrError === 'function') { window.__gm_handleXhrError.apply(null, \(errJSON)); }", completionHandler: nil)
+        }
+    }
+
+    private func xhrPermissionError(body: [String: Any], message: WKScriptMessage) -> String? {
+        guard (body["bridgeToken"] as? String) == gmBridgeToken else {
+            return "Unauthorized GM_xmlhttpRequest token"
+        }
+        guard let scriptId = body["scriptId"] as? String,
+              let script = UserScriptStore.shared.loadScripts().first(where: { $0.id == scriptId && $0.isEnabled }) else {
+            return "GM_xmlhttpRequest requires an enabled userscript"
+        }
+        let frameURLString: String
+        if let frameURL = message.frameInfo.request.url?.absoluteString, !frameURL.isEmpty, frameURL != "about:blank" {
+            frameURLString = frameURL
+        } else if message.frameInfo.isMainFrame, let pageURLString = webView.url?.absoluteString {
+            frameURLString = pageURLString
+        } else {
+            return "GM_xmlhttpRequest origin could not be verified"
+        }
+
+        guard UserScriptStore.shared.isScriptMatching(script: script, urlString: frameURLString) else {
+            return "GM_xmlhttpRequest is not authorized for this page"
+        }
+        return nil
+    }
+
     private func cookiePermissionError(details: [String: Any], message: WKScriptMessage) -> String? {
+        guard (details["__bridgeToken"] as? String) == gmBridgeToken else {
+            return "Unauthorized GM_cookie token"
+        }
         guard message.frameInfo.isMainFrame else {
             return "GM_cookie is only available to the main frame"
         }
@@ -1720,12 +1940,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         injectInlineVideoHelper()
 
         let currentUrlStr = url?.absoluteString ?? webView.url?.absoluteString ?? ""
+        guard !currentUrlStr.isEmpty, currentUrlStr != "about:blank" else { return }
+
         let candidates = UserScriptStore.shared.loadScripts().filter {
-            $0.runAt?.lowercased() != "document-start"
+            ($0.runAt?.lowercased() ?? "document-idle") != "document-start"
         }
         var matchingScripts: [UserScript] = []
         for script in candidates {
-            if !script.isEnabled {
+            guard script.isEnabled, !injectedRuntimeScriptIDs.contains(script.id) else {
                 continue
             }
             if UserScriptStore.shared.isScriptMatching(script: script, urlString: currentUrlStr) {
@@ -1733,131 +1955,25 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
         }
 
-        var fullJS = Self.coreGMPolyfillScriptSource + "\n"
-        for script in matchingScripts {
-            let valuesJSON = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
-            fullJS += """
-            (function(scriptId, initialValues) {
-                var values = initialValues || {};
-                var GM_info = {
-                    scriptHandler: 'Tampermonkey',
-                    version: '5.0.0',
-                    script: { name: scriptId, version: '1.0' }
-                };
-                var GM_setValue = function(name, val) {
-                    values[name] = val;
-                    try {
-                        window.webkit.messageHandlers.GM.postMessage({
-                            action: 'setValue',
-                            scriptId: scriptId,
-                            name: name,
-                            value: val
-                        });
-                    } catch(e) {}
-                };
-                var GM_getValue = function(name, defaultValue) {
-                    return (name in values) ? values[name] : defaultValue;
-                };
-                var GM_deleteValue = function(name) {
-                    delete values[name];
-                    try {
-                        window.webkit.messageHandlers.GM.postMessage({
-                            action: 'deleteValue',
-                            scriptId: scriptId,
-                            name: name
-                        });
-                    } catch(e) {}
-                };
-                var GM_listValues = function() {
-                    return Object.keys(values);
-                };
-                var GM_registerMenuCommand = function(caption, commandFunc) {
-                    var id = Math.floor(Math.random() * 1000000);
-                    window.__gm_menu_commands__[id] = commandFunc;
-                    try {
-                        window.webkit.messageHandlers.GM.postMessage({
-                            action: 'registerMenuCommand',
-                            id: id,
-                            scriptId: scriptId,
-                            caption: caption
-                        });
-                    } catch(e) {}
-                    return id;
-                };
-                var GM_unregisterMenuCommand = function(id) {
-                    delete window.__gm_menu_commands__[id];
-                    try {
-                        window.webkit.messageHandlers.GM.postMessage({
-                            action: 'unregisterMenuCommand',
-                            id: id
-                        });
-                    } catch(e) {}
-                };
-                var GM_cookie = window.GM_cookie ? {
-                    list: function(details, callback) {
-                        return window.GM_cookie.list(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
-                    },
-                    delete: function(details, callback) {
-                        return window.GM_cookie.delete(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
-                    },
-                    set: function(details, callback) {
-                        return window.GM_cookie.set(Object.assign({}, details || {}, { __simpleScriptId: scriptId }), callback);
-                    }
-                } : undefined;
-                var GM_xmlhttpRequest = window.GM_xmlhttpRequest;
-                var GM_addStyle = window.GM_addStyle;
-                var GM_openInTab = window.GM_openInTab;
-                var GM_setClipboard = window.GM_setClipboard;
-                var GM_notification = window.GM_notification;
-                var GM_log = window.GM_log;
-                var GM = {
-                    info: GM_info,
-                    cookie: GM_cookie,
-                    getValue: function(k, d) { return Promise.resolve(GM_getValue(k, d)); },
-                    setValue: function(k, v) { GM_setValue(k, v); return Promise.resolve(); },
-                    deleteValue: function(k) { GM_deleteValue(k); return Promise.resolve(); },
-                    listValues: function() { return Promise.resolve(GM_listValues()); },
-                    xmlHttpRequest: function(opts) {
-                        return new Promise(function(resolve, reject) {
-                            var origOnload = opts.onload;
-                            var origOnerror = opts.onerror;
-                            opts.onload = function(res) {
-                                if (origOnload) origOnload(res);
-                                resolve(res);
-                            };
-                            opts.onerror = function(error) {
-                                if (origOnerror) origOnerror(error);
-                                reject(error);
-                            };
-                            GM_xmlhttpRequest(opts);
-                        });
-                    },
-                    addStyle: window.GM_addStyle,
-                    openInTab: window.GM_openInTab,
-                    setClipboard: window.GM_setClipboard,
-                    notification: window.GM_notification,
-                    registerMenuCommand: function(c, f) { return Promise.resolve(GM_registerMenuCommand(c, f)); }
-                };
-
-                try {
-                    \(script.code)
-                } catch(e) {}
-            })('\(script.id)', \(valuesJSON));
-            \n
-            """
-        }
-
         guard !matchingScripts.isEmpty else { return }
-        webView.evaluateJavaScript(fullJS, completionHandler: nil)
+
+        let polyfillJS = Self.makeCoreGMPolyfillScriptSource(bridgeToken: gmBridgeToken)
+        webView.evaluateJavaScript(polyfillJS, completionHandler: nil)
+
+        for script in matchingScripts {
+            injectedRuntimeScriptIDs.insert(script.id)
+            let wrappedJS = wrapUserScriptForInjection(script: script, identifierTag: "__userscript_rt_\(script.id)__")
+            webView.evaluateJavaScript(wrappedJS, completionHandler: nil)
+        }
     }
 
     func reloadUserScripts() {
         hasInjectedScriptsForCurrentPage = false
+        injectedRuntimeScriptIDs.removeAll()
         registeredCommands.removeAll()
         rebuildUserContentScripts()
         webView.reload()
     }
-
     func updateSnapshot(completion: (() -> Void)? = nil) {
         guard webView.bounds.width > 0, webView.bounds.height > 0, !webView.isLoading else {
             completion?()
@@ -1935,7 +2051,53 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         type: WKMediaCaptureType,
         decisionHandler: @escaping (WKPermissionDecision) -> Void
     ) {
-        decisionHandler(.grant)
+        var handled = false
+        let callOnce: (WKPermissionDecision) -> Void = { decision in
+            guard !handled else { return }
+            handled = true
+            decisionHandler(decision)
+        }
+
+        let mediaDescription: String
+        switch type {
+        case .camera:
+            mediaDescription = "相机"
+        case .microphone:
+            mediaDescription = "麦克风"
+        case .cameraAndMicrophone:
+            mediaDescription = "相机和麦克风"
+        @unknown default:
+            mediaDescription = "媒体设备"
+        }
+
+        let host = origin.host.isEmpty ? (webView.url?.host ?? "当前网页") : origin.host
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  let rootVC = self.webView.window?.rootViewController else {
+                callOnce(.deny)
+                return
+            }
+            var topController: UIViewController = rootVC
+            while let presented = topController.presentedViewController, !presented.isBeingDismissed {
+                topController = presented
+            }
+            if topController.isBeingPresented || topController is UIAlertController {
+                callOnce(.deny)
+                return
+            }
+            let alert = UIAlertController(
+                title: "媒体设备访问权限",
+                message: "“\(host)”请求使用您的\(mediaDescription)",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "拒绝", style: .cancel) { _ in
+                callOnce(.deny)
+            })
+            alert.addAction(UIAlertAction(title: "允许", style: .default) { _ in
+                callOnce(.grant)
+            })
+            topController.present(alert, animated: true)
+        }
     }
 
     func webView(
@@ -2180,12 +2342,17 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if isSuspendingToBlank {
+            isLoading = false
+            return
+        }
         isLoading = true
         needsReloadAfterTermination = false
         if !isLoadingFailureDocument {
             isDisplayingFailurePage = false
         }
         hasInjectedScriptsForCurrentPage = false
+        injectedRuntimeScriptIDs.removeAll()
         registeredCommands.removeAll()
         if let target = navigationActionURL ?? webView.url,
            ["http", "https"].contains(target.scheme?.lowercased() ?? "") {
@@ -2197,6 +2364,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        guard !isSuspendingToBlank else { return }
         if let redirectURL = webView.url, !redirectURL.absoluteString.contains("about:blank") {
             if previousURL != redirectURL {
                 previousURL = url
@@ -2211,6 +2379,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if isSuspendingToBlank {
+            return
+        }
         hideReloadCover()
         if !isDisplayingFailurePage, let currentURL = webView.url, !currentURL.absoluteString.contains("about:blank") {
             if previousURL != currentURL {
@@ -2233,6 +2404,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if isSuspendingToBlank {
+            if webView.url?.absoluteString == "about:blank" {
+                isSuspendingToBlank = false
+                isLoading = false
+                return
+            }
+            isSuspendingToBlank = false
+        }
         hideReloadCover()
         isLoading = false
         if !isDisplayingFailurePage, let currentURL = webView.url, !currentURL.absoluteString.contains("about:blank") {
@@ -2242,6 +2421,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 DomainRelationStore.shared.recordPrimaryDomain(host)
             }
         }
+        injectAndRunUserScripts()
         extractHighResFaviconIfNeeded()
 
         if userScrolledDuringLoading {
