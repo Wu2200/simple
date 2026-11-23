@@ -100,9 +100,34 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var lastNewTabRequestedURL: URL?
     private var lastNewTabRequestedTime: TimeInterval = 0
     private var lastAppliedAdBlockActive: Bool?
+    private var homeReturnURL: URL?
+    private var homeReturnTitle: String?
+    private var wasFailurePageWhenReturnedHome = false
+    private var hasCommittedCurrentPage = false
+    private var abandonedBackHistoryCount = 0
+
+    enum HomeForwardNavigationResult: Equatable {
+        case none
+        case restoredImmediately(URL)
+        case needsLoad(URL)
+    }
+
+    var isOnHome: Bool {
+        url == nil && !isDisplayingFailurePage
+    }
+
+    var canWebViewGoBack: Bool {
+        webView.canGoBack && webView.backForwardList.backList.count > abandonedBackHistoryCount
+    }
+
+    var canNavigateForwardFromHome: Bool {
+        isOnHome ? (homeReturnURL != nil) : webView.canGoForward
+    }
 
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
+    private var canGoBackObservation: NSKeyValueObservation?
+    private var canGoForwardObservation: NSKeyValueObservation?
 
     weak var delegate: TabItemDelegate?
     private static let coreHistoryScriptSource = """
@@ -760,7 +785,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsLinkPreview = false
-        webView.allowsBackForwardNavigationGestures = true
+        webView.allowsBackForwardNavigationGestures = false
         webView.scrollView.keyboardDismissMode = .onDrag
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.backgroundColor = .white
@@ -791,6 +816,21 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.handleTitleChange(wv.title)
+            }
+        }
+
+        canGoBackObservation = webView.observe(\.canGoBack, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.syncBackForwardGestureState()
+                self.delegate?.tabDidUpdate(self)
+            }
+        }
+
+        canGoForwardObservation = webView.observe(\.canGoForward, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.delegate?.tabDidUpdate(self)
             }
         }
     }
@@ -836,6 +876,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         needsReloadAfterTermination = false
         userScrolledDuringLoading = false
         lastAutoFullscreenCheckedURL = nil
+        hasCommittedCurrentPage = false
         injectedRuntimeScriptIDs.removeAll()
         webView.scrollView.setContentOffset(.zero, animated: false)
         showReloadCover()
@@ -843,6 +884,129 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             webView.load(URLRequest(url: currentURL))
         } else {
             webView.reload()
+        }
+    }
+
+    private func syncBackForwardGestureState() {
+        webView.allowsBackForwardNavigationGestures = !isOnHome && canWebViewGoBack
+    }
+
+    func navigateToHome() {
+        if isOnHome {
+            hideReloadCover()
+            isLoading = false
+            snapshot = nil
+            syncBackForwardGestureState()
+            return
+        }
+
+        let currentPageURL = (isDisplayingFailurePage ? (failedURL ?? url) : (url ?? webView.url)).flatMap { candidate -> URL? in
+            let str = candidate.absoluteString
+            return (str.isEmpty || str == "about:blank") ? nil : candidate
+        }
+        let currentPageTitle = title
+        let wasFailureOrIncomplete = isDisplayingFailurePage || !hasCommittedCurrentPage
+
+        webView.stopLoading()
+        webView.evaluateJavaScript("""
+        (function(){
+            try {
+                var media = document.querySelectorAll('audio, video');
+                for (var i = 0; i < media.length; i++) {
+                    media[i].pause();
+                }
+            } catch(e) {}
+        })();
+        """, completionHandler: nil)
+
+        hideReloadCover()
+        clearFailureState()
+        isLoading = false
+        isSuspendingToBlank = false
+        url = nil
+        title = "主页"
+        previousURL = nil
+        navigationActionURL = nil
+        lastAutoFullscreenCheckedURL = nil
+        hasTriggeredAutoFullscreen = false
+        snapshot = nil
+        injectedRuntimeScriptIDs.removeAll()
+        registeredCommands.removeAll()
+
+        if let currentPageURL = currentPageURL {
+            homeReturnURL = currentPageURL
+            homeReturnTitle = currentPageTitle
+            wasFailurePageWhenReturnedHome = wasFailureOrIncomplete
+        } else {
+            homeReturnURL = nil
+            homeReturnTitle = nil
+            wasFailurePageWhenReturnedHome = false
+        }
+
+        syncBackForwardGestureState()
+    }
+
+    func prepareForExplicitLoad(url targetURL: URL) {
+        if isOnHome {
+            if let existingWebURL = webView.url, existingWebURL.absoluteString != "about:blank" {
+                abandonedBackHistoryCount = webView.backForwardList.backList.count + 1
+            }
+            showReloadCover()
+        }
+
+        homeReturnURL = nil
+        homeReturnTitle = nil
+        wasFailurePageWhenReturnedHome = false
+        hasCommittedCurrentPage = false
+        needsReloadAfterTermination = false
+        isSuspendingToBlank = false
+        clearFailureState()
+        url = targetURL
+        lastAutoFullscreenCheckedURL = targetURL
+        title = targetURL.host ?? targetURL.absoluteString
+        snapshot = nil
+        syncBackForwardGestureState()
+    }
+
+    func prepareForwardNavigationFromHome() -> HomeForwardNavigationResult {
+        guard isOnHome,
+              let savedURL = homeReturnURL,
+              savedURL.absoluteString != "about:blank" else {
+            return .none
+        }
+
+        let savedTitle = homeReturnTitle
+        let currentWebURLString = webView.url?.absoluteString ?? ""
+        let canRestoreLiveWebView = !wasFailurePageWhenReturnedHome &&
+            !isSuspendingToBlank &&
+            hasCommittedCurrentPage &&
+            !currentWebURLString.isEmpty &&
+            currentWebURLString != "about:blank" &&
+            webView.url == savedURL
+
+        homeReturnURL = nil
+        homeReturnTitle = nil
+        wasFailurePageWhenReturnedHome = false
+        clearFailureState()
+        needsReloadAfterTermination = false
+        isSuspendingToBlank = false
+        url = savedURL
+        lastAutoFullscreenCheckedURL = savedURL
+        if let savedTitle = savedTitle, !savedTitle.isEmpty, savedTitle != "主页" {
+            title = savedTitle
+        } else {
+            title = savedURL.host ?? savedURL.absoluteString
+        }
+        snapshot = nil
+        syncBackForwardGestureState()
+
+        if canRestoreLiveWebView {
+            hideReloadCover()
+            return .restoredImmediately(savedURL)
+        } else {
+            hasCommittedCurrentPage = false
+            showReloadCover()
+            return .needsLoad(savedURL)
         }
     }
 
@@ -1239,6 +1403,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         urlObservation = nil
         titleObservation?.invalidate()
         titleObservation = nil
+        canGoBackObservation?.invalidate()
+        canGoBackObservation = nil
+        canGoForwardObservation?.invalidate()
+        canGoForwardObservation = nil
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         webView.stopLoading()
@@ -1282,6 +1450,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         self.failedURL = nil
         self.failureError = nil
         self.failureOriginURL = nil
+        self.homeReturnURL = nil
+        self.homeReturnTitle = nil
+        self.wasFailurePageWhenReturnedHome = false
+        self.hasCommittedCurrentPage = false
+        self.abandonedBackHistoryCount = 0
+        self.syncBackForwardGestureState()
     }
 
     func consumePendingRestoreURL() -> URL? {
@@ -1319,6 +1493,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func handleURLChange(_ newURL: URL?, explicitTitle: String? = nil) {
+        guard !isOnHome, !isSuspendingToBlank else { return }
         guard let newURL = newURL, !newURL.absoluteString.contains("about:blank") else { return }
 
         let scheme = newURL.scheme?.lowercased() ?? ""
@@ -1357,6 +1532,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func handleTitleChange(_ newTitle: String?) {
+        guard !isOnHome, !isSuspendingToBlank else { return }
         guard let newTitle = newTitle, !newTitle.isEmpty else { return }
         if !isDisplayingFailurePage {
             if title != newTitle {
@@ -2342,7 +2518,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        if isSuspendingToBlank {
+        if isOnHome || isSuspendingToBlank {
             isLoading = false
             return
         }
@@ -2360,11 +2536,12 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
         ensureCoreScripts()
         userScrolledDuringLoading = false
+        syncBackForwardGestureState()
         delegate?.tabDidUpdate(self)
     }
 
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        guard !isSuspendingToBlank else { return }
+        guard !isOnHome, !isSuspendingToBlank else { return }
         if let redirectURL = webView.url, !redirectURL.absoluteString.contains("about:blank") {
             if previousURL != redirectURL {
                 previousURL = url
@@ -2379,10 +2556,11 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        if isSuspendingToBlank {
+        if isOnHome || isSuspendingToBlank {
             return
         }
         hideReloadCover()
+        hasCommittedCurrentPage = true
         if !isDisplayingFailurePage, let currentURL = webView.url, !currentURL.absoluteString.contains("about:blank") {
             if previousURL != currentURL {
                 previousURL = url
@@ -2400,6 +2578,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             hasInjectedScriptsForCurrentPage = true
             injectAndRunUserScripts()
         }
+        syncBackForwardGestureState()
         delegate?.tabDidUpdate(self)
     }
 
@@ -2412,8 +2591,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
             isSuspendingToBlank = false
         }
+        if isOnHome {
+            isLoading = false
+            return
+        }
         hideReloadCover()
         isLoading = false
+        hasCommittedCurrentPage = true
         if !isDisplayingFailurePage, let currentURL = webView.url, !currentURL.absoluteString.contains("about:blank") {
             url = currentURL
             title = webView.title ?? url?.host ?? "新标签页"
@@ -2434,6 +2618,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
             }
         }
 
+        syncBackForwardGestureState()
         delegate?.tabDidUpdate(self)
     }
 
@@ -2493,6 +2678,14 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
     ) {
         guard let targetURL = navigationAction.request.url else {
+            decisionHandler(.cancel, preferences)
+            return
+        }
+
+        if navigationAction.targetFrame?.isMainFrame == true,
+           isOnHome,
+           !isSuspendingToBlank,
+           targetURL.absoluteString != "about:blank" {
             decisionHandler(.cancel, preferences)
             return
         }
