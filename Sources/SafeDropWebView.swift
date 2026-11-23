@@ -121,7 +121,7 @@ final class SafeDropWebView: WKWebView, UIDropInteractionDelegate {
             guard provider.canLoadObject(ofClass: String.self) else { continue }
             group.enter()
             _ = provider.loadObject(ofClass: String.self) { [weak self] object, _ in
-                if let str = object as? String, !str.isEmpty {
+                if let str = object, !str.isEmpty {
                     self?.payloadQueue.sync {
                         texts.append(str)
                     }
