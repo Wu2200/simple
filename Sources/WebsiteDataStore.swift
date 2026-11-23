@@ -533,6 +533,21 @@ final class WebsiteCleaner {
         clean(cache: true, loginAndData: true, completion: completion)
     }
 
+    private static func cookieDomain(_ cookieDomain: String, matchesRecordDomain recordDomain: String) -> Bool {
+        let cleanCookie = cookieDomain
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let cleanRecord = recordDomain
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        guard !cleanCookie.isEmpty, !cleanRecord.isEmpty else { return false }
+        return cleanCookie == cleanRecord ||
+            cleanCookie.hasSuffix("." + cleanRecord) ||
+            cleanRecord.hasSuffix("." + cleanCookie)
+    }
+
     func cleanSingleDomain(record: WKWebsiteDataRecord, cacheOnly: Bool, completion: (() -> Void)? = nil) {
         let store = WKWebsiteDataStore.default()
 
@@ -543,12 +558,19 @@ final class WebsiteCleaner {
                 }
             }
         } else {
+            if let sharedCookies = HTTPCookieStorage.shared.cookies {
+                for c in sharedCookies where !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) &&
+                                            Self.cookieDomain(c.domain, matchesRecordDomain: record.displayName) {
+                    HTTPCookieStorage.shared.deleteCookie(c)
+                }
+            }
+
             let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
             store.removeData(ofTypes: allTypes, for: [record]) {
                 store.httpCookieStore.getAllCookies { cookies in
                     let group = DispatchGroup()
                     for c in cookies where !CookieLockStore.shared.isCookieProtected(cookieDomain: c.domain) &&
-                                          (c.domain.contains(record.displayName) || record.displayName.contains(c.domain)) {
+                                          Self.cookieDomain(c.domain, matchesRecordDomain: record.displayName) {
                         group.enter()
                         store.httpCookieStore.delete(c) {
                             group.leave()
