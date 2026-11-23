@@ -1501,12 +1501,54 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         showToastNotice("已在后台标签打开")
     }
 
+    func captureActiveTabSnapshot(completion: (() -> Void)? = nil) {
+        guard !tabs.isEmpty, tabs.indices.contains(activeTabIndex) else {
+            completion?()
+            return
+        }
+        let tab = activeTab
+        if homeView.alpha > 0.5 || tab.isOnHome {
+            view.layoutIfNeeded()
+            if homeView.bounds.width > 0, homeView.bounds.height > 0 {
+                let renderer = UIGraphicsImageRenderer(bounds: homeView.bounds)
+                tab.snapshot = renderer.image { _ in
+                    homeView.drawHierarchy(in: homeView.bounds, afterScreenUpdates: false)
+                }
+            } else {
+                tab.snapshot = nil
+            }
+            completion?()
+            return
+        }
+        if !failureOverlayView.isHidden || tab.isDisplayingFailurePage {
+            view.layoutIfNeeded()
+            if failureOverlayView.bounds.width > 0, failureOverlayView.bounds.height > 0 {
+                let renderer = UIGraphicsImageRenderer(bounds: failureOverlayView.bounds)
+                tab.snapshot = renderer.image { _ in
+                    failureOverlayView.drawHierarchy(in: failureOverlayView.bounds, afterScreenUpdates: false)
+                }
+            } else {
+                tab.snapshot = nil
+            }
+            completion?()
+            return
+        }
+        if !tab.isLoading {
+            tab.updateSnapshot(completion: completion)
+        } else {
+            completion?()
+        }
+    }
+
     func switchTab(to index: Int) {
         guard tabs.indices.contains(index) else {
             return
         }
 
         if tabs.indices.contains(activeTabIndex) {
+            if activeTabIndex != index {
+                captureActiveTabSnapshot()
+            }
             tabs[activeTabIndex].webView.removeFromSuperview()
         }
 
@@ -1661,12 +1703,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
     }
 
     func load(url: URL) {
+        activeTab.prepareForExplicitLoad(url: url)
         showBrowserUI()
-
-        activeTab.needsReloadAfterTermination = false
-        activeTab.url = url
-        activeTab.lastAutoFullscreenCheckedURL = url
-        activeTab.title = url.host ?? url.absoluteString
 
         addressField.text = formattedAddress(for: url)
 
@@ -1697,8 +1735,7 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         if isFullscreen {
             setFullscreen(false)
         }
-        activeTab.url = nil
-        activeTab.title = "主页"
+        activeTab.navigateToHome()
         homeView.alpha = 1
         webContainer.alpha = 0
         failureOverlayView.isHidden = true
@@ -1778,9 +1815,8 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
         let isHome = homeView.alpha > 0.5
         updateStatusBarBackgroundAppearance()
 
-        let canGoBack = activeTab.webView.canGoBack || activeTab.isDisplayingFailurePage || activeTab.sourceTabID != nil || activeTab.previousURL != nil
-        backButton.isEnabled = !isHome && canGoBack
-        forwardButton.isEnabled = !isHome && activeTab.webView.canGoForward
+        backButton.isEnabled = !isHome
+        forwardButton.isEnabled = isHome ? activeTab.canNavigateForwardFromHome : activeTab.webView.canGoForward
         moreButton.isEnabled = true
     }
 
@@ -2204,19 +2240,37 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             return
         }
 
-        if !tab.isDisplayingFailurePage {
-            failureOverlayView.isHidden = true
-            if let url = tab.url {
-                if !addressField.isFirstResponder {
-                    addressField.text = formattedAddress(for: url)
-                    if let host = url.host {
-                        FaviconLoader.shared.preloadFavicon(for: host)
-                    }
+        if tab.isDisplayingFailurePage {
+            showFailureUI(for: tab)
+            return
+        }
+
+        if tab.isOnHome {
+            if homeView.alpha < 0.5 {
+                showHomeUI()
+                return
+            }
+            updateUIState()
+            updateAddressRightButtons()
+            persistCurrentSession()
+            return
+        }
+
+        if homeView.alpha > 0.5 {
+            showBrowserUI()
+        }
+
+        failureOverlayView.isHidden = true
+        if let url = tab.url {
+            if !addressField.isFirstResponder {
+                addressField.text = formattedAddress(for: url)
+                if let host = url.host {
+                    FaviconLoader.shared.preloadFavicon(for: host)
                 }
-                if tab.lastAutoFullscreenCheckedURL != url {
-                    tab.lastAutoFullscreenCheckedURL = url
-                    applyAutoFullscreenIfNeeded(for: url)
-                }
+            }
+            if tab.lastAutoFullscreenCheckedURL != url {
+                tab.lastAutoFullscreenCheckedURL = url
+                applyAutoFullscreenIfNeeded(for: url)
             }
         }
 
@@ -2451,22 +2505,25 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             let originURL = activeTab.failureOriginURL
             let sourceID = activeTab.sourceTabID
 
-            activeTab.clearFailureState()
-            failureOverlayView.isHidden = true
-
-            if activeTab.webView.canGoBack {
+            if activeTab.canWebViewGoBack {
+                activeTab.clearFailureState()
+                failureOverlayView.isHidden = true
                 activeTab.webView.goBack()
                 updateUIState()
                 return
             }
 
             if let originURL = originURL {
+                activeTab.clearFailureState()
+                failureOverlayView.isHidden = true
                 load(url: originURL)
                 return
             }
 
             if let sourceID = sourceID,
                tabs.contains(where: { $0.id == sourceID }) {
+                activeTab.clearFailureState()
+                failureOverlayView.isHidden = true
                 let closingIndex = activeTabIndex
                 closeTab(at: closingIndex)
                 return
@@ -2476,19 +2533,58 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
             return
         }
 
-        if activeTab.webView.canGoBack {
+        if activeTab.canWebViewGoBack {
             activeTab.webView.goBack()
         } else if let sourceID = activeTab.sourceTabID, tabs.contains(where: { $0.id == sourceID }) {
             let closingIndex = activeTabIndex
             closeTab(at: closingIndex)
-        } else if let prevURL = activeTab.previousURL, prevURL != activeTab.url {
-            load(url: prevURL)
         } else {
             showHomeUI()
         }
     }
 
     @objc func goForward() {
+        if homeView.alpha > 0.5 || activeTab.isOnHome {
+            let result = activeTab.prepareForwardNavigationFromHome()
+            switch result {
+            case .none:
+                updateUIState()
+                updateAddressRightButtons()
+            case .restoredImmediately(let targetURL):
+                showBrowserUI()
+                addressField.text = formattedAddress(for: targetURL)
+                resetProgress()
+                applyAutoFullscreenIfNeeded(for: targetURL)
+                if let host = targetURL.host {
+                    FaviconLoader.shared.preloadFavicon(for: host)
+                }
+                persistCurrentSession()
+                updateUIState()
+                updateAddressRightButtons()
+            case .needsLoad(let targetURL):
+                showBrowserUI()
+                addressField.text = formattedAddress(for: targetURL)
+                resetProgress()
+                progressView.alpha = 1
+                progressView.setProgress(0.08, animated: false)
+                if AdBlockManager.shared.isEnabled && !AdBlockManager.shared.isReady {
+                    AdBlockManager.shared.performWhenReady { [weak self] in
+                        guard let self = self, self.activeTab.url == targetURL else { return }
+                        self.activeTab.webView.load(URLRequest(url: targetURL))
+                    }
+                } else {
+                    activeTab.webView.load(URLRequest(url: targetURL))
+                }
+                applyAutoFullscreenIfNeeded(for: targetURL)
+                if let host = targetURL.host {
+                    FaviconLoader.shared.preloadFavicon(for: host)
+                }
+                persistCurrentSession()
+                updateUIState()
+                updateAddressRightButtons()
+            }
+            return
+        }
         activeTab.webView.goForward()
     }
 
