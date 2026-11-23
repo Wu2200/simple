@@ -433,6 +433,15 @@ final class CookieLockStore {
             unlock(domain: d)
         }
     }
+
+    func restoreLockedDomains(_ domains: [String]) {
+        let normalized = Array(Set(domains.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        }.filter { !$0.isEmpty }))
+        UserDefaults.standard.set(normalized, forKey: key)
+    }
 }
 
 final class WebsiteCleaner {
@@ -532,10 +541,7 @@ final class WebsiteCleaner {
     func cleanUnprotectedLoginAndData(completion: (() -> Void)? = nil) {
         clean(cache: true, loginAndData: true, completion: completion)
     }
-
-    private static func cookieDomain(_ cookieDomain: String, matchesRecordDomain recordDomain: String) -> Bool {
-        let cleanCookie = cookieDomain
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    static func cookieDomain(_ cookieDomain: String, matchesRecordDomain recordDomain: String) -> Bool {
             .lowercased()
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
         let cleanRecord = recordDomain
