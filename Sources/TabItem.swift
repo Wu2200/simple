@@ -2625,6 +2625,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         hideReloadCover()
         isLoading = false
+        hasCommittedCurrentPage = false
         needsReloadAfterTermination = true
         delegate?.tabProcessTerminated(self)
     }
@@ -2636,6 +2637,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     ) {
         hideReloadCover()
         isLoading = false
+        if isOnHome || isSuspendingToBlank {
+            return
+        }
         if shouldIgnoreNavigationError(error) {
             delegate?.tabDidUpdate(self)
             return
@@ -2653,6 +2657,9 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     ) {
         hideReloadCover()
         isLoading = false
+        if isOnHome || isSuspendingToBlank {
+            return
+        }
         if shouldIgnoreNavigationError(error) {
             delegate?.tabDidUpdate(self)
             return
