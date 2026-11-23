@@ -111,8 +111,8 @@ final class BackupManager {
         if iterations > 1 {
             for _ in 1..<iterations {
                 u = Data(HMAC<SHA256>.authenticationCode(for: u, using: key))
-                dk.withUnsafeMutableBytes { dkBytes in
-                    u.withUnsafeBytes { uBytes in
+                dk.withUnsafeMutableBytes { (dkBytes: UnsafeMutableRawBufferPointer) in
+                    u.withUnsafeBytes { (uBytes: UnsafeRawBufferPointer) in
                         for idx in 0..<dkBytes.count {
                             dkBytes[idx] ^= uBytes[idx]
                         }
