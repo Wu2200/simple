@@ -1,7 +1,4 @@
 import UIKit
-
-import UIKit
-
 enum GMCookiePermission: String, CaseIterable, Codable {
     case disabled = "disabled"
     case sameDomain = "same_domain"
@@ -50,8 +47,11 @@ final class UserScriptStore {
     static let shared = UserScriptStore()
     static let didUpdateSettingsNotification = NSNotification.Name("UserScriptStoreDidUpdateSettings")
     static let didUpdateScriptsNotification = NSNotification.Name("UserScriptStoreDidUpdateScriptsNotification")
-    private let key = "user_tampermonkey_scripts_v5"
+    private let legacyKey = "user_tampermonkey_scripts_v5"
     private let cookiePermissionKey = "user_script_gm_cookie_permission_v1"
+    private let lock = NSLock()
+    private let storageURL: URL
+    private var cachedScripts: [UserScript]?
 
     var cookiePermission: GMCookiePermission {
         get {
@@ -67,19 +67,55 @@ final class UserScriptStore {
         }
     }
 
-    private init() {}
+    private init() {
+        let fm = FileManager.default
+        let baseDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = baseDir.appendingPathComponent("SimpleBrowser", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        storageURL = dir.appendingPathComponent("userscripts_v5.json")
+        migrateFromUserDefaultsIfNeeded()
+    }
+
+    private func migrateFromUserDefaultsIfNeeded() {
+        guard !FileManager.default.fileExists(atPath: storageURL.path) else { return }
+        if let legacyData = UserDefaults.standard.data(forKey: legacyKey),
+           let scripts = try? JSONDecoder().decode([UserScript].self, from: legacyData) {
+            cachedScripts = scripts
+            if let encoded = try? JSONEncoder().encode(scripts) {
+                try? encoded.write(to: storageURL, options: .atomic)
+            }
+            UserDefaults.standard.removeObject(forKey: legacyKey)
+        }
+    }
 
     func loadScripts() -> [UserScript] {
-        guard let data = UserDefaults.standard.data(forKey: key),
+        lock.lock()
+        if let cached = cachedScripts {
+            lock.unlock()
+            return cached
+        }
+        guard let data = try? Data(contentsOf: storageURL),
               let scripts = try? JSONDecoder().decode([UserScript].self, from: data) else {
+            lock.unlock()
             return []
         }
+        cachedScripts = scripts
+        lock.unlock()
         return scripts
     }
 
     func saveScripts(_ scripts: [UserScript]) {
-        if let data = try? JSONEncoder().encode(scripts) {
-            UserDefaults.standard.set(data, forKey: key)
+        lock.lock()
+        cachedScripts = scripts
+        let data = try? JSONEncoder().encode(scripts)
+        if let data = data {
+            try? data.write(to: storageURL, options: .atomic)
+        }
+        lock.unlock()
+        if data != nil {
             NotificationCenter.default.post(name: Self.didUpdateScriptsNotification, object: nil)
         }
     }
@@ -393,56 +429,163 @@ final class UserScriptStore {
 
 final class ScriptDataStore {
     static let shared = ScriptDataStore()
-    private init() {}
 
-    private func makeKey(_ scriptId: String, _ name: String) -> String {
-        return "GM_DATA_\(scriptId)_\(name)"
+    private let lock = NSLock()
+    private let storageURL: URL
+    private var storage: [String: [String: Any]] = [:]
+
+    private init() {
+        let fm = FileManager.default
+        let baseDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = baseDir.appendingPathComponent("SimpleBrowser", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        storageURL = dir.appendingPathComponent("script_data_v1.json")
+        loadOrMigrate()
+    }
+
+    private func loadOrMigrate() {
+        if let data = try? Data(contentsOf: storageURL),
+           let loaded = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: [String: Any]] {
+            storage = loaded
+            return
+        }
+
+        let knownScriptIds = UserScriptStore.shared.loadScripts().map(\.id)
+        let prefix = "GM_DATA_"
+        var migrated: [String: [String: Any]] = [:]
+        var legacyKeysToRemove: [String] = []
+
+        for (k, v) in UserDefaults.standard.dictionaryRepresentation() where k.hasPrefix(prefix) {
+            legacyKeysToRemove.append(k)
+            let remainder = String(k.dropFirst(prefix.count))
+            var matchedScriptId: String?
+            var matchedName: String?
+
+            for sid in knownScriptIds {
+                let sidPrefix = "\(sid)_"
+                if remainder.hasPrefix(sidPrefix) {
+                    matchedScriptId = sid
+                    matchedName = String(remainder.dropFirst(sidPrefix.count))
+                    break
+                }
+            }
+
+            if matchedScriptId == nil, let sepIdx = remainder.firstIndex(of: "_") {
+                matchedScriptId = String(remainder[..<sepIdx])
+                matchedName = String(remainder[remainder.index(after: sepIdx)...])
+            }
+
+            if let sid = matchedScriptId, !sid.isEmpty,
+               let name = matchedName, !name.isEmpty,
+               let safeVal = sanitizeForJSON(v) {
+                var dict = migrated[sid] ?? [:]
+                dict[name] = safeVal
+                migrated[sid] = dict
+            }
+        }
+
+        if !migrated.isEmpty {
+            storage = migrated
+            persistLocked()
+        }
+
+        for k in legacyKeysToRemove {
+            UserDefaults.standard.removeObject(forKey: k)
+        }
+    }
+
+    private func sanitizeForJSON(_ value: Any) -> Any? {
+        if value is NSNull || value is String || value is NSNumber || value is Bool {
+            return value
+        }
+        if let date = value as? Date {
+            return date.timeIntervalSince1970
+        }
+        if let data = value as? Data {
+            return data.base64EncodedString()
+        }
+        if let arr = value as? [Any] {
+            return arr.compactMap { sanitizeForJSON($0) }
+        }
+        if let dict = value as? [String: Any] {
+            var res: [String: Any] = [:]
+            for (k, v) in dict {
+                if let sanitized = sanitizeForJSON(v) {
+                    res[k] = sanitized
+                }
+            }
+            return res
+        }
+        return nil
+    }
+
+    private func persistLocked() {
+        guard JSONSerialization.isValidJSONObject(storage),
+              let data = try? JSONSerialization.data(withJSONObject: storage, options: []) else {
+            return
+        }
+        try? data.write(to: storageURL, options: .atomic)
     }
 
     func getValue(scriptId: String, name: String) -> Any? {
-        return UserDefaults.standard.object(forKey: makeKey(scriptId, name))
+        lock.lock()
+        let val = storage[scriptId]?[name]
+        lock.unlock()
+        return val
     }
 
     func setValue(scriptId: String, name: String, value: Any) {
-        UserDefaults.standard.set(value, forKey: makeKey(scriptId, name))
+        guard let safeVal = sanitizeForJSON(value) else { return }
+        lock.lock()
+        var dict = storage[scriptId] ?? [:]
+        dict[name] = safeVal
+        storage[scriptId] = dict
+        persistLocked()
+        lock.unlock()
     }
 
     func deleteValue(scriptId: String, name: String) {
-        UserDefaults.standard.removeObject(forKey: makeKey(scriptId, name))
+        lock.lock()
+        if var dict = storage[scriptId] {
+            dict.removeValue(forKey: name)
+            if dict.isEmpty {
+                storage.removeValue(forKey: scriptId)
+            } else {
+                storage[scriptId] = dict
+            }
+            persistLocked()
+        }
+        lock.unlock()
     }
 
     func clearDataForScript(scriptId: String) {
-        let prefix = "GM_DATA_\(scriptId)_"
-        for (k, _) in UserDefaults.standard.dictionaryRepresentation() {
-            if k.hasPrefix(prefix) {
-                UserDefaults.standard.removeObject(forKey: k)
-            }
-        }
+        lock.lock()
+        storage.removeValue(forKey: scriptId)
+        persistLocked()
+        lock.unlock()
     }
 
     func clearAllScriptData() {
-        let prefix = "GM_DATA_"
-        for (k, _) in UserDefaults.standard.dictionaryRepresentation() {
-            if k.hasPrefix(prefix) {
-                UserDefaults.standard.removeObject(forKey: k)
-            }
-        }
+        lock.lock()
+        storage.removeAll()
+        persistLocked()
+        lock.unlock()
     }
 
     func getAllValuesJSON(scriptId: String) -> String {
-        let prefix = "GM_DATA_\(scriptId)_"
-        var dict: [String: Any] = [:]
-        for (k, v) in UserDefaults.standard.dictionaryRepresentation() {
-            if k.hasPrefix(prefix) {
-                let name = String(k.dropFirst(prefix.count))
-                dict[name] = v
-            }
+        lock.lock()
+        let dict = storage[scriptId] ?? [:]
+        lock.unlock()
+        guard !dict.isEmpty,
+              JSONSerialization.isValidJSONObject(dict),
+              let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
+              let str = String(data: data, encoding: .utf8) else {
+            return "{}"
         }
-        if let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
-           let str = String(data: data, encoding: .utf8) {
-            return str
-        }
-        return "{}"
+        return str
     }
 }
 
