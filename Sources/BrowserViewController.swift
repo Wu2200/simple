@@ -2504,13 +2504,14 @@ final class BrowserViewController: UIViewController, UITextFieldDelegate, TabIte
 
         let settingsVC = DomainSettingsViewController(domain: host) { [weak self] in
             guard let self = self else { return }
-            self.activeTab.reloadUserScripts()
-            AdBlockManager.shared.applyRules(to: self.activeTab.webView)
+            AdBlockManager.shared.applyRules(to: self.activeTab.webView, targetHost: host)
             let targetURL = self.activeTab.failedURL ?? self.activeTab.url ?? self.activeTab.webView.url
             if let targetURL = targetURL, targetURL.absoluteString != "about:blank" {
                 self.activeTab.isDisplayingFailurePage = false
                 self.failureOverlayView.isHidden = true
                 self.activeTab.reloadFromTop()
+            } else {
+                self.activeTab.reloadUserScripts()
             }
         }
         settingsVC.onFullscreenChanged = { [weak self] isEnabled in
