@@ -57,6 +57,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     private var userScrolledDuringLoading = false
     private var lastNewTabRequestedURL: URL?
     private var lastNewTabRequestedTime: TimeInterval = 0
+    private var lastAppliedAdBlockActive: Bool?
 
     private var urlObservation: NSKeyValueObservation?
     private var titleObservation: NSKeyValueObservation?
@@ -643,14 +644,27 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         webView.customUserAgent = UserAgentStore.shared.getSelectedUA()
 
-        ensureCoreScripts()
-
-        AdBlockManager.shared.attach(to: webView)
         userContentController.add(self, name: "GM")
         userContentController.add(self, name: "DownloadBridge")
         userContentController.add(self, name: "ContextMenuBridge")
         userContentController.add(self, name: "HistoryBridge")
         userContentController.add(self, name: "ResourceBridge")
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAdBlockRulesAppliedNotification(_:)),
+            name: NSNotification.Name("SimpleAdBlockRulesApplied"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleUserScriptsUpdatedNotification(_:)),
+            name: UserScriptStore.didUpdateScriptsNotification,
+            object: nil
+        )
+
+        AdBlockManager.shared.attach(to: webView)
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -688,20 +702,6 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
                 self.handleTitleChange(wv.title)
             }
         }
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleAdBlockRulesAppliedNotification(_:)),
-            name: NSNotification.Name("SimpleAdBlockRulesApplied"),
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleUserScriptsUpdatedNotification(_:)),
-            name: UserScriptStore.didUpdateScriptsNotification,
-            object: nil
-        )
     }
 
     deinit {
@@ -750,11 +750,21 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
     @objc private func handleAdBlockRulesAppliedNotification(_ notification: Notification) {
         guard let targetWebView = notification.object as? WKWebView, targetWebView == self.webView else { return }
-        ensureCoreScripts()
+        let host = (notification.userInfo?["host"] as? String) ?? navigationActionURL?.host ?? url?.host ?? webView.url?.host
+        lastAppliedAdBlockActive = AdBlockManager.shared.shouldBlock(for: host)
+        rebuildUserContentScripts(forHost: host)
     }
 
     @objc private func handleUserScriptsUpdatedNotification(_ notification: Notification) {
         rebuildUserContentScripts()
+    }
+
+    private func syncAdBlockStateIfNeeded(forHost host: String?) {
+        let shouldBlock = AdBlockManager.shared.shouldBlock(for: host)
+        if lastAppliedAdBlockActive != shouldBlock {
+            lastAppliedAdBlockActive = shouldBlock
+            AdBlockManager.shared.applyRules(to: webView, targetHost: host)
+        }
     }
 
     private func ensureCoreScripts() {
@@ -816,9 +826,32 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
     }
 
-    private func rebuildUserContentScripts() {
-        webView.configuration.userContentController.removeAllUserScripts()
-        ensureCoreScripts()
+    private func rebuildUserContentScripts(forHost explicitHost: String? = nil) {
+        let controller = webView.configuration.userContentController
+        let effectiveHost = explicitHost ?? navigationActionURL?.host ?? url?.host ?? webView.url?.host
+        controller.removeAllUserScripts()
+        ensureBaseCoreScripts()
+
+        let cosmeticScripts = AdBlockManager.shared.activeCosmeticScripts(for: effectiveHost)
+        for script in cosmeticScripts {
+            controller.addUserScript(script)
+        }
+
+        let activeDocStartScripts = UserScriptStore.shared.loadScripts().filter { script in
+            guard script.isEnabled else { return false }
+            let runAt = script.runAt?.lowercased() ?? ""
+            return runAt == "document-start"
+        }
+        for script in activeDocStartScripts {
+            let tag = "__userscript_ds_\(script.id)__"
+            let wrapped = wrapUserScriptForInjection(script: script, identifierTag: tag)
+            let userScript = WKUserScript(
+                source: wrapped,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            controller.addUserScript(userScript)
+        }
     }
 
     private func syncDocumentStartUserScripts() {
@@ -842,18 +875,7 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
 
         if currentTags != expectedTags {
-            controller.removeAllUserScripts()
-            ensureBaseCoreScripts()
-            for script in activeDocStartScripts {
-                let tag = "__userscript_ds_\(script.id)__"
-                let wrapped = wrapUserScriptForInjection(script: script, identifierTag: tag)
-                let userScript = WKUserScript(
-                    source: wrapped,
-                    injectionTime: .atDocumentStart,
-                    forMainFrameOnly: false
-                )
-                controller.addUserScript(userScript)
-            }
+            rebuildUserContentScripts()
         }
     }
 
@@ -2165,6 +2187,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
         }
         hasInjectedScriptsForCurrentPage = false
         registeredCommands.removeAll()
+        if let target = navigationActionURL ?? webView.url,
+           ["http", "https"].contains(target.scheme?.lowercased() ?? "") {
+            syncAdBlockStateIfNeeded(forHost: target.host)
+        }
         ensureCoreScripts()
         userScrolledDuringLoading = false
         delegate?.tabDidUpdate(self)
@@ -2293,6 +2319,10 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
 
         if navigationAction.targetFrame?.isMainFrame == true {
             navigationActionURL = targetURL
+            let targetScheme = targetURL.scheme?.lowercased() ?? ""
+            if ["http", "https"].contains(targetScheme) {
+                syncAdBlockStateIfNeeded(forHost: targetURL.host)
+            }
             if let host = targetURL.host {
                 DomainRelationStore.shared.recordPrimaryDomain(host)
             }
