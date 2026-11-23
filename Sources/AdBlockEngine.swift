@@ -92,11 +92,14 @@ final class AdBlockManager {
     private let enabledKey = "adblock_enabled_v2"
     private let subscriptionsKey = "adblock_subscriptions_v2"
     private let customRulesKey = "adblock_custom_rules_v2"
-    private let metadataKey = "adblock_compiled_metadata_v9"
-    private let identifierPrefix = "SimpleBrowserAdBlockV9"
-    private let diagnosticKey = "adblock_unsupported_rules_v1"
+    private let legacyMetadataKey = "adblock_compiled_metadata_v9"
+    private let legacyDiagnosticKey = "adblock_unsupported_rules_v1"
+    private let metadataFileName = "adblock_compiled_metadata_v10.json"
+    private let diagnosticFileName = "adblock_unsupported_rules_v10.json"
+    private let identifierPrefix = "SimpleBrowserAdBlockV10"
 
-    private let nativeRuleChunkSize = 8000
+    private let nativeRuleChunkSize = 40000
+    private let maximumRulesPerChunk = 50000
     private let maximumCosmeticRulesPerSource = 300000
     private let cosmeticScriptPayloadLimit = 180000
     private let maximumCompilationDuration: TimeInterval = 180
@@ -108,6 +111,7 @@ final class AdBlockManager {
 
     private var attachedWebViews = NSHashTable<WKWebView>.weakObjects()
     private var compiledListsBySource: [String: [WKContentRuleList]] = [:]
+    private var cosmeticExceptionScriptsBySource: [String: WKUserScript] = [:]
     private var cosmeticScriptsBySource: [String: [WKUserScript]] = [:]
     private var cosmeticScriptCharsBySource: [String: Int] = [:]
     private var metadataBySource: [String: AdBlockCompiledSourceMetadata] = [:]
@@ -146,7 +150,7 @@ final class AdBlockManager {
             object: nil
         )
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
             self?.markReadyOnMainThread()
         }
 
@@ -441,6 +445,73 @@ final class AdBlockManager {
         stateLock.unlock()
     }
 
+    func shouldBlock(for host: String?) -> Bool {
+        guard isEnabled else {
+            return false
+        }
+
+        if let host = host?.trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty {
+            return DomainSettingsStore.shared.getBool(domain: host, setting: "adBlock", defaultVal: true)
+        }
+
+        return true
+    }
+
+    func activeCosmeticScripts(for host: String?) -> [WKUserScript] {
+        guard shouldBlock(for: host) else {
+            return []
+        }
+
+        let enabledSubs = Set(loadSubscriptions().filter { $0.isEnabled }.map { $0.id })
+
+        stateLock.lock()
+        let exceptionScriptsCopy = cosmeticExceptionScriptsBySource
+        let cosmeticScriptsCopy = cosmeticScriptsBySource
+        stateLock.unlock()
+
+        var scripts: [WKUserScript] = []
+
+        for sourceId in exceptionScriptsCopy.keys.sorted() {
+            if sourceId != Self.customSourceId && !enabledSubs.contains(sourceId) {
+                continue
+            }
+            if let script = exceptionScriptsCopy[sourceId] {
+                scripts.append(script)
+            }
+        }
+
+        for sourceId in cosmeticScriptsCopy.keys.sorted() {
+            if sourceId != Self.customSourceId && !enabledSubs.contains(sourceId) {
+                continue
+            }
+            if let sourceScripts = cosmeticScriptsCopy[sourceId] {
+                scripts.append(contentsOf: sourceScripts)
+            }
+        }
+
+        return scripts
+    }
+
+    func reloadAfterBackupRestore() {
+        let customText = getCustomRules().trimmingCharacters(in: .whitespacesAndNewlines)
+        if !customText.isEmpty {
+            compileSource(id: Self.customSourceId, completion: nil)
+        } else {
+            deactivateSource(id: Self.customSourceId)
+        }
+
+        let enabledSubs = loadSubscriptions().filter { $0.isEnabled }
+        let localSourceIds = enabledSubs.compactMap { sub -> String? in
+            FileManager.default.fileExists(atPath: subscriptionFileURL(id: sub.id).path) ? sub.id : nil
+        }
+        if !localSourceIds.isEmpty {
+            compileSourcesSequentially(localSourceIds, index: 0)
+        }
+
+        applyRulesToAttachedWebViews()
+        checkAndAutoUpdateSubscriptions()
+    }
+
     func attach(to webView: WKWebView) {
         attachedWebViews.add(webView)
         applyRules(to: webView)
@@ -450,24 +521,33 @@ final class AdBlockManager {
         attachedWebViews.remove(webView)
     }
 
-    func applyRules(to webView: WKWebView) {
-        let controller = webView.configuration.userContentController
-
-        controller.removeAllContentRuleLists()
-        controller.removeAllUserScripts()
-
-        defer {
-            NotificationCenter.default.post(
-                name: NSNotification.Name("SimpleAdBlockRulesApplied"),
-                object: webView
-            )
-        }
-
-        guard isEnabled else {
+    func applyRules(to webView: WKWebView, targetHost: String? = nil) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self, weak webView] in
+                guard let self = self, let webView = webView else { return }
+                self.applyRules(to: webView, targetHost: targetHost)
+            }
             return
         }
 
-        if let host = webView.url?.host, !DomainSettingsStore.shared.getBool(domain: host, setting: "adBlock", defaultVal: true) {
+        let controller = webView.configuration.userContentController
+        let effectiveHost = targetHost ?? webView.url?.host
+
+        controller.removeAllContentRuleLists()
+
+        defer {
+            var userInfo: [AnyHashable: Any] = [:]
+            if let effectiveHost = effectiveHost, !effectiveHost.isEmpty {
+                userInfo["host"] = effectiveHost
+            }
+            NotificationCenter.default.post(
+                name: NSNotification.Name("SimpleAdBlockRulesApplied"),
+                object: webView,
+                userInfo: userInfo.isEmpty ? nil : userInfo
+            )
+        }
+
+        guard shouldBlock(for: effectiveHost) else {
             return
         }
 
@@ -475,7 +555,6 @@ final class AdBlockManager {
 
         stateLock.lock()
         let compiledListsCopy = compiledListsBySource
-        let cosmeticScriptsCopy = cosmeticScriptsBySource
         stateLock.unlock()
 
         for sourceId in compiledListsCopy.keys.sorted() {
@@ -484,15 +563,6 @@ final class AdBlockManager {
             }
             for ruleList in compiledListsCopy[sourceId] ?? [] {
                 controller.add(ruleList)
-            }
-        }
-
-        for sourceId in cosmeticScriptsCopy.keys.sorted() {
-            if sourceId != Self.customSourceId && !enabledSubs.contains(sourceId) {
-                continue
-            }
-            for script in cosmeticScriptsCopy[sourceId] ?? [] {
-                controller.addUserScript(script)
             }
         }
     }
@@ -561,12 +631,31 @@ final class AdBlockManager {
         return nil
     }
 
+    private func looksLikeHTMLDocument(_ text: String) -> Bool {
+        let prefix = String(text.prefix(1024))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if prefix.hasPrefix("<!doctype html") ||
+           prefix.hasPrefix("<html") ||
+           prefix.hasPrefix("<head") ||
+           prefix.hasPrefix("<body") ||
+           prefix.hasPrefix("<script") ||
+           prefix.hasPrefix("<?xml") {
+            return true
+        }
+        if prefix.contains("<html") && (prefix.contains("<head") || prefix.contains("<body")) {
+            return true
+        }
+        return false
+    }
+
     private func processDownloadedRuleText(
         _ text: String,
         subscription: AdBlockSubscription,
         completion: @escaping (Bool, Int, String?) -> Void
     ) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedText = text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
+        let trimmed = normalizedText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
             DispatchQueue.main.async {
@@ -579,13 +668,29 @@ final class AdBlockManager {
             return
         }
 
-        let hash = computeContentHash(text)
+        if looksLikeHTMLDocument(trimmed) {
+            DispatchQueue.main.async {
+                self.stateLock.lock()
+                self.updatingSourceIds.remove(subscription.id)
+                self.stateLock.unlock()
+                self.setUpdateStatus(sourceId: subscription.id, status: nil)
+                completion(false, 0, "订阅地址返回了网页(HTML)而非纯文本规则，请确认使用了原始(Raw)链接")
+            }
+            return
+        }
+
+        let hash = computeContentHash(normalizedText)
         self.stateLock.lock()
         let existingMetadata = self.metadataBySource[subscription.id]
         let existingLists = self.compiledListsBySource[subscription.id]
         self.stateLock.unlock()
 
-        if let meta = existingMetadata, meta.contentHash == hash, let lists = existingLists, !lists.isEmpty || !meta.cosmeticRules.isEmpty {
+        let hasAllExpectedLists = existingMetadata.map { meta in
+            meta.ruleListIdentifiers.count == (existingLists?.count ?? 0) &&
+            (!meta.ruleListIdentifiers.isEmpty || !meta.cosmeticRules.isEmpty || !meta.cosmeticExceptions.isEmpty)
+        } ?? false
+
+        if let meta = existingMetadata, meta.contentHash == hash, hasAllExpectedLists {
             DispatchQueue.main.async {
                 self.stateLock.lock()
                 self.updatingSourceIds.remove(subscription.id)
@@ -604,7 +709,7 @@ final class AdBlockManager {
         }
 
         do {
-            try text.write(
+            try normalizedText.write(
                 to: self.subscriptionFileURL(id: subscription.id),
                 atomically: true,
                 encoding: .utf8
@@ -794,6 +899,28 @@ final class AdBlockManager {
         }.resume()
     }
 
+    private func compileSourcesSequentially(_ sourceIds: [String], index: Int) {
+        guard index < sourceIds.count else { return }
+        let sourceId = sourceIds[index]
+        compileSource(id: sourceId) { [weak self] _, _ in
+            self?.compileSourcesSequentially(sourceIds, index: index + 1)
+        }
+    }
+
+    private func cleanupLegacyCompiledRuleLists() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            WKContentRuleListStore.default().getAvailableContentRuleListIdentifiers { identifiers in
+                guard let identifiers = identifiers else { return }
+                for identifier in identifiers {
+                    if !identifier.hasPrefix(self.identifierPrefix) {
+                        WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier, completionHandler: { _ in })
+                    }
+                }
+            }
+        }
+    }
+
     private func restorePersistedRules() {
         parseQueue.async { [weak self] in
             guard let self = self else { return }
@@ -803,8 +930,26 @@ final class AdBlockManager {
             self.stateLock.unlock()
 
             guard !metadataCopy.isEmpty else {
+                UserDefaults.standard.removeObject(forKey: self.legacyMetadataKey)
+                UserDefaults.standard.removeObject(forKey: self.legacyDiagnosticKey)
+                self.cleanupLegacyCompiledRuleLists()
+
+                var localSourcesToRecompile: [String] = []
+                for sub in self.loadSubscriptions() where sub.isEnabled {
+                    if FileManager.default.fileExists(atPath: self.subscriptionFileURL(id: sub.id).path) {
+                        localSourcesToRecompile.append(sub.id)
+                    }
+                }
+                if !self.getCustomRules().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    localSourcesToRecompile.append(Self.customSourceId)
+                }
+
                 DispatchQueue.main.async {
                     self.markReadyOnMainThread()
+                }
+
+                if !localSourcesToRecompile.isEmpty {
+                    self.compileSourcesSequentially(localSourcesToRecompile, index: 0)
                 }
                 return
             }
@@ -849,8 +994,8 @@ final class AdBlockManager {
                     self.markReadyOnMainThread()
                 }
 
-                for sourceId in sourcesNeedingRecompile {
-                    self.compileSource(id: sourceId, completion: nil)
+                if !sourcesNeedingRecompile.isEmpty {
+                    self.compileSourcesSequentially(sourcesNeedingRecompile, index: 0)
                 }
             }
         }
@@ -894,8 +1039,12 @@ final class AdBlockManager {
         let oldIdentifiers = metadataBySource[sourceId]?.ruleListIdentifiers ?? []
         stateLock.unlock()
 
-        for identifier in oldIdentifiers {
-            WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier, completionHandler: { _ in })
+        guard !oldIdentifiers.isEmpty else { return }
+
+        DispatchQueue.main.async {
+            for identifier in oldIdentifiers {
+                WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier, completionHandler: { _ in })
+            }
         }
     }
 
@@ -1014,13 +1163,15 @@ final class AdBlockManager {
         ) { [weak self] lists, identifiers in
             guard let self = self else { return }
 
-            if lists.isEmpty && payload.cosmeticRules.isEmpty && payload.cosmeticExceptions.isEmpty {
+            if lists.isEmpty {
                 self.stateLock.lock()
                 self.updatingSourceIds.remove(sourceId)
+                let unsuppCopy = self.unsupportedRulesBySource
                 self.stateLock.unlock()
+                self.saveUnsupportedRules(unsuppCopy)
                 self.setUpdateStatus(sourceId: sourceId, status: nil)
                 DispatchQueue.main.async {
-                    completion?(false, "规则编译超时或所有规则块均不兼容")
+                    completion?(false, "网络规则编译超时或全部规则块不兼容，已保留原有规则")
                 }
                 return
             }
@@ -1173,7 +1324,7 @@ final class AdBlockManager {
         func resolve(ruleList: WKContentRuleList?, error: Error?) {
             gate.resolve {
                 guard let ruleList = ruleList else {
-                    if rules.count == 1 || depth >= 6 {
+                    if rules.count == 1 || depth >= 16 {
                         for rule in rules.prefix(10) {
                             self.recordUnsupportedRule(
                                 sourceId: sourceId,
@@ -1217,6 +1368,20 @@ final class AdBlockManager {
             }
         }
 
+        let remainingTime = max(2.0, deadline.timeIntervalSinceNow)
+        let chunkTimeout = min(maximumSingleChunkDuration, remainingTime)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + chunkTimeout) {
+            resolve(
+                ruleList: nil,
+                error: NSError(
+                    domain: "AdBlockCompiler",
+                    code: -1001,
+                    userInfo: [NSLocalizedDescriptionKey: "单块编译超时"]
+                )
+            )
+        }
+
         DispatchQueue.main.async {
             WKContentRuleListStore.default().compileContentRuleList(
                 forIdentifier: identifier,
@@ -1232,6 +1397,7 @@ final class AdBlockManager {
         stateLock.lock()
         metadataBySource.removeValue(forKey: sourceId)
         compiledListsBySource.removeValue(forKey: sourceId)
+        cosmeticExceptionScriptsBySource.removeValue(forKey: sourceId)
         cosmeticScriptsBySource.removeValue(forKey: sourceId)
         cosmeticScriptCharsBySource.removeValue(forKey: sourceId)
         unsupportedRulesBySource.removeValue(forKey: sourceId)
