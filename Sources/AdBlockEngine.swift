@@ -125,6 +125,18 @@ final class AdBlockManager {
     private(set) var isReady: Bool = false
     private var readyCallbacks: [() -> Void] = []
 
+    private static let cosmeticBootstrapScript: WKUserScript = {
+        let source = """
+        (function() {
+            \(cosmeticCoreBootstrapJS())
+        })();
+        """
+        return WKUserScript(
+            source: source,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+    }()
     var isEnabled: Bool {
         get {
             UserDefaults.standard.bool(forKey: enabledKey)
@@ -487,6 +499,10 @@ final class AdBlockManager {
             if let sourceScripts = cosmeticScriptsCopy[sourceId] {
                 scripts.append(contentsOf: sourceScripts)
             }
+        }
+
+        if !scripts.isEmpty {
+            scripts.insert(Self.cosmeticBootstrapScript, at: 0)
         }
 
         return scripts
@@ -1414,8 +1430,7 @@ final class AdBlockManager {
         releaseSystemHeapPressure()
     }
 
-    private func cosmeticCoreBootstrapJS() -> String {
-        """
+    private static func cosmeticCoreBootstrapJS() -> String {
         var host = (location.hostname || '').toLowerCase();
         if (!host) {
             return;
@@ -1500,9 +1515,8 @@ final class AdBlockManager {
                         window.__sb_ab_core__.styleElement = style;
                     }
                     var cssText = chunks.join('\\n');
-                    style.textContent = (style.textContent ? style.textContent + '\\n' : '') + cssText;
+                    style.appendChild(document.createTextNode(cssText + '\\n'));
                 },
-                isWhitelisted: function(sel) {
                     var x = window.__sb_ab_core__.exceptions;
                     if (!x || x.length === 0) {
                         return false;
@@ -1635,7 +1649,6 @@ final class AdBlockManager {
             return
         }
 
-        let bootstrapJS = cosmeticCoreBootstrapJS()
         let safeSourceId = metadata.sourceId.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "")
         var totalChars = 0
         var exceptionScript: WKUserScript?
@@ -1652,10 +1665,9 @@ final class AdBlockManager {
             let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
             let exceptionSource = """
             (function() {
-                \(bootstrapJS)
                 var core = window.__sb_ab_core__;
                 var token = '__sb_ab_ex_\(safeSourceId)__';
-                if (window[token]) {
+                if (!core || window[token]) {
                     return;
                 }
                 window[token] = true;
@@ -1677,6 +1689,7 @@ final class AdBlockManager {
             var globalList: [String] = []
             var withExcludes: [[String: Any]] = []
             var domainMap: [String: [String]] = [:]
+            var domainWithExcludes: [String: [[String: Any]]] = [:]
 
             for rule in rules {
                 if rule.domains.isEmpty {
@@ -1688,11 +1701,20 @@ final class AdBlockManager {
                             "x": rule.excludedDomains
                         ])
                     }
-                } else {
+                } else if rule.excludedDomains.isEmpty {
                     for d in rule.domains {
                         var existing = domainMap[d] ?? []
                         existing.append(rule.selector)
                         domainMap[d] = existing
+                    }
+                } else {
+                    for d in rule.domains {
+                        var existing = domainWithExcludes[d] ?? []
+                        existing.append([
+                            "s": rule.selector,
+                            "x": rule.excludedDomains
+                        ])
+                        domainWithExcludes[d] = existing
                     }
                 }
             }
@@ -1706,79 +1728,96 @@ final class AdBlockManager {
             let dData = (try? JSONSerialization.data(withJSONObject: domainMap)) ?? Data()
             let dJson = String(data: dData, encoding: .utf8) ?? "{}"
 
+            let deData = (try? JSONSerialization.data(withJSONObject: domainWithExcludes)) ?? Data()
+            let deJson = String(data: deData, encoding: .utf8) ?? "{}"
+
             let batchIdentifier = "\(safeSourceId)_\(index)"
 
             let source = """
             (function() {
-                \(bootstrapJS)
-
                 var core = window.__sb_ab_core__;
                 var token = '__sb_ab_\(batchIdentifier)__';
-                if (window[token]) {
+                if (!core || window[token]) {
                     return;
                 }
                 window[token] = true;
 
-                var g = \(gJson);
-                var e = \(eJson);
-                var d = \(dJson);
+                (function() {
+                    var g = \(gJson);
+                    var e = \(eJson);
+                    var d = \(dJson);
+                    var de = \(deJson);
 
-                var targetSelectors = [];
-                function tryAdd(sel) {
-                    if (!sel || core.seen[sel]) {
-                        return;
+                    var targetSelectors = [];
+                    function tryAdd(sel) {
+                        if (!sel || core.seen[sel]) {
+                            return;
+                        }
+                        core.seen[sel] = true;
+                        if (!core.isWhitelisted(sel)) {
+                            targetSelectors.push(sel);
+                        }
                     }
-                    core.seen[sel] = true;
-                    if (!core.isWhitelisted(sel)) {
-                        targetSelectors.push(sel);
-                    }
-                }
 
-                for (var i = 0; i < g.length; i++) {
-                    tryAdd(g[i]);
-                }
-
-                for (var i = 0; i < e.length; i++) {
-                    var item = e[i];
-                    var excluded = false;
-                    if (item.x && item.x.length > 0) {
-                        for (var j = 0; j < item.x.length; j++) {
-                            var ex = item.x[j];
+                    function isHostExcluded(excludedList) {
+                        if (!excludedList || excludedList.length === 0) {
+                            return false;
+                        }
+                        for (var j = 0; j < excludedList.length; j++) {
+                            var ex = excludedList[j];
                             if (core.host === ex || core.host.endsWith('.' + ex)) {
-                                excluded = true;
-                                break;
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+
+                    for (var i = 0; i < g.length; i++) {
+                        tryAdd(g[i]);
+                    }
+
+                    for (var i = 0; i < e.length; i++) {
+                        var item = e[i];
+                        if (!isHostExcluded(item.x)) {
+                            tryAdd(item.s);
+                        }
+                    }
+
+                    for (var i = 0; i < core.domainList.length; i++) {
+                        var dm = core.domainList[i];
+                        var list = d[dm];
+                        if (list && list.length > 0) {
+                            for (var j = 0; j < list.length; j++) {
+                                tryAdd(list[j]);
+                            }
+                        }
+                        var exList = de[dm];
+                        if (exList && exList.length > 0) {
+                            for (var j = 0; j < exList.length; j++) {
+                                var exItem = exList[j];
+                                if (!isHostExcluded(exItem.x)) {
+                                    tryAdd(exItem.s);
+                                }
                             }
                         }
                     }
-                    if (!excluded) {
-                        tryAdd(item.s);
-                    }
-                }
 
-                for (var i = 0; i < core.domainList.length; i++) {
-                    var list = d[core.domainList[i]];
-                    if (list && list.length > 0) {
-                        for (var j = 0; j < list.length; j++) {
-                            tryAdd(list[j]);
+                    if (targetSelectors.length === 0) {
+                        return;
+                    }
+
+                    var cssBatch = [];
+                    for (var i = 0; i < targetSelectors.length; i++) {
+                        var sel = targetSelectors[i];
+                        if (sel.indexOf(':has(') !== -1 && !core.supportsHas) {
+                            core.addFallback(sel);
+                        } else {
+                            cssBatch.push(sel);
                         }
                     }
-                }
 
-                if (targetSelectors.length === 0) {
-                    return;
-                }
-
-                var cssBatch = [];
-                for (var i = 0; i < targetSelectors.length; i++) {
-                    var sel = targetSelectors[i];
-                    if (sel.indexOf(':has(') !== -1 && !core.supportsHas) {
-                        core.addFallback(sel);
-                    } else {
-                        cssBatch.push(sel);
-                    }
-                }
-
-                core.injectCss(cssBatch);
+                    core.injectCss(cssBatch);
+                })();
             })();
             """
 
@@ -1818,10 +1857,10 @@ final class AdBlockManager {
             return text.isEmpty ? nil : text
         }
 
-        return try? String(
-            contentsOf: subscriptionFileURL(id: sourceId),
-            encoding: .utf8
-        )
+        guard let data = try? Data(contentsOf: subscriptionFileURL(id: sourceId)) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
     }
 
     private func buildSourcePayloadParallel(text: String) -> AdBlockSourcePayload {
