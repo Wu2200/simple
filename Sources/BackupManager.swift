@@ -48,6 +48,17 @@ struct BrowserBackupPackage: Codable {
     var bookmarks: [BookmarkItem]
     var homeShortcuts: [HomeShortcutItem]
     var history: [BrowserHistoryItem]?
+    var cookies: [BackupCookieItem]?
+    var userScripts: [UserScript]
+    var scriptData: [String: String]
+    var customUserAgents: [UserAgentItem]
+    var adBlockSubscriptions: [AdBlockSubscription]
+    var customAdBlockRules: String
+    var lockedCookieDomains: [String]
+    var searchEngine: String
+    var trustedInsecureHosts: [String]?
+}
+
 struct EncryptedBackupEnvelope: Codable {
     var format: String
     var version: Int
