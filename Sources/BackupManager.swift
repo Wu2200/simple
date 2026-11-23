@@ -303,7 +303,7 @@ extension BrowserViewController {
                 case .success:
                     self.reloadHomeShortcuts()
                     self.activeTab.reloadUserScripts()
-                    AdBlockManager.shared.applyRules(to: self.activeTab.webView)
+                    AdBlockManager.shared.reloadAfterBackupRestore()
                     self.showToastNotice("数据恢复成功")
                 case .failure(let error):
                     let errAlert = UIAlertController(
