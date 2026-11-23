@@ -154,6 +154,12 @@ final class UserAgentStore {
         }
     }
 
+    func restoreCustomItems(_ items: [UserAgentItem]) {
+        if let data = try? JSONEncoder().encode(items) {
+            UserDefaults.standard.set(data, forKey: keyCustomItems)
+        }
+    }
+
     func getSelectedMobileId() -> String {
         return UserDefaults.standard.string(forKey: keySelectedMobileId) ?? defaultMobileItems[0].id
     }
