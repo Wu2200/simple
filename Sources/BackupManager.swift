@@ -360,6 +360,8 @@ final class BackupManager {
         if let trustedHosts = package.trustedInsecureHosts {
             CertificateTrustStore.shared.restoreTrustedHosts(trustedHosts)
         }
+
+        let cookiesToRestore = package.cookies?.compactMap { $0.toHTTPCookie() } ?? []
         let cookieStore = WKWebsiteDataStore.default().httpCookieStore
         let group = DispatchGroup()
 
