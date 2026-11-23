@@ -1414,27 +1414,263 @@ final class AdBlockManager {
         releaseSystemHeapPressure()
     }
 
+    private func cosmeticCoreBootstrapJS() -> String {
+        """
+        var host = (location.hostname || '').toLowerCase();
+        if (!host) {
+            return;
+        }
+        if (!window.__sb_ab_core__) {
+            var domainList = [];
+            var parts = host.split('.');
+            if (parts.length <= 1) {
+                domainList.push(host);
+            } else {
+                for (var i = 0; i < parts.length - 1; i++) {
+                    domainList.push(parts.slice(i).join('.'));
+                }
+            }
+            var selectorTester = document.createDocumentFragment();
+            function isSelectorValid(sel) {
+                try {
+                    selectorTester.querySelector(sel);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            }
+            var supportsHas = isSelectorValid(':has(*)');
+            window.__sb_ab_core__ = {
+                host: host,
+                domainList: domainList,
+                supportsHas: supportsHas,
+                seen: {},
+                exceptions: [],
+                styleElement: null,
+                fallbackSelectors: [],
+                observerStarted: false,
+                isSelectorValid: isSelectorValid,
+                injectCss: function(selectors) {
+                    if (!selectors || selectors.length === 0) {
+                        return;
+                    }
+                    var batchSize = 25;
+                    var chunks = [];
+                    for (var i = 0; i < selectors.length; i += batchSize) {
+                        var slice = selectors.slice(i, i + batchSize);
+                        var joined = slice.join(',');
+                        if (window.__sb_ab_core__.isSelectorValid(joined)) {
+                            chunks.push(joined + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}');
+                        } else {
+                            var validSlice = [];
+                            for (var j = 0; j < slice.length; j++) {
+                                if (window.__sb_ab_core__.isSelectorValid(slice[j])) {
+                                    validSlice.push(slice[j]);
+                                }
+                            }
+                            if (validSlice.length > 0) {
+                                chunks.push(validSlice.join(',') + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}');
+                            }
+                        }
+                    }
+                    if (chunks.length === 0) {
+                        return;
+                    }
+                    var style = window.__sb_ab_core__.styleElement;
+                    if (!style) {
+                        style = document.getElementById('__simple_browser_adblock_style__');
+                    }
+                    if (!style) {
+                        style = document.createElement('style');
+                        style.id = '__simple_browser_adblock_style__';
+                        style.type = 'text/css';
+                        var root = document.head || document.documentElement;
+                        if (root) {
+                            root.appendChild(style);
+                        } else {
+                            var obs = new MutationObserver(function() {
+                                var r = document.head || document.documentElement;
+                                if (r) {
+                                    obs.disconnect();
+                                    r.appendChild(style);
+                                }
+                            });
+                            obs.observe(document, { childList: true, subtree: true });
+                        }
+                        window.__sb_ab_core__.styleElement = style;
+                    }
+                    var cssText = chunks.join('\\n');
+                    style.textContent = (style.textContent ? style.textContent + '\\n' : '') + cssText;
+                },
+                isWhitelisted: function(sel) {
+                    var x = window.__sb_ab_core__.exceptions;
+                    if (!x || x.length === 0) {
+                        return false;
+                    }
+                    var h = window.__sb_ab_core__.host;
+                    for (var i = 0; i < x.length; i++) {
+                        var item = x[i];
+                        if (item.s === sel) {
+                            if (!item.d || item.d.length === 0) {
+                                return true;
+                            }
+                            for (var j = 0; j < item.d.length; j++) {
+                                var dm = item.d[j];
+                                if (h === dm || h.endsWith('.' + dm)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                },
+                addFallback: function(sel) {
+                    window.__sb_ab_core__.fallbackSelectors.push(sel);
+                    if (!window.__sb_ab_core__.observerStarted) {
+                        window.__sb_ab_core__.observerStarted = true;
+                        window.__sb_ab_core__.initFallbackObserver();
+                    }
+                },
+                initFallbackObserver: function() {
+                    function hideEl(el) {
+                        if (!el || !el.style) {
+                            return;
+                        }
+                        el.style.setProperty('display', 'none', 'important');
+                        el.style.setProperty('visibility', 'hidden', 'important');
+                        el.style.setProperty('pointer-events', 'none', 'important');
+                    }
+                    function scanScope(scope) {
+                        var list = window.__sb_ab_core__.fallbackSelectors;
+                        if (!list || list.length === 0 || !scope) {
+                            return;
+                        }
+                        for (var i = 0; i < list.length; i++) {
+                            var sel = list[i];
+                            var idx = sel.indexOf(':has(');
+                            if (idx < 0 || !sel.endsWith(')')) {
+                                continue;
+                            }
+                            var outer = sel.substring(0, idx).trim() || '*';
+                            var inner = sel.substring(idx + 5, sel.length - 1).trim();
+                            if (!inner) {
+                                continue;
+                            }
+                            var elements = [];
+                            try {
+                                if (scope.matches && scope.matches(outer)) {
+                                    elements.push(scope);
+                                }
+                                if (scope.querySelectorAll) {
+                                    var found = scope.querySelectorAll(outer);
+                                    for (var k = 0; k < found.length; k++) {
+                                        elements.push(found[k]);
+                                    }
+                                }
+                            } catch (_) {}
+                            for (var j = 0; j < elements.length; j++) {
+                                var el = elements[j];
+                                var matched = false;
+                                try {
+                                    if (inner.startsWith('>')) {
+                                        matched = el.querySelector(':scope ' + inner) !== null;
+                                    } else {
+                                        matched = el.querySelector(inner) !== null;
+                                    }
+                                } catch (_) {
+                                    matched = false;
+                                }
+                                if (matched) {
+                                    hideEl(el);
+                                }
+                            }
+                        }
+                    }
+                    var scheduledNodes = [];
+                    var scheduledTimer = null;
+                    function processScheduled() {
+                        scheduledTimer = null;
+                        var nodes = scheduledNodes;
+                        scheduledNodes = [];
+                        for (var i = 0; i < nodes.length; i++) {
+                            scanScope(nodes[i]);
+                        }
+                    }
+                    var observer = new MutationObserver(function(mutations) {
+                        for (var i = 0; i < mutations.length; i++) {
+                            var added = mutations[i].addedNodes;
+                            for (var j = 0; j < added.length; j++) {
+                                if (added[j].nodeType === 1) {
+                                    scheduledNodes.push(added[j]);
+                                }
+                            }
+                        }
+                        if (!scheduledTimer && scheduledNodes.length > 0) {
+                            var scheduleFn = window.requestAnimationFrame || function(cb) { setTimeout(cb, 16); };
+                            scheduledTimer = scheduleFn(processScheduled);
+                        }
+                    });
+                    var target = document.documentElement || document;
+                    observer.observe(target, { childList: true, subtree: true });
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', function() {
+                            scanScope(document.body || document.documentElement);
+                        }, { once: true });
+                    } else {
+                        scanScope(document.body || document.documentElement);
+                    }
+                }
+            };
+        }
+        """
+    }
+
     private func restoreCosmeticScripts(metadata: AdBlockCompiledSourceMetadata) {
         guard !metadata.cosmeticRules.isEmpty || !metadata.cosmeticExceptions.isEmpty else {
             stateLock.lock()
+            cosmeticExceptionScriptsBySource.removeValue(forKey: metadata.sourceId)
             cosmeticScriptsBySource.removeValue(forKey: metadata.sourceId)
             cosmeticScriptCharsBySource.removeValue(forKey: metadata.sourceId)
             stateLock.unlock()
             return
         }
 
-        let batches = cosmeticRuleBatches(metadata.cosmeticRules)
-        var exceptionsPayload: [[String: Any]] = []
-        for ex in metadata.cosmeticExceptions {
-            exceptionsPayload.append([
-                "s": ex.selector,
-                "d": ex.domains
-            ])
-        }
-        let exceptionsData = (try? JSONSerialization.data(withJSONObject: exceptionsPayload)) ?? Data()
-        let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
-
+        let bootstrapJS = cosmeticCoreBootstrapJS()
+        let safeSourceId = metadata.sourceId.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "")
         var totalChars = 0
+        var exceptionScript: WKUserScript?
+
+        if !metadata.cosmeticExceptions.isEmpty {
+            var exceptionsPayload: [[String: Any]] = []
+            for ex in metadata.cosmeticExceptions {
+                exceptionsPayload.append([
+                    "s": ex.selector,
+                    "d": ex.domains
+                ])
+            }
+            let exceptionsData = (try? JSONSerialization.data(withJSONObject: exceptionsPayload)) ?? Data()
+            let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
+            let exceptionSource = """
+            (function() {
+                \(bootstrapJS)
+                var core = window.__sb_ab_core__;
+                var token = '__sb_ab_ex_\(safeSourceId)__';
+                if (window[token]) {
+                    return;
+                }
+                window[token] = true;
+                core.exceptions = core.exceptions.concat(\(exceptionsJson));
+            })();
+            """
+            totalChars += exceptionSource.count
+            exceptionScript = WKUserScript(
+                source: exceptionSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        }
+
+        let batches = cosmeticRuleBatches(metadata.cosmeticRules)
         var scripts: [WKUserScript] = []
 
         for (index, rules) in batches.enumerated() {
@@ -1470,197 +1706,11 @@ final class AdBlockManager {
             let dData = (try? JSONSerialization.data(withJSONObject: domainMap)) ?? Data()
             let dJson = String(data: dData, encoding: .utf8) ?? "{}"
 
-            let safeSourceId = metadata.sourceId.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "")
             let batchIdentifier = "\(safeSourceId)_\(index)"
-            let exceptionsInjectionCode = (index == 0 && !metadata.cosmeticExceptions.isEmpty)
-                ? "core.exceptions = core.exceptions.concat(\(exceptionsJson));"
-                : ""
 
             let source = """
             (function() {
-                var host = (location.hostname || '').toLowerCase();
-                if (!host) {
-                    return;
-                }
-
-                if (!window.__sb_ab_core__) {
-                    var domainList = [];
-                    var parts = host.split('.');
-                    for (var i = 0; i < parts.length - 1; i++) {
-                        domainList.push(parts.slice(i).join('.'));
-                    }
-                    var supportsHas = false;
-                    try {
-                        document.querySelector(':has(*)');
-                        supportsHas = true;
-                    } catch (_) {
-                        supportsHas = false;
-                    }
-                    window.__sb_ab_core__ = {
-                        host: host,
-                        domainList: domainList,
-                        supportsHas: supportsHas,
-                        seen: {},
-                        exceptions: [],
-                        styleElement: null,
-                        fallbackSelectors: [],
-                        observerStarted: false,
-                        injectCss: function(selectors) {
-                            if (!selectors || selectors.length === 0) {
-                                return;
-                            }
-                            var style = window.__sb_ab_core__.styleElement;
-                            if (!style) {
-                                style = document.getElementById('__simple_browser_adblock_style__');
-                            }
-                            if (!style) {
-                                style = document.createElement('style');
-                                style.id = '__simple_browser_adblock_style__';
-                                style.type = 'text/css';
-                                var root = document.head || document.documentElement;
-                                if (root) {
-                                    root.appendChild(style);
-                                } else {
-                                    var obs = new MutationObserver(function() {
-                                        var r = document.head || document.documentElement;
-                                        if (r) {
-                                            obs.disconnect();
-                                            r.appendChild(style);
-                                        }
-                                    });
-                                    obs.observe(document, { childList: true, subtree: true });
-                                }
-                                window.__sb_ab_core__.styleElement = style;
-                            }
-                            var batchSize = 100;
-                            var chunks = [];
-                            for (var i = 0; i < selectors.length; i += batchSize) {
-                                var slice = selectors.slice(i, i + batchSize);
-                                chunks.push(slice.join(',') + '{display:none !important;visibility:hidden !important;pointer-events:none !important;}');
-                            }
-                            var cssText = chunks.join('\\n');
-                            style.textContent = (style.textContent ? style.textContent + '\\n' : '') + cssText;
-                        },
-                        isWhitelisted: function(sel) {
-                            var x = window.__sb_ab_core__.exceptions;
-                            if (!x || x.length === 0) {
-                                return false;
-                            }
-                            var h = window.__sb_ab_core__.host;
-                            for (var i = 0; i < x.length; i++) {
-                                var item = x[i];
-                                if (item.s === sel) {
-                                    if (!item.d || item.d.length === 0) {
-                                        return true;
-                                    }
-                                    for (var j = 0; j < item.d.length; j++) {
-                                        var dm = item.d[j];
-                                        if (h === dm || h.endsWith('.' + dm)) {
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
-                            return false;
-                        },
-                        addFallback: function(sel) {
-                            window.__sb_ab_core__.fallbackSelectors.push(sel);
-                            if (!window.__sb_ab_core__.observerStarted) {
-                                window.__sb_ab_core__.observerStarted = true;
-                                window.__sb_ab_core__.initFallbackObserver();
-                            }
-                        },
-                        initFallbackObserver: function() {
-                            function hideEl(el) {
-                                if (!el || !el.style) {
-                                    return;
-                                }
-                                el.style.setProperty('display', 'none', 'important');
-                                el.style.setProperty('visibility', 'hidden', 'important');
-                                el.style.setProperty('pointer-events', 'none', 'important');
-                            }
-                            function scanScope(scope) {
-                                var list = window.__sb_ab_core__.fallbackSelectors;
-                                if (!list || list.length === 0 || !scope) {
-                                    return;
-                                }
-                                for (var i = 0; i < list.length; i++) {
-                                    var sel = list[i];
-                                    var idx = sel.indexOf(':has(');
-                                    if (idx < 0 || !sel.endsWith(')')) {
-                                        continue;
-                                    }
-                                    var outer = sel.substring(0, idx).trim() || '*';
-                                    var inner = sel.substring(idx + 5, sel.length - 1).trim();
-                                    if (!inner) {
-                                        continue;
-                                    }
-                                    var elements = [];
-                                    try {
-                                        if (scope.matches && scope.matches(outer)) {
-                                            elements.push(scope);
-                                        }
-                                        if (scope.querySelectorAll) {
-                                            var found = scope.querySelectorAll(outer);
-                                            for (var k = 0; k < found.length; k++) {
-                                                elements.push(found[k]);
-                                            }
-                                        }
-                                    } catch (_) {}
-                                    for (var j = 0; j < elements.length; j++) {
-                                        var el = elements[j];
-                                        var matched = false;
-                                        try {
-                                            if (inner.startsWith('>')) {
-                                                matched = el.querySelector(':scope ' + inner) !== null;
-                                            } else {
-                                                matched = el.querySelector(inner) !== null;
-                                            }
-                                        } catch (_) {
-                                            matched = false;
-                                        }
-                                        if (matched) {
-                                            hideEl(el);
-                                        }
-                                    }
-                                }
-                            }
-                            var scheduledNodes = [];
-                            var scheduledTimer = null;
-                            function processScheduled() {
-                                scheduledTimer = null;
-                                var nodes = scheduledNodes;
-                                scheduledNodes = [];
-                                for (var i = 0; i < nodes.length; i++) {
-                                    scanScope(nodes[i]);
-                                }
-                            }
-                            var observer = new MutationObserver(function(mutations) {
-                                for (var i = 0; i < mutations.length; i++) {
-                                    var added = mutations[i].addedNodes;
-                                    for (var j = 0; j < added.length; j++) {
-                                        if (added[j].nodeType === 1) {
-                                            scheduledNodes.push(added[j]);
-                                        }
-                                    }
-                                }
-                                if (!scheduledTimer && scheduledNodes.length > 0) {
-                                    var scheduleFn = window.requestAnimationFrame || function(cb) { setTimeout(cb, 16); };
-                                    scheduledTimer = scheduleFn(processScheduled);
-                                }
-                            });
-                            var target = document.documentElement || document;
-                            observer.observe(target, { childList: true, subtree: true });
-                            if (document.readyState === 'loading') {
-                                document.addEventListener('DOMContentLoaded', function() {
-                                    scanScope(document.body || document.documentElement);
-                                }, { once: true });
-                            } else {
-                                scanScope(document.body || document.documentElement);
-                            }
-                        }
-                    };
-                }
+                \(bootstrapJS)
 
                 var core = window.__sb_ab_core__;
                 var token = '__sb_ab_\(batchIdentifier)__';
@@ -1668,8 +1718,6 @@ final class AdBlockManager {
                     return;
                 }
                 window[token] = true;
-
-                \(exceptionsInjectionCode)
 
                 var g = \(gJson);
                 var e = \(eJson);
@@ -1745,6 +1793,11 @@ final class AdBlockManager {
         }
 
         stateLock.lock()
+        if let exceptionScript = exceptionScript {
+            cosmeticExceptionScriptsBySource[metadata.sourceId] = exceptionScript
+        } else {
+            cosmeticExceptionScriptsBySource.removeValue(forKey: metadata.sourceId)
+        }
         cosmeticScriptsBySource[metadata.sourceId] = scripts
         cosmeticScriptCharsBySource[metadata.sourceId] = totalChars
         stateLock.unlock()
@@ -1907,12 +1960,17 @@ final class AdBlockManager {
 
         var allNetworkChunks: [[AdBlockNetworkRule]] = []
         if !allBlockRules.isEmpty {
-            allNetworkChunks = stride(from: 0, to: allBlockRules.count, by: nativeRuleChunkSize).map { start in
-                let blockChunk = Array(allBlockRules[start..<min(start + nativeRuleChunkSize, allBlockRules.count)])
-                return blockChunk + uniqueExceptionRules
+            let maxExceptionCount = min(uniqueExceptionRules.count, maximumRulesPerChunk / 2)
+            let effectiveExceptions = Array(uniqueExceptionRules.prefix(maxExceptionCount))
+            let blockChunkSize = max(5000, min(nativeRuleChunkSize, maximumRulesPerChunk - effectiveExceptions.count))
+            allNetworkChunks = stride(from: 0, to: allBlockRules.count, by: blockChunkSize).map { start in
+                let blockChunk = Array(allBlockRules[start..<min(start + blockChunkSize, allBlockRules.count)])
+                return blockChunk + effectiveExceptions
             }
         } else if !uniqueExceptionRules.isEmpty {
-            allNetworkChunks = [uniqueExceptionRules]
+            allNetworkChunks = stride(from: 0, to: uniqueExceptionRules.count, by: maximumRulesPerChunk).map { start in
+                Array(uniqueExceptionRules[start..<min(start + maximumRulesPerChunk, uniqueExceptionRules.count)])
+            }
         }
 
         let contentHash = computeContentHash(text)
@@ -1930,7 +1988,7 @@ final class AdBlockManager {
     private func isValidWebKitPattern(_ pattern: String) -> Bool {
         guard !pattern.isEmpty,
               pattern.count < 1024,
-              pattern.allSatisfy({ $0.isASCII }),
+              pattern.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value <= 0x7E }),
               !pattern.contains("(?"),
               !pattern.contains("[:") else {
             return false
@@ -1941,39 +1999,115 @@ final class AdBlockManager {
             return cached.boolValue
         }
 
-        var openParens = 0
-        var openBrackets = 0
-        var escaped = false
+        let disallowedEscapes: Set<Character> = [
+            "d", "D", "w", "W", "s", "S", "b", "B", "p", "P", "k", "x", "u",
+            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
+        ]
 
-        for ch in pattern {
+        let chars = Array(pattern)
+        var openParens = 0
+        var inCharClass = false
+        var charClassLength = 0
+        var escaped = false
+        var previousUnescaped: Character?
+
+        for (index, ch) in chars.enumerated() {
             if escaped {
+                if disallowedEscapes.contains(ch) {
+                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                    return false
+                }
                 escaped = false
+                if inCharClass {
+                    charClassLength += 1
+                }
+                previousUnescaped = nil
                 continue
             }
+
             if ch == "\\" {
                 escaped = true
                 continue
             }
+
+            if inCharClass {
+                if ch == "]" {
+                    if charClassLength == 0 {
+                        patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                        return false
+                    }
+                    inCharClass = false
+                    previousUnescaped = "]"
+                } else {
+                    charClassLength += 1
+                }
+                continue
+            }
+
+            if ch == "[" {
+                inCharClass = true
+                charClassLength = 0
+                previousUnescaped = "["
+                continue
+            }
+
+            if ch == "]" || ch == "{" || ch == "}" {
+                patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                return false
+            }
+
             if ch == "(" {
                 openParens += 1
-            } else if ch == ")" {
-                openParens -= 1
-                if openParens < 0 {
-                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
-                    return false
-                }
-            } else if ch == "[" {
-                openBrackets += 1
-            } else if ch == "]" {
-                openBrackets -= 1
-                if openBrackets < 0 {
-                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
-                    return false
-                }
+                previousUnescaped = "("
+                continue
             }
+
+            if ch == ")" {
+                openParens -= 1
+                if openParens < 0 || previousUnescaped == "(" || previousUnescaped == "|" {
+                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                    return false
+                }
+                previousUnescaped = ")"
+                continue
+            }
+
+            if ch == "^" && index != 0 {
+                patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                return false
+            }
+
+            if ch == "$" && index != chars.count - 1 {
+                patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                return false
+            }
+
+            if ch == "|" {
+                if index == 0 || index == chars.count - 1 || previousUnescaped == "(" || previousUnescaped == "|" {
+                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                    return false
+                }
+                previousUnescaped = "|"
+                continue
+            }
+
+            if ch == "*" || ch == "+" || ch == "?" {
+                if index == 0 || previousUnescaped == "(" || previousUnescaped == "|" || previousUnescaped == "^" {
+                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                    return false
+                }
+                if previousUnescaped == "*" || previousUnescaped == "+" || previousUnescaped == "?" {
+                    patternValidationCache.setObject(NSNumber(value: false), forKey: key)
+                    return false
+                }
+                previousUnescaped = ch
+                continue
+            }
+
+            previousUnescaped = ch
         }
 
-        if escaped || openParens != 0 || openBrackets != 0 {
+        if escaped || inCharClass || openParens != 0 {
             patternValidationCache.setObject(NSNumber(value: false), forKey: key)
             return false
         }
@@ -1983,57 +2117,125 @@ final class AdBlockManager {
         return isValid
     }
 
+    private func isOverbroadExceptionPattern(rawPattern: String, filter: String) -> Bool {
+        let trimmedRaw = rawPattern.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let strippedRaw = trimmedRaw
+            .replacingOccurrences(of: "|", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "^", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if strippedRaw.isEmpty || strippedRaw == "http://" || strippedRaw == "https://" || strippedRaw == "http:" || strippedRaw == "https:" || strippedRaw == "://" || strippedRaw == "http" || strippedRaw == "https" {
+            return true
+        }
+
+        let trivialFilters: Set<String> = [
+            ".*", "^.*", ".*$", "^.*$", ".+", "^.+", ".+$", "^.+$",
+            "^[a-z]+://([^/:]+\\.)?.*",
+            "^[a-z]+://([^/:]+\\.)?.*[^a-zA-Z0-9_.-]"
+        ]
+        return trivialFilters.contains(filter)
+    }
+
+    private func splitNetworkRuleAndOptions(_ line: String) -> (pattern: String, options: [String]) {
+        if line.hasPrefix("/") {
+            var searchStart = line.index(after: line.startIndex)
+            var lastSlashIndex: String.Index?
+            var escaped = false
+
+            while searchStart < line.endIndex {
+                let ch = line[searchStart]
+                if escaped {
+                    escaped = false
+                } else if ch == "\\" {
+                    escaped = true
+                } else if ch == "/" {
+                    lastSlashIndex = searchStart
+                }
+                searchStart = line.index(after: searchStart)
+            }
+
+            if let slashIdx = lastSlashIndex {
+                let afterSlash = line.index(after: slashIdx)
+                if afterSlash < line.endIndex {
+                    let remainder = String(line[afterSlash...])
+                    if remainder.hasPrefix("$") {
+                        let pattern = String(line[...slashIdx]).trimmingCharacters(in: .whitespacesAndNewlines)
+                        let optionText = String(remainder.dropFirst())
+                        let opts = optionText.isEmpty ? [] : optionText.split(separator: ",").map(String.init)
+                        return (pattern, opts)
+                    }
+                }
+                return (line.trimmingCharacters(in: .whitespacesAndNewlines), [])
+            }
+        }
+
+        if let dollarIndex = line.lastIndex(of: "$") {
+            let pattern = String(line[..<dollarIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let optionText = String(line[line.index(after: dollarIndex)...])
+            let opts = optionText.isEmpty ? [] : optionText.split(separator: ",").map(String.init)
+            return (pattern, opts)
+        }
+
+        return (line.trimmingCharacters(in: .whitespacesAndNewlines), [])
+    }
+
     private func parseRule(_ rawLine: String) -> AdBlockParsedLine {
         var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let emptyIgnored = AdBlockParsedLine(
+            networkRule: nil,
+            isException: false,
+            cosmeticRules: [],
+            cosmeticExceptions: [],
+            isUnsupported: false
+        )
+        let unsupportedResult = AdBlockParsedLine(
+            networkRule: nil,
+            isException: false,
+            cosmeticRules: [],
+            cosmeticExceptions: [],
+            isUnsupported: true
+        )
 
         guard !line.isEmpty,
               !line.hasPrefix("!"),
               !line.hasPrefix("！"),
               !line.hasPrefix("[") else {
-            return AdBlockParsedLine(
-                networkRule: nil,
-                isException: false,
-                cosmeticRules: [],
-                cosmeticExceptions: [],
-                isUnsupported: false
-            )
+            return emptyIgnored
         }
 
-        if line.contains("##+js") || line.contains("#%#") {
-            return AdBlockParsedLine(
-                networkRule: nil,
-                isException: false,
-                cosmeticRules: [],
-                cosmeticExceptions: [],
-                isUnsupported: true
-            )
+        if line.contains("##+js") ||
+           line.contains("#%#") ||
+           line.contains("#@%#") ||
+           line.contains("#$#") ||
+           line.contains("#@$#") ||
+           line.contains("#$?#") ||
+           line.contains("#@$?#") ||
+           line.contains("##^") ||
+           line.contains("#@#^") ||
+           line.contains("#@?#") {
+            return unsupportedResult
         }
 
         if line.contains("#@#") {
             guard let range = line.range(of: "#@#") else {
-                return AdBlockParsedLine(
-                    networkRule: nil,
-                    isException: false,
-                    cosmeticRules: [],
-                    cosmeticExceptions: [],
-                    isUnsupported: true
-                )
+                return unsupportedResult
             }
             let domainsText = String(line[..<range.lowerBound])
             let selectorsText = String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
             let parsedDomains = normalizedDomains(from: domainsText)
             let selectors = splitSelectorList(selectorsText)
             let exceptions = selectors.compactMap { sel -> AdBlockCosmeticException? in
-                let val = sel.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !val.isEmpty else { return nil }
-                return AdBlockCosmeticException(domains: parsedDomains.include, selector: val)
+                guard let valid = parseCosmeticRule(selector: sel, domains: parsedDomains.include) else { return nil }
+                return AdBlockCosmeticException(domains: valid.domains, selector: valid.selector)
             }
             return AdBlockParsedLine(
                 networkRule: nil,
                 isException: false,
                 cosmeticRules: [],
                 cosmeticExceptions: exceptions,
-                isUnsupported: exceptions.isEmpty
+                isUnsupported: exceptions.count != selectors.count || exceptions.isEmpty
             )
         }
 
@@ -2063,7 +2265,7 @@ final class AdBlockManager {
                 isException: false,
                 cosmeticRules: cosmeticRules,
                 cosmeticExceptions: [],
-                isUnsupported: cosmeticRules.count != selectors.count
+                isUnsupported: cosmeticRules.count != selectors.count || cosmeticRules.isEmpty
             )
         }
 
@@ -2073,103 +2275,101 @@ final class AdBlockManager {
             line = String(line.dropFirst(2))
         }
 
-        let parts = line.split(
-            separator: "$",
-            maxSplits: 1,
-            omittingEmptySubsequences: false
-        )
-
-        let rawPattern = String(parts[0])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let splitResult = splitNetworkRuleAndOptions(line)
+        let rawPattern = splitResult.pattern
+        let options = splitResult.options
 
         guard !rawPattern.isEmpty else {
-            return AdBlockParsedLine(
-                networkRule: nil,
-                isException: false,
-                cosmeticRules: [],
-                cosmeticExceptions: [],
-                isUnsupported: true
-            )
+            return unsupportedResult
         }
-
-        let options = parts.count > 1
-            ? String(parts[1]).split(separator: ",").map(String.init)
-            : []
 
         var includeDomains: [String] = []
         var excludeDomains: [String] = []
-        var resourceTypes: [String] = []
-        var loadTypes: [String] = []
+        var includedResourceTypes = Set<String>()
+        var excludedResourceTypes = Set<String>()
+        var loadTypes = Set<String>()
         var isCaseSensitive = false
 
-        let allResourceTypes = ["document", "image", "style-sheet", "script", "font", "raw", "media", "popup"]
+        let allResourceTypes: Set<String> = ["document", "image", "style-sheet", "script", "font", "raw", "media", "popup"]
+
+        func mappedResourceType(_ token: String) -> String? {
+            switch token {
+            case "script":
+                return "script"
+            case "image":
+                return "image"
+            case "stylesheet", "css":
+                return "style-sheet"
+            case "font":
+                return "font"
+            case "media":
+                return "media"
+            case "xmlhttprequest", "xhr", "fetch", "ping", "websocket", "other", "object":
+                return "raw"
+            case "subdocument", "frame", "document", "doc":
+                return "document"
+            case "popup":
+                return "popup"
+            default:
+                return nil
+            }
+        }
 
         for rawOption in options {
-            let option = rawOption.trimmingCharacters(in: .whitespacesAndNewlines)
+            let option = rawOption.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !option.isEmpty else { continue }
 
-            if option.hasPrefix("domain=") {
-                let domainStr = String(option.dropFirst(7))
-                if domainStr.contains("/") {
-                    return AdBlockParsedLine(networkRule: nil, isException: false, cosmeticRules: [], cosmeticExceptions: [], isUnsupported: true)
+            if option.hasPrefix("domain=") || option.hasPrefix("from=") {
+                let prefixLen = option.hasPrefix("domain=") ? 7 : 5
+                let domainStr = String(option.dropFirst(prefixLen))
+                if domainStr.contains("/") || domainStr.contains("*") {
+                    return unsupportedResult
                 }
-                let domains = normalizedDomains(from: domainStr, separator: "|")
-                includeDomains.append(contentsOf: domains.include)
-                excludeDomains.append(contentsOf: domains.exclude)
-            } else if option.hasPrefix("denyallow=") {
-                let domainStr = String(option.dropFirst(10))
-                if domainStr.contains("/") {
-                    return AdBlockParsedLine(networkRule: nil, isException: false, cosmeticRules: [], cosmeticExceptions: [], isUnsupported: true)
+                let parsed = normalizedWebKitDomains(from: domainStr, separator: "|")
+                if parsed.hasInvalidExclude || (parsed.include.isEmpty && parsed.exclude.isEmpty) {
+                    return unsupportedResult
                 }
-                let domains = normalizedDomains(from: domainStr, separator: "|")
-                excludeDomains.append(contentsOf: domains.include)
-            } else if option == "script" {
-                resourceTypes.append("script")
-            } else if option == "image" {
-                resourceTypes.append("image")
-            } else if option == "stylesheet" || option == "css" {
-                resourceTypes.append("style-sheet")
-            } else if option == "font" {
-                resourceTypes.append("font")
-            } else if option == "media" {
-                resourceTypes.append("media")
-            } else if option == "xmlhttprequest" || option == "xhr" || option == "fetch" || option == "ping" {
-                resourceTypes.append("raw")
-            } else if option == "subdocument" || option == "frame" || option == "document" || option == "doc" {
-                resourceTypes.append("document")
-            } else if option == "popup" {
-                resourceTypes.append("popup")
-            } else if option == "third-party" || option == "3p" {
-                loadTypes.append("third-party")
-            } else if option == "~third-party" || option == "1p" || option == "first-party" {
-                loadTypes.append("first-party")
-            } else if option == "~first-party" {
-                loadTypes.append("third-party")
+                includeDomains.append(contentsOf: parsed.include)
+                excludeDomains.append(contentsOf: parsed.exclude)
+            } else if option == "third-party" || option == "3p" || option == "~first-party" || option == "~1p" {
+                loadTypes.insert("third-party")
+            } else if option == "~third-party" || option == "~3p" || option == "1p" || option == "first-party" {
+                loadTypes.insert("first-party")
             } else if option == "match-case" {
                 isCaseSensitive = true
-            } else if option == "important" || option.hasPrefix("redirect") || option.hasPrefix("rewrite") {
+            } else if option == "important" {
                 continue
+            } else if let resourceType = mappedResourceType(option) {
+                includedResourceTypes.insert(resourceType)
             } else if option.hasPrefix("~") {
-                let negatedType = String(option.dropFirst())
-                if negatedType == "image" {
-                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "image" })
-                } else if negatedType == "script" {
-                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "script" })
-                } else if negatedType == "stylesheet" || negatedType == "css" {
-                    resourceTypes.append(contentsOf: allResourceTypes.filter { $0 != "style-sheet" })
+                let negated = String(option.dropFirst())
+                if let resourceType = mappedResourceType(negated) {
+                    excludedResourceTypes.insert(resourceType)
                 } else {
-                    continue
+                    return unsupportedResult
                 }
-            } else if option == "badfilter" ||
-                        option.hasPrefix("removeparam") ||
-                        option.hasPrefix("csp") {
-                return AdBlockParsedLine(
-                    networkRule: nil,
-                    isException: false,
-                    cosmeticRules: [],
-                    cosmeticExceptions: [],
-                    isUnsupported: true
-                )
+            } else {
+                return unsupportedResult
             }
+        }
+
+        if !includeDomains.isEmpty && !excludeDomains.isEmpty {
+            return unsupportedResult
+        }
+
+        if loadTypes.count > 1 {
+            return unsupportedResult
+        }
+
+        var finalResourceTypes: [String] = []
+        if !includedResourceTypes.isEmpty {
+            let remaining = includedResourceTypes.subtracting(excludedResourceTypes)
+            guard !remaining.isEmpty else { return unsupportedResult }
+            finalResourceTypes = Array(remaining).sorted()
+        } else if !excludedResourceTypes.isEmpty {
+            let remaining = allResourceTypes.subtracting(excludedResourceTypes)
+            guard !remaining.isEmpty else { return unsupportedResult }
+            finalResourceTypes = Array(remaining).sorted()
         }
 
         let filter: String
@@ -2180,13 +2380,16 @@ final class AdBlockManager {
         }
 
         guard isValidWebKitPattern(filter) else {
-            return AdBlockParsedLine(
-                networkRule: nil,
-                isException: false,
-                cosmeticRules: [],
-                cosmeticExceptions: [],
-                isUnsupported: true
-            )
+            return unsupportedResult
+        }
+
+        if isException &&
+           includeDomains.isEmpty &&
+           excludeDomains.isEmpty &&
+           finalResourceTypes.isEmpty &&
+           loadTypes.isEmpty &&
+           isOverbroadExceptionPattern(rawPattern: rawPattern, filter: filter) {
+            return unsupportedResult
         }
 
         var trigger: [String: Any] = [
@@ -2195,18 +2398,17 @@ final class AdBlockManager {
         ]
 
         if !includeDomains.isEmpty {
-            trigger["if-domain"] = Array(Set(includeDomains)).sorted()
-        }
-        if !excludeDomains.isEmpty {
-            trigger["unless-domain"] = Array(Set(excludeDomains)).sorted()
+            trigger["if-domain"] = Array(Set(includeDomains)).sorted().map { "*\($0)" }
+        } else if !excludeDomains.isEmpty {
+            trigger["unless-domain"] = Array(Set(excludeDomains)).sorted().map { "*\($0)" }
         }
 
-        if !resourceTypes.isEmpty {
-            trigger["resource-type"] = Array(Set(resourceTypes)).sorted()
+        if !finalResourceTypes.isEmpty {
+            trigger["resource-type"] = finalResourceTypes
         }
 
         if !loadTypes.isEmpty {
-            trigger["load-type"] = Array(Set(loadTypes)).sorted()
+            trigger["load-type"] = Array(loadTypes).sorted()
         }
 
         return AdBlockParsedLine(
@@ -2223,6 +2425,47 @@ final class AdBlockManager {
         )
     }
 
+    private func isBalancedSelector(_ selector: String) -> Bool {
+        var parenDepth = 0
+        var bracketDepth = 0
+        var activeQuote: Character?
+        var escaped = false
+
+        for ch in selector {
+            if escaped {
+                escaped = false
+                continue
+            }
+            if ch == "\\" {
+                escaped = true
+                continue
+            }
+            if let quote = activeQuote {
+                if ch == quote {
+                    activeQuote = nil
+                }
+                continue
+            }
+            if ch == "\"" || ch == "'" {
+                activeQuote = ch
+                continue
+            }
+            if ch == "(" {
+                parenDepth += 1
+            } else if ch == ")" {
+                parenDepth -= 1
+                if parenDepth < 0 { return false }
+            } else if ch == "[" {
+                bracketDepth += 1
+            } else if ch == "]" {
+                bracketDepth -= 1
+                if bracketDepth < 0 { return false }
+            }
+        }
+
+        return !escaped && activeQuote == nil && parenDepth == 0 && bracketDepth == 0
+    }
+
     private func parseCosmeticRule(
         selector: String,
         domains: [String],
@@ -2236,8 +2479,39 @@ final class AdBlockManager {
               !value.contains("{"),
               !value.contains("}"),
               !value.contains("<"),
-              !value.contains(">style") else {
+              !value.contains(">style"),
+              !value.hasPrefix("^"),
+              isBalancedSelector(value) else {
             return nil
+        }
+
+        let lower = value.lowercased()
+        let unsupportedPseudos = [
+            ":has-text(",
+            ":-abp-",
+            ":upward(",
+            ":xpath(",
+            ":matches-css",
+            ":matches-attr(",
+            ":matches-prop(",
+            ":matches-path(",
+            ":style(",
+            ":remove(",
+            ":remove-attr(",
+            ":remove-class(",
+            ":watch-attr(",
+            ":min-text-length(",
+            ":others(",
+            ":contains(",
+            ":if(",
+            ":if-not(",
+            ":shadow(",
+            ":nth-ancestor("
+        ]
+        for token in unsupportedPseudos {
+            if lower.contains(token) {
+                return nil
+            }
         }
 
         return AdBlockCosmeticRule(
@@ -2308,6 +2582,63 @@ final class AdBlockManager {
         return result
     }
 
+    private func isValidWebKitDomain(_ domain: String) -> Bool {
+        guard !domain.isEmpty,
+              domain.count <= 253,
+              !domain.contains(".."),
+              !domain.hasPrefix("-"),
+              !domain.hasSuffix("-"),
+              !domain.hasPrefix("."),
+              !domain.hasSuffix(".") else {
+            return false
+        }
+        for scalar in domain.unicodeScalars {
+            let v = scalar.value
+            let isLowerAlpha = (v >= 97 && v <= 122)
+            let isDigit = (v >= 48 && v <= 57)
+            if !isLowerAlpha && !isDigit && v != 45 && v != 46 {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func normalizedWebKitDomains(
+        from text: String,
+        separator: Character = "|"
+    ) -> (include: [String], exclude: [String], hasInvalidExclude: Bool) {
+        var include: [String] = []
+        var exclude: [String] = []
+        var hasInvalidExclude = false
+
+        for rawValue in text.split(separator: separator) {
+            let trimmed = rawValue
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+
+            guard !trimmed.isEmpty, trimmed != "*" else {
+                continue
+            }
+
+            if trimmed.hasPrefix("~") {
+                let domain = String(trimmed.dropFirst())
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                if isValidWebKitDomain(domain) {
+                    exclude.append(domain)
+                } else {
+                    hasInvalidExclude = true
+                }
+            } else {
+                let domain = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                if isValidWebKitDomain(domain) {
+                    include.append(domain)
+                }
+            }
+        }
+
+        return (include, exclude, hasInvalidExclude)
+    }
+
     private func normalizedDomains(
         from text: String,
         separator: Character = ","
@@ -2316,23 +2647,26 @@ final class AdBlockManager {
         var exclude: [String] = []
 
         for rawValue in text.split(separator: separator) {
-            let value = rawValue
+            let trimmed = rawValue
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
-                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
 
-            guard !value.isEmpty, value != "*" else {
+            guard !trimmed.isEmpty, trimmed != "*" else {
                 continue
             }
 
-            if value.hasPrefix("~") {
-                let domain = String(value.dropFirst())
+            if trimmed.hasPrefix("~") {
+                let domain = String(trimmed.dropFirst())
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
 
                 if !domain.isEmpty {
                     exclude.append(domain)
                 }
             } else {
-                include.append(value)
+                let domain = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                if !domain.isEmpty {
+                    include.append(domain)
+                }
             }
         }
 
@@ -2366,7 +2700,8 @@ final class AdBlockManager {
             p = String(p.dropLast())
         }
 
-        let specialChars: Set<Character> = [".", "/", "?", "=", "-", "_", ":", "+", "$", "{", "}", "[", "]", "(", ")", "|", "\\"]
+        let containsSlash = p.contains("/")
+        let specialChars: Set<Character> = [".", "?", "+", "$", "{", "}", "[", "]", "(", ")", "|", "\\"]
         var escaped = ""
         for char in p {
             if char == "*" {
@@ -2394,7 +2729,12 @@ final class AdBlockManager {
         }
 
         if hasTrailingSeparator {
-            result.append("[^a-zA-Z0-9_.-]")
+            if endsWithEndAnchor || !containsSlash {
+                result.append("[^a-zA-Z0-9_.-]")
+            } else {
+                result.append("([^a-zA-Z0-9_.-].*)?$")
+                return result
+            }
         }
 
         if endsWithEndAnchor {
@@ -2423,8 +2763,28 @@ final class AdBlockManager {
         )
     }
 
+    private func storageDirectoryURL() -> URL {
+        let fm = FileManager.default
+        if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let dir = appSupport.appendingPathComponent("AdBlock", isDirectory: true)
+            if !fm.fileExists(atPath: dir.path) {
+                try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+            return dir
+        }
+        return fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    private func metadataFileURL() -> URL {
+        storageDirectoryURL().appendingPathComponent(metadataFileName)
+    }
+
+    private func diagnosticFileURL() -> URL {
+        storageDirectoryURL().appendingPathComponent(diagnosticFileName)
+    }
+
     private func loadMetadata() -> [String: AdBlockCompiledSourceMetadata] {
-        guard let data = UserDefaults.standard.data(forKey: metadataKey),
+        guard let data = try? Data(contentsOf: metadataFileURL()),
               let metadata = try? JSONDecoder().decode(
                 [String: AdBlockCompiledSourceMetadata].self,
                 from: data
@@ -2442,7 +2802,7 @@ final class AdBlockManager {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: metadataKey)
+        try? data.write(to: metadataFileURL(), options: .atomic)
     }
 
     private func recordUnsupportedRule(
@@ -2482,7 +2842,7 @@ final class AdBlockManager {
     }
 
     private func loadUnsupportedRules() -> [String: [AdBlockUnsupportedRule]] {
-        guard let data = UserDefaults.standard.data(forKey: diagnosticKey),
+        guard let data = try? Data(contentsOf: diagnosticFileURL()),
               let items = try? JSONDecoder().decode(
                 [String: [AdBlockUnsupportedRule]].self,
                 from: data
@@ -2500,7 +2860,7 @@ final class AdBlockManager {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: diagnosticKey)
+        try? data.write(to: diagnosticFileURL(), options: .atomic)
     }
 
     func cleanTemporaryArtifacts() {
@@ -2534,7 +2894,7 @@ final class AdBlockManager {
             inMemoryRuleCount += ruleLists.count
         }
 
-        var scriptCount = 0
+        var scriptCount = cosmeticExceptionScriptsBySource.count
         for scripts in cosmeticScriptsBySource.values {
             scriptCount += scripts.count
         }
@@ -2575,7 +2935,7 @@ final class AdBlockManager {
                 inMemoryRuleCount += ruleLists.count
             }
 
-            var scriptCount = 0
+            var scriptCount = self.cosmeticExceptionScriptsBySource.count
             for scripts in self.cosmeticScriptsBySource.values {
                 scriptCount += scripts.count
             }
