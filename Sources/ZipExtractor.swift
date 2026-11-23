@@ -344,10 +344,7 @@ enum ZipExtractor {
         guard Int(stream.total_out) <= maxOutputBytes else {
             return nil
         }
-
         output.count = Int(stream.total_out)
         return output
-    }
-}
     }
 }
