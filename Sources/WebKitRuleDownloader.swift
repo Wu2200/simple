@@ -68,6 +68,11 @@ final class WebKitRuleDownloader: NSObject, WKNavigationDelegate, WKDownloadDele
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         if let httpResponse = navigationResponse.response as? HTTPURLResponse {
+            if !(200...299).contains(httpResponse.statusCode) {
+                decisionHandler(.cancel)
+                finish(with: .failure(NSError(domain: "WebKitRuleDownloader", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "服务器返回 HTTP \(httpResponse.statusCode)"])))
+                return
+            }
             let disposition = (httpResponse.allHeaderFields["Content-Disposition"] as? String ?? httpResponse.allHeaderFields["content-disposition"] as? String ?? "").lowercased()
             if disposition.contains("attachment") || !navigationResponse.canShowMIMEType {
                 decisionHandler(.download)
@@ -86,11 +91,30 @@ final class WebKitRuleDownloader: NSObject, WKNavigationDelegate, WKDownloadDele
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        webView.evaluateJavaScript("document.body.innerText || document.documentElement.innerText") { [weak self] result, error in
+        let js = """
+        (function() {
+            var ct = (document.contentType || '').toLowerCase();
+            var pre = document.querySelector('pre');
+            if ((ct.indexOf('html') !== -1 || ct.indexOf('xml') !== -1) && (!pre || document.body.children.length > 1)) {
+                return { isHtml: true, text: '' };
+            }
+            var text = (pre ? pre.textContent : '') || (document.body ? document.body.innerText : '') || (document.documentElement ? document.documentElement.innerText : '') || '';
+            return { isHtml: false, text: text };
+        })();
+        """
+        webView.evaluateJavaScript(js) { [weak self] result, error in
             guard let self = self else { return }
-            if let text = result as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.finish(with: .success(text))
-            } else if let error = error {
+            if let dict = result as? [String: Any] {
+                if dict["isHtml"] as? Bool == true {
+                    self.finish(with: .failure(NSError(domain: "WebKitRuleDownloader", code: -3, userInfo: [NSLocalizedDescriptionKey: "订阅地址返回了网页(HTML)而非规则文本"])))
+                    return
+                }
+                if let text = dict["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.finish(with: .success(text))
+                    return
+                }
+            }
+            if let error = error {
                 self.finish(with: .failure(error))
             } else {
                 self.finish(with: .failure(NSError(domain: "WebKitRuleDownloader", code: -1, userInfo: [NSLocalizedDescriptionKey: "规则内容为空"])))
