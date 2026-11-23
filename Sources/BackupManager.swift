@@ -211,34 +211,52 @@ final class BackupManager {
         }
     }
 
+    func encryptBackupPackage(_ package: BrowserBackupPackage, password: String) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let plainData = try encoder.encode(package)
+
+        let salt = SymmetricKey(size: .bits128).withUnsafeBytes { Data($0) }
+        let iterations = Self.defaultPBKDF2Iterations
+        let key = Self.deriveKey(password: password, salt: salt, iterations: iterations)
+        let sealed = try AES.GCM.seal(plainData, using: key)
+
+        let envelope = EncryptedBackupEnvelope(
+            format: Self.encryptedFormatIdentifier,
+            version: 1,
+            iterations: iterations,
+            salt: salt,
+            nonce: Data(sealed.nonce),
+            ciphertext: sealed.ciphertext,
+            tag: sealed.tag
+        )
+
+        let envelopeEncoder = JSONEncoder()
+        envelopeEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try envelopeEncoder.encode(envelope)
+    }
+
+    func decryptBackupEnvelope(_ envelope: EncryptedBackupEnvelope, password: String) throws -> BrowserBackupPackage {
+        guard envelope.iterations >= 1000 && envelope.iterations <= 500000 else {
+            throw NSError(domain: "BackupManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "加密备份参数异常"])
+        }
+        let key = Self.deriveKey(password: password, salt: envelope.salt, iterations: envelope.iterations)
+        let nonce = try AES.GCM.Nonce(data: envelope.nonce)
+        let sealed = try AES.GCM.SealedBox(nonce: nonce, ciphertext: envelope.ciphertext, tag: envelope.tag)
+        let plainData = try AES.GCM.open(sealed, using: key)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(BrowserBackupPackage.self, from: plainData)
+    }
+
     func exportEncryptedBackupFile(password: String, completion: @escaping (Result<URL, Error>) -> Void) {
         let appName = currentApplicationName()
         createBackupPackage { package in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let encoder = JSONEncoder()
-                    encoder.outputFormatting = [.sortedKeys]
-                    encoder.dateEncodingStrategy = .iso8601
-                    let plainData = try encoder.encode(package)
-
-                    let salt = SymmetricKey(size: .bits128).withUnsafeBytes { Data($0) }
-                    let iterations = Self.defaultPBKDF2Iterations
-                    let key = Self.deriveKey(password: password, salt: salt, iterations: iterations)
-                    let sealed = try AES.GCM.seal(plainData, using: key)
-
-                    let envelope = EncryptedBackupEnvelope(
-                        format: Self.encryptedFormatIdentifier,
-                        version: 1,
-                        iterations: iterations,
-                        salt: salt,
-                        nonce: Data(sealed.nonce),
-                        ciphertext: sealed.ciphertext,
-                        tag: sealed.tag
-                    )
-
-                    let envelopeEncoder = JSONEncoder()
-                    envelopeEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                    let outputData = try envelopeEncoder.encode(envelope)
+                    let outputData = try self.encryptBackupPackage(package, password: password)
 
                     let df = DateFormatter()
                     df.dateFormat = "yyyyMMdd_HHmmss"
@@ -273,17 +291,7 @@ final class BackupManager {
     func restore(fromEncryptedEnvelope envelope: EncryptedBackupEnvelope, password: String, completion: @escaping (Result<Void, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                guard envelope.iterations >= 1000 && envelope.iterations <= 500000 else {
-                    throw NSError(domain: "BackupManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "加密备份参数异常"])
-                }
-                let key = Self.deriveKey(password: password, salt: envelope.salt, iterations: envelope.iterations)
-                let nonce = try AES.GCM.Nonce(data: envelope.nonce)
-                let sealed = try AES.GCM.SealedBox(nonce: nonce, ciphertext: envelope.ciphertext, tag: envelope.tag)
-                let plainData = try AES.GCM.open(sealed, using: key)
-
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                let package = try decoder.decode(BrowserBackupPackage.self, from: plainData)
+                let package = try self.decryptBackupEnvelope(envelope, password: password)
                 self.applyBackupPackage(package, completion: completion)
             } catch CryptoKitError.authenticationFailure {
                 DispatchQueue.main.async {
@@ -329,6 +337,7 @@ final class BackupManager {
 
         UserScriptStore.shared.saveScripts(package.userScripts)
 
+        ScriptDataStore.shared.clearAllScriptData()
         for (scriptId, jsonStr) in package.scriptData {
             if let data = jsonStr.data(using: .utf8),
                let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -338,13 +347,11 @@ final class BackupManager {
             }
         }
 
-        if let dataUA = try? JSONEncoder().encode(package.customUserAgents) {
-            UserDefaults.standard.set(dataUA, forKey: "browser_ua_custom_items_v5")
-        }
+        UserAgentStore.shared.restoreCustomItems(package.customUserAgents)
 
         AdBlockManager.shared.saveSubscriptions(package.adBlockSubscriptions)
-        UserDefaults.standard.set(package.customAdBlockRules, forKey: "adblock_custom_rules_v2")
-        UserDefaults.standard.set(package.lockedCookieDomains, forKey: "locked_cookie_domains_v2")
+        AdBlockManager.shared.restoreCustomRulesFromBackup(package.customAdBlockRules)
+        CookieLockStore.shared.restoreLockedDomains(package.lockedCookieDomains)
 
         if let engine = SearchEngine(rawValue: package.searchEngine) {
             SearchEngineStore.shared.currentEngine = engine
@@ -353,8 +360,6 @@ final class BackupManager {
         if let trustedHosts = package.trustedInsecureHosts {
             CertificateTrustStore.shared.restoreTrustedHosts(trustedHosts)
         }
-
-        let cookiesToRestore = package.cookies?.compactMap { $0.toHTTPCookie() } ?? []
         let cookieStore = WKWebsiteDataStore.default().httpCookieStore
         let group = DispatchGroup()
 
