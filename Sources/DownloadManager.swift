@@ -48,7 +48,15 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
     private(set) var totalBytes: Int64 = 0
     private(set) var retryCount: Int = 0
     private let maxInitialRetries: Int = 5
+    private let maxConsecutiveFailuresAfterData: Int = 8
+    private let maxTotalRetries: Int = 30
+    private var consecutiveFailureCount: Int = 0
+    private var totalRetryCount: Int = 0
     private var hasReceivedAnyData: Bool = false
+    private var hasReceivedNewDataInAttempt: Bool = false
+    private var expectedETag: String?
+    private var hasResetRangeMismatch: Bool = false
+    private var pendingRetryWorkItem: DispatchWorkItem?
     private var fileHandle: FileHandle?
     private var dataTask: URLSessionDataTask?
     private var session: URLSession?
@@ -88,6 +96,9 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
 
     private func resumeDownload() {
         guard !isCancelled, let session = session else { return }
+        pendingRetryWorkItem?.cancel()
+        pendingRetryWorkItem = nil
+        hasReceivedNewDataInAttempt = false
 
         let fm = FileManager.default
         var existingSize: Int64 = 0
@@ -100,7 +111,7 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
 
         var request = URLRequest(url: originalURL)
         request.timeoutInterval = 60.0
-        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
         request.setValue("*/*", forHTTPHeaderField: "Accept")
         request.setValue("zh-CN,zh-Hans;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
@@ -108,6 +119,9 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
 
         if existingSize > 0 {
             request.setValue("bytes=\(existingSize)-", forHTTPHeaderField: "Range")
+            if let etag = expectedETag, !etag.isEmpty {
+                request.setValue(etag, forHTTPHeaderField: "If-Range")
+            }
         }
 
         let task = session.dataTask(with: request)
@@ -117,6 +131,8 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
 
     func cancel() {
         isCancelled = true
+        pendingRetryWorkItem?.cancel()
+        pendingRetryWorkItem = nil
         dataTask?.cancel()
         dataTask = nil
         closeFile()
@@ -134,13 +150,27 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
     func retryManually() {
         guard !isCancelled else { return }
         retryCount = 0
+        consecutiveFailureCount = 0
+        totalRetryCount = 0
+        hasResetRangeMismatch = false
+        pendingRetryWorkItem?.cancel()
+        pendingRetryWorkItem = nil
         dataTask?.cancel()
         closeFile()
         resumeDownload()
     }
 
+    private func parseContentRangeStart(from header: String?) -> Int64? {
+        guard let header = header?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        let lower = header.lowercased()
+        guard lower.hasPrefix("bytes ") else { return nil }
+        let rangePart = lower.dropFirst(6)
+        guard let dashIndex = rangePart.firstIndex(of: "-") else { return nil }
+        return Int64(rangePart[..<dashIndex])
+    }
+
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard !isCancelled else {
+        guard !isCancelled, dataTask == self.dataTask else {
             completionHandler(.cancel)
             return
         }
@@ -151,8 +181,34 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
         }
 
         let fm = FileManager.default
+        let responseETag = http.value(forHTTPHeaderField: "ETag")?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if http.statusCode == 206 {
+            let etagChanged = (expectedETag != nil && responseETag != nil && expectedETag != responseETag)
+            let rangeStart = parseContentRangeStart(from: http.value(forHTTPHeaderField: "Content-Range"))
+            let offsetMismatch = (rangeStart != nil && rangeStart != self.writtenBytes)
+
+            if etagChanged || offsetMismatch {
+                completionHandler(.cancel)
+                closeFile()
+                try? fm.removeItem(at: tempURL)
+                fm.createFile(atPath: tempURL.path, contents: nil)
+                self.writtenBytes = 0
+                self.totalBytes = 0
+                self.expectedETag = nil
+                if !hasResetRangeMismatch {
+                    hasResetRangeMismatch = true
+                    resumeDownload()
+                } else {
+                    let err = NSError(domain: "HTTPError", code: 206, userInfo: [NSLocalizedDescriptionKey: "续传校验失败，服务器文件已变更"])
+                    handleFailure(error: err, allowRetry: false)
+                }
+                return
+            }
+
+            if let curETag = responseETag, !curETag.isEmpty {
+                expectedETag = curETag
+            }
             if let handle = try? FileHandle(forWritingTo: tempURL) {
                 _ = try? handle.seekToEnd()
                 self.fileHandle = handle
@@ -160,6 +216,7 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
             if response.expectedContentLength > 0 {
                 self.totalBytes = self.writtenBytes + response.expectedContentLength
             }
+            hasResetRangeMismatch = false
             completionHandler(.allow)
             return
         }
@@ -169,8 +226,12 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
             try? fm.removeItem(at: tempURL)
             fm.createFile(atPath: tempURL.path, contents: nil)
             self.writtenBytes = 0
+            self.expectedETag = responseETag
+            self.hasResetRangeMismatch = false
             if response.expectedContentLength > 0 {
                 self.totalBytes = response.expectedContentLength
+            } else {
+                self.totalBytes = 0
             }
             self.fileHandle = try? FileHandle(forWritingTo: tempURL)
             completionHandler(.allow)
@@ -178,8 +239,8 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
         }
 
         if http.statusCode == 416 {
+            completionHandler(.cancel)
             if self.totalBytes > 0 && self.writtenBytes >= self.totalBytes {
-                completionHandler(.cancel)
                 finishSuccess()
                 return
             }
@@ -187,33 +248,45 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
             try? fm.removeItem(at: tempURL)
             fm.createFile(atPath: tempURL.path, contents: nil)
             self.writtenBytes = 0
-            self.fileHandle = try? FileHandle(forWritingTo: tempURL)
-            completionHandler(.allow)
+            self.expectedETag = nil
+            if !hasResetRangeMismatch {
+                hasResetRangeMismatch = true
+                resumeDownload()
+            } else {
+                let err = NSError(domain: "HTTPError", code: 416, userInfo: [NSLocalizedDescriptionKey: "服务器拒绝续传范围请求 (416)"])
+                handleFailure(error: err, allowRetry: false)
+            }
             return
         }
 
         completionHandler(.cancel)
+        let isPermanentHTTP = (400...499).contains(http.statusCode) && http.statusCode != 408 && http.statusCode != 429
         let err = NSError(domain: "HTTPError", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP状态码 \(http.statusCode)"])
-        handleFailure(error: err)
+        handleFailure(error: err, allowRetry: !isPermanentHTTP)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard !isCancelled, let handle = fileHandle else { return }
+        guard !isCancelled, dataTask == self.dataTask, let handle = fileHandle else { return }
         do {
             try handle.write(contentsOf: data)
             writtenBytes += Int64(data.count)
-            hasReceivedAnyData = true
+            if !data.isEmpty {
+                hasReceivedAnyData = true
+                hasReceivedNewDataInAttempt = true
+                consecutiveFailureCount = 0
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.onProgress?(self)
             }
         } catch {
-            handleFailure(error: error)
+            dataTask.cancel()
+            handleFailure(error: error, allowRetry: false)
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard !isCancelled else { return }
+        guard !isCancelled, task == self.dataTask else { return }
         closeFile()
 
         if let error = error {
@@ -221,7 +294,20 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
             if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
                 return
             }
-            handleFailure(error: error)
+            let nonRetryableCodes: Set<Int> = [
+                NSURLErrorBadURL,
+                NSURLErrorUnsupportedURL,
+                NSURLErrorAppTransportSecurityRequiresSecureConnection,
+                NSURLErrorServerCertificateUntrusted,
+                NSURLErrorServerCertificateHasBadDate,
+                NSURLErrorServerCertificateNotYetValid,
+                NSURLErrorServerCertificateHasUnknownRoot,
+                NSURLErrorClientCertificateRejected,
+                NSURLErrorCannotOpenFile,
+                NSURLErrorNoPermissionsToReadFile
+            ]
+            let allowRetry = !(ns.domain == NSURLErrorDomain && nonRetryableCodes.contains(ns.code))
+            handleFailure(error: error, allowRetry: allowRetry)
             return
         }
 
@@ -254,19 +340,29 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
                 self.onFinished?(self, finalURL.lastPathComponent)
             }
         } catch {
-            handleFailure(error: error)
+            handleFailure(error: error, allowRetry: false)
         }
     }
 
-    private func handleFailure(error: Error) {
+    private func handleFailure(error: Error, allowRetry: Bool = true) {
         guard !isCancelled else { return }
         closeFile()
 
-        let canRetry = hasReceivedAnyData ? true : (retryCount < maxInitialRetries)
+        if !hasReceivedNewDataInAttempt {
+            consecutiveFailureCount += 1
+        }
+        totalRetryCount += 1
+        retryCount = consecutiveFailureCount
+
+        let limit = hasReceivedAnyData ? maxConsecutiveFailuresAfterData : maxInitialRetries
+        let canRetry = allowRetry && consecutiveFailureCount <= limit && totalRetryCount <= maxTotalRetries
 
         if canRetry {
-            retryCount += 1
-            let retryMsg = hasReceivedAnyData ? "网络波动，正在重试 (\(retryCount))" : "连接失败，正在重试 \(retryCount)/\(maxInitialRetries)"
+            let displayLimit = hasReceivedAnyData ? maxConsecutiveFailuresAfterData : maxInitialRetries
+            let displayCount = min(max(consecutiveFailureCount, 1), displayLimit)
+            let retryMsg = hasReceivedAnyData
+                ? "网络波动，正在重试 (\(displayCount)/\(displayLimit))"
+                : "连接失败，正在重试 \(displayCount)/\(displayLimit)"
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 NotificationCenter.default.post(
@@ -282,10 +378,12 @@ final class StreamDownloadTask: NSObject, URLSessionDataDelegate {
                     ]
                 )
             }
-            let delay: Double = min(Double(retryCount) * 1.5, 4.0)
-            DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+            let delay: Double = min(Double(max(consecutiveFailureCount, 1)) * 1.5, 4.0)
+            let workItem = DispatchWorkItem { [weak self] in
                 self?.resumeDownload()
             }
+            pendingRetryWorkItem = workItem
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: workItem)
         } else {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
