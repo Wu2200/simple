@@ -220,4 +220,73 @@ final class SimpleBrowserTests: XCTestCase {
         envelope.ciphertext[0] ^= 0xff
         XCTAssertThrowsError(try BackupManager.shared.decryptBackupEnvelope(envelope, password: "secret-password"))
     }
+
+    func testTabItemForwardFromHomeAndExplicitLoadReset() {
+        let tab = TabItem()
+        XCTAssertTrue(tab.isOnHome)
+        XCTAssertFalse(tab.canNavigateForwardFromHome)
+
+        let pageURL = URL(string: "https://example.com/article")!
+        tab.prepareForExplicitLoad(url: pageURL)
+        tab.title = "Example Article"
+        XCTAssertFalse(tab.isOnHome)
+        XCTAssertFalse(tab.canNavigateForwardFromHome)
+
+        tab.navigateToHome()
+        XCTAssertTrue(tab.isOnHome)
+        XCTAssertEqual(tab.title, "主页")
+        XCTAssertNil(tab.snapshot)
+        XCTAssertTrue(tab.canNavigateForwardFromHome)
+
+        tab.navigateToHome()
+        XCTAssertTrue(tab.isOnHome)
+        XCTAssertTrue(tab.canNavigateForwardFromHome)
+
+        let forwardResult = tab.prepareForwardNavigationFromHome()
+        XCTAssertEqual(forwardResult, .needsLoad(pageURL))
+        XCTAssertFalse(tab.isOnHome)
+        XCTAssertEqual(tab.url, pageURL)
+        XCTAssertEqual(tab.title, "Example Article")
+        XCTAssertFalse(tab.canNavigateForwardFromHome)
+
+        tab.navigateToHome()
+        XCTAssertTrue(tab.canNavigateForwardFromHome)
+
+        let nextURL = URL(string: "https://example.org/new")!
+        tab.prepareForExplicitLoad(url: nextURL)
+        XCTAssertFalse(tab.isOnHome)
+        XCTAssertEqual(tab.url, nextURL)
+        XCTAssertFalse(tab.canNavigateForwardFromHome)
+    }
+
+    func testBrowserViewControllerBackToHomeAndForwardAgain() {
+        let vc = BrowserViewController()
+        vc.loadViewIfNeeded()
+
+        vc.showHomeUI()
+        XCTAssertGreaterThan(vc.homeView.alpha, 0.5)
+        XCTAssertFalse(vc.backButton.isEnabled)
+        XCTAssertFalse(vc.forwardButton.isEnabled)
+
+        let pageURL = URL(string: "https://example.com/home-test")!
+        vc.load(url: pageURL)
+        XCTAssertLessThan(vc.homeView.alpha, 0.5)
+        XCTAssertTrue(vc.backButton.isEnabled)
+        XCTAssertFalse(vc.forwardButton.isEnabled)
+        XCTAssertEqual(vc.activeTab.url, pageURL)
+
+        vc.goBack()
+        XCTAssertGreaterThan(vc.homeView.alpha, 0.5)
+        XCTAssertTrue(vc.activeTab.isOnHome)
+        XCTAssertEqual(vc.activeTab.title, "主页")
+        XCTAssertFalse(vc.backButton.isEnabled)
+        XCTAssertTrue(vc.forwardButton.isEnabled)
+
+        vc.goForward()
+        XCTAssertLessThan(vc.homeView.alpha, 0.5)
+        XCTAssertFalse(vc.activeTab.isOnHome)
+        XCTAssertEqual(vc.activeTab.url, pageURL)
+        XCTAssertTrue(vc.backButton.isEnabled)
+        XCTAssertFalse(vc.forwardButton.isEnabled)
+    }
 }
