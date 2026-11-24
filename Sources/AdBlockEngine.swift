@@ -613,11 +613,16 @@ final class AdBlockManager {
     }
 
     private func applyRulesToAttachedWebViews() {
-        DispatchQueue.main.async { [weak self] in
+        let applyBlock = { [weak self] in
             guard let self = self else { return }
             for webView in self.attachedWebViews.allObjects {
                 self.applyRules(to: webView)
             }
+        }
+        if Thread.isMainThread {
+            applyBlock()
+        } else {
+            DispatchQueue.main.async(execute: applyBlock)
         }
     }
 
@@ -999,8 +1004,8 @@ final class AdBlockManager {
                 return
             }
 
-            for (_, metadata) in metadataCopy {
-                self.restoreCosmeticScripts(metadata: metadata)
+            let preparedCosmetic = metadataCopy.values.map {
+                self.prepareCosmeticScripts(metadata: $0)
             }
 
             let overallGroup = DispatchGroup()
@@ -1035,6 +1040,7 @@ final class AdBlockManager {
                 self.stateLock.unlock()
 
                 DispatchQueue.main.async {
+                    self.installPreparedCosmeticScripts(preparedCosmetic)
                     self.applyRulesToAttachedWebViews()
                     self.markReadyOnMainThread()
                 }
@@ -1174,8 +1180,15 @@ final class AdBlockManager {
             saveUnsupportedRules(unsuppCopy)
 
             parseQueue.async { [weak self] in
-                self?.restoreCosmeticScripts(metadata: metadata)
-                DispatchQueue.main.async {
+                guard let self = self else {
+                    DispatchQueue.main.async {
+                        completion?(false, nil)
+                    }
+                    return
+                }
+                let prepared = self.prepareCosmeticScripts(metadata: metadata)
+                DispatchQueue.main.async { [weak self] in
+                    self?.installPreparedCosmeticScripts([prepared])
                     self?.setUpdateStatus(sourceId: sourceId, status: nil)
                     self?.applyRulesToAttachedWebViews()
                     self?.cleanTemporaryArtifacts()
@@ -1245,8 +1258,15 @@ final class AdBlockManager {
             self.saveUnsupportedRules(unsuppCopy)
 
             self.parseQueue.async { [weak self] in
-                self?.restoreCosmeticScripts(metadata: metadata)
-                DispatchQueue.main.async {
+                guard let self = self else {
+                    DispatchQueue.main.async {
+                        completion?(false, nil)
+                    }
+                    return
+                }
+                let prepared = self.prepareCosmeticScripts(metadata: metadata)
+                DispatchQueue.main.async { [weak self] in
+                    self?.installPreparedCosmeticScripts([prepared])
                     self?.setUpdateStatus(sourceId: sourceId, status: nil)
                     self?.applyRulesToAttachedWebViews()
                     self?.cleanTemporaryArtifacts()
@@ -1670,207 +1690,262 @@ final class AdBlockManager {
         """
     }
 
-    private func restoreCosmeticScripts(metadata: AdBlockCompiledSourceMetadata) {
+    struct PreparedCosmeticScripts {
+        let sourceId: String
+        let contentHash: String?
+        let ruleListIdentifiers: [String]
+        let exceptionSource: String?
+        let scriptSources: [String]
+        let totalChars: Int
+    }
+
+    func prepareCosmeticScripts(metadata: AdBlockCompiledSourceMetadata) -> PreparedCosmeticScripts {
         guard !metadata.cosmeticRules.isEmpty || !metadata.cosmeticExceptions.isEmpty else {
-            stateLock.lock()
-            cosmeticExceptionScriptsBySource.removeValue(forKey: metadata.sourceId)
-            cosmeticScriptsBySource.removeValue(forKey: metadata.sourceId)
-            cosmeticScriptCharsBySource.removeValue(forKey: metadata.sourceId)
-            stateLock.unlock()
-            return
+            return PreparedCosmeticScripts(
+                sourceId: metadata.sourceId,
+                contentHash: metadata.contentHash,
+                ruleListIdentifiers: metadata.ruleListIdentifiers,
+                exceptionSource: nil,
+                scriptSources: [],
+                totalChars: 0
+            )
         }
 
         let safeSourceId = metadata.sourceId.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "")
         var totalChars = 0
-        var exceptionScript: WKUserScript?
+        var exceptionSource: String?
 
         if !metadata.cosmeticExceptions.isEmpty {
-            var exceptionsPayload: [[String: Any]] = []
-            for ex in metadata.cosmeticExceptions {
-                exceptionsPayload.append([
-                    "s": ex.selector,
-                    "d": ex.domains
-                ])
-            }
-            let exceptionsData = (try? JSONSerialization.data(withJSONObject: exceptionsPayload)) ?? Data()
-            let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
-            let exceptionSource = """
-            (function() {
-                var core = window.__sb_ab_core__;
-                var token = '__sb_ab_ex_\(safeSourceId)__';
-                if (!core || window[token]) {
-                    return;
+            autoreleasepool {
+                var exceptionsPayload: [[String: Any]] = []
+                for ex in metadata.cosmeticExceptions {
+                    exceptionsPayload.append([
+                        "s": ex.selector,
+                        "d": ex.domains
+                    ])
                 }
-                window[token] = true;
-                core.exceptions = core.exceptions.concat(\(exceptionsJson));
-            })();
-            """
-            totalChars += exceptionSource.count
-            exceptionScript = WKUserScript(
-                source: exceptionSource,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            )
+                let exceptionsData = (try? JSONSerialization.data(withJSONObject: exceptionsPayload)) ?? Data()
+                let exceptionsJson = String(data: exceptionsData, encoding: .utf8) ?? "[]"
+                let source = """
+                (function() {
+                    var core = window.__sb_ab_core__;
+                    var token = '__sb_ab_ex_\(safeSourceId)__';
+                    if (!core || window[token]) {
+                        return;
+                    }
+                    window[token] = true;
+                    core.exceptions = core.exceptions.concat(\(exceptionsJson));
+                })();
+                """
+                totalChars += source.count
+                exceptionSource = source
+            }
         }
 
         let batches = cosmeticRuleBatches(metadata.cosmeticRules)
-        var scripts: [WKUserScript] = []
+        var scriptSources: [String] = []
 
         for (index, rules) in batches.enumerated() {
-            var globalList: [String] = []
-            var withExcludes: [[String: Any]] = []
-            var domainMap: [String: [String]] = [:]
-            var domainWithExcludes: [String: [[String: Any]]] = [:]
+            autoreleasepool {
+                var globalList: [String] = []
+                var withExcludes: [[String: Any]] = []
+                var domainMap: [String: [String]] = [:]
+                var domainWithExcludes: [String: [[String: Any]]] = [:]
 
-            for rule in rules {
-                if rule.domains.isEmpty {
-                    if rule.excludedDomains.isEmpty {
-                        globalList.append(rule.selector)
+                for rule in rules {
+                    if rule.domains.isEmpty {
+                        if rule.excludedDomains.isEmpty {
+                            globalList.append(rule.selector)
+                        } else {
+                            withExcludes.append([
+                                "s": rule.selector,
+                                "x": rule.excludedDomains
+                            ])
+                        }
+                    } else if rule.excludedDomains.isEmpty {
+                        for d in rule.domains {
+                            var existing = domainMap[d] ?? []
+                            existing.append(rule.selector)
+                            domainMap[d] = existing
+                        }
                     } else {
-                        withExcludes.append([
-                            "s": rule.selector,
-                            "x": rule.excludedDomains
-                        ])
-                    }
-                } else if rule.excludedDomains.isEmpty {
-                    for d in rule.domains {
-                        var existing = domainMap[d] ?? []
-                        existing.append(rule.selector)
-                        domainMap[d] = existing
-                    }
-                } else {
-                    for d in rule.domains {
-                        var existing = domainWithExcludes[d] ?? []
-                        existing.append([
-                            "s": rule.selector,
-                            "x": rule.excludedDomains
-                        ])
-                        domainWithExcludes[d] = existing
+                        for d in rule.domains {
+                            var existing = domainWithExcludes[d] ?? []
+                            existing.append([
+                                "s": rule.selector,
+                                "x": rule.excludedDomains
+                            ])
+                            domainWithExcludes[d] = existing
+                        }
                     }
                 }
-            }
 
-            let gData = (try? JSONSerialization.data(withJSONObject: globalList)) ?? Data()
-            let gJson = String(data: gData, encoding: .utf8) ?? "[]"
+                let gData = (try? JSONSerialization.data(withJSONObject: globalList)) ?? Data()
+                let gJson = String(data: gData, encoding: .utf8) ?? "[]"
 
-            let eData = (try? JSONSerialization.data(withJSONObject: withExcludes)) ?? Data()
-            let eJson = String(data: eData, encoding: .utf8) ?? "[]"
+                let eData = (try? JSONSerialization.data(withJSONObject: withExcludes)) ?? Data()
+                let eJson = String(data: eData, encoding: .utf8) ?? "[]"
 
-            let dData = (try? JSONSerialization.data(withJSONObject: domainMap)) ?? Data()
-            let dJson = String(data: dData, encoding: .utf8) ?? "{}"
+                let dData = (try? JSONSerialization.data(withJSONObject: domainMap)) ?? Data()
+                let dJson = String(data: dData, encoding: .utf8) ?? "{}"
 
-            let deData = (try? JSONSerialization.data(withJSONObject: domainWithExcludes)) ?? Data()
-            let deJson = String(data: deData, encoding: .utf8) ?? "{}"
+                let deData = (try? JSONSerialization.data(withJSONObject: domainWithExcludes)) ?? Data()
+                let deJson = String(data: deData, encoding: .utf8) ?? "{}"
 
-            let batchIdentifier = "\(safeSourceId)_\(index)"
+                let batchIdentifier = "\(safeSourceId)_\(index)"
 
-            let source = """
-            (function() {
-                var core = window.__sb_ab_core__;
-                var token = '__sb_ab_\(batchIdentifier)__';
-                if (!core || window[token]) {
-                    return;
-                }
-                window[token] = true;
-
+                let source = """
                 (function() {
-                    var g = \(gJson);
-                    var e = \(eJson);
-                    var d = \(dJson);
-                    var de = \(deJson);
-
-                    var targetSelectors = [];
-                    function tryAdd(sel) {
-                        if (!sel || core.seen[sel]) {
-                            return;
-                        }
-                        core.seen[sel] = true;
-                        if (!core.isWhitelisted(sel)) {
-                            targetSelectors.push(sel);
-                        }
+                    var core = window.__sb_ab_core__;
+                    var token = '__sb_ab_\(batchIdentifier)__';
+                    if (!core || window[token]) {
+                        return;
                     }
+                    window[token] = true;
 
-                    function isHostExcluded(excludedList) {
-                        if (!excludedList || excludedList.length === 0) {
+                    (function() {
+                        var g = \(gJson);
+                        var e = \(eJson);
+                        var d = \(dJson);
+                        var de = \(deJson);
+
+                        var targetSelectors = [];
+                        function tryAdd(sel) {
+                            if (!sel || core.seen[sel]) {
+                                return;
+                            }
+                            core.seen[sel] = true;
+                            if (!core.isWhitelisted(sel)) {
+                                targetSelectors.push(sel);
+                            }
+                        }
+
+                        function isHostExcluded(excludedList) {
+                            if (!excludedList || excludedList.length === 0) {
+                                return false;
+                            }
+                            for (var j = 0; j < excludedList.length; j++) {
+                                var ex = excludedList[j];
+                                if (core.host === ex || core.host.endsWith('.' + ex)) {
+                                    return true;
+                                }
+                            }
                             return false;
                         }
-                        for (var j = 0; j < excludedList.length; j++) {
-                            var ex = excludedList[j];
-                            if (core.host === ex || core.host.endsWith('.' + ex)) {
-                                return true;
+
+                        for (var i = 0; i < g.length; i++) {
+                            tryAdd(g[i]);
+                        }
+
+                        for (var i = 0; i < e.length; i++) {
+                            var item = e[i];
+                            if (!isHostExcluded(item.x)) {
+                                tryAdd(item.s);
                             }
                         }
-                        return false;
-                    }
 
-                    for (var i = 0; i < g.length; i++) {
-                        tryAdd(g[i]);
-                    }
-
-                    for (var i = 0; i < e.length; i++) {
-                        var item = e[i];
-                        if (!isHostExcluded(item.x)) {
-                            tryAdd(item.s);
-                        }
-                    }
-
-                    for (var i = 0; i < core.domainList.length; i++) {
-                        var dm = core.domainList[i];
-                        var list = d[dm];
-                        if (list && list.length > 0) {
-                            for (var j = 0; j < list.length; j++) {
-                                tryAdd(list[j]);
+                        for (var i = 0; i < core.domainList.length; i++) {
+                            var dm = core.domainList[i];
+                            var list = d[dm];
+                            if (list && list.length > 0) {
+                                for (var j = 0; j < list.length; j++) {
+                                    tryAdd(list[j]);
+                                }
                             }
-                        }
-                        var exList = de[dm];
-                        if (exList && exList.length > 0) {
-                            for (var j = 0; j < exList.length; j++) {
-                                var exItem = exList[j];
-                                if (!isHostExcluded(exItem.x)) {
-                                    tryAdd(exItem.s);
+                            var exList = de[dm];
+                            if (exList && exList.length > 0) {
+                                for (var j = 0; j < exList.length; j++) {
+                                    var exItem = exList[j];
+                                    if (!isHostExcluded(exItem.x)) {
+                                        tryAdd(exItem.s);
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    if (targetSelectors.length === 0) {
-                        return;
-                    }
-
-                    var cssBatch = [];
-                    for (var i = 0; i < targetSelectors.length; i++) {
-                        var sel = targetSelectors[i];
-                        if (sel.indexOf(':has(') !== -1 && !core.supportsHas) {
-                            core.addFallback(sel);
-                        } else {
-                            cssBatch.push(sel);
+                        if (targetSelectors.length === 0) {
+                            return;
                         }
-                    }
 
-                    core.injectCss(cssBatch);
+                        var cssBatch = [];
+                        for (var i = 0; i < targetSelectors.length; i++) {
+                            var sel = targetSelectors[i];
+                            if (sel.indexOf(':has(') !== -1 && !core.supportsHas) {
+                                core.addFallback(sel);
+                            } else {
+                                cssBatch.push(sel);
+                            }
+                        }
+
+                        core.injectCss(cssBatch);
+                    })();
                 })();
-            })();
-            """
+                """
 
-            totalChars += source.count
-
-            let script = WKUserScript(
-                source: source,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            )
-            scripts.append(script)
+                totalChars += source.count
+                scriptSources.append(source)
+            }
         }
 
-        stateLock.lock()
-        if let exceptionScript = exceptionScript {
-            cosmeticExceptionScriptsBySource[metadata.sourceId] = exceptionScript
+        return PreparedCosmeticScripts(
+            sourceId: metadata.sourceId,
+            contentHash: metadata.contentHash,
+            ruleListIdentifiers: metadata.ruleListIdentifiers,
+            exceptionSource: exceptionSource,
+            scriptSources: scriptSources,
+            totalChars: totalChars
+        )
+    }
+
+    func installPreparedCosmeticScripts(
+        _ preparedItems: [PreparedCosmeticScripts],
+        completion: (() -> Void)? = nil
+    ) {
+        let apply = {
+            for prepared in preparedItems {
+                let exceptionScript = prepared.exceptionSource.map {
+                    WKUserScript(
+                        source: $0,
+                        injectionTime: .atDocumentStart,
+                        forMainFrameOnly: false
+                    )
+                }
+                let scripts = prepared.scriptSources.map {
+                    WKUserScript(
+                        source: $0,
+                        injectionTime: .atDocumentStart,
+                        forMainFrameOnly: false
+                    )
+                }
+
+                self.stateLock.lock()
+                if let currentMetadata = self.metadataBySource[prepared.sourceId],
+                   currentMetadata.contentHash == prepared.contentHash &&
+                   currentMetadata.ruleListIdentifiers == prepared.ruleListIdentifiers {
+                    if exceptionScript == nil && scripts.isEmpty {
+                        self.cosmeticExceptionScriptsBySource.removeValue(forKey: prepared.sourceId)
+                        self.cosmeticScriptsBySource.removeValue(forKey: prepared.sourceId)
+                        self.cosmeticScriptCharsBySource.removeValue(forKey: prepared.sourceId)
+                    } else {
+                        if let exceptionScript = exceptionScript {
+                            self.cosmeticExceptionScriptsBySource[prepared.sourceId] = exceptionScript
+                        } else {
+                            self.cosmeticExceptionScriptsBySource.removeValue(forKey: prepared.sourceId)
+                        }
+                        self.cosmeticScriptsBySource[prepared.sourceId] = scripts
+                        self.cosmeticScriptCharsBySource[prepared.sourceId] = prepared.totalChars
+                    }
+                }
+                self.stateLock.unlock()
+            }
+            completion?()
+        }
+
+        if Thread.isMainThread {
+            apply()
         } else {
-            cosmeticExceptionScriptsBySource.removeValue(forKey: metadata.sourceId)
+            DispatchQueue.main.async(execute: apply)
         }
-        cosmeticScriptsBySource[metadata.sourceId] = scripts
-        cosmeticScriptCharsBySource[metadata.sourceId] = totalChars
-        stateLock.unlock()
     }
 
     private func cosmeticRuleBatches(
