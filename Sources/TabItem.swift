@@ -1018,7 +1018,13 @@ final class TabItem: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
     }
 
     @objc private func handleUserScriptsUpdatedNotification(_ notification: Notification) {
-        rebuildUserContentScripts()
+        if Thread.isMainThread {
+            rebuildUserContentScripts()
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.rebuildUserContentScripts()
+            }
+        }
     }
 
     private func syncAdBlockStateIfNeeded(forHost host: String?) {
