@@ -362,19 +362,24 @@ final class BackupManager {
         }
 
         let cookiesToRestore = package.cookies?.compactMap { $0.toHTTPCookie() } ?? []
-        let cookieStore = WKWebsiteDataStore.default().httpCookieStore
-        let group = DispatchGroup()
-
         for cookie in cookiesToRestore {
-            group.enter()
-            cookieStore.setCookie(cookie) {
-                group.leave()
-            }
             HTTPCookieStorage.shared.setCookie(cookie)
         }
 
-        group.notify(queue: .main) {
-            completion(.success(()))
+        DispatchQueue.main.async {
+            let cookieStore = WKWebsiteDataStore.default().httpCookieStore
+            let group = DispatchGroup()
+
+            for cookie in cookiesToRestore {
+                group.enter()
+                cookieStore.setCookie(cookie) {
+                    group.leave()
+                }
+            }
+
+            group.notify(queue: .main) {
+                completion(.success(()))
+            }
         }
     }
 }
