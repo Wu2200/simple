@@ -1,5 +1,6 @@
 import XCTest
 import CryptoKit
+import WebKit
 @testable import SimpleBrowser
 
 final class SimpleBrowserTests: XCTestCase {
@@ -288,5 +289,75 @@ final class SimpleBrowserTests: XCTestCase {
         XCTAssertEqual(vc.activeTab.url, pageURL)
         XCTAssertTrue(vc.backButton.isEnabled)
         XCTAssertFalse(vc.forwardButton.isEnabled)
+    }
+
+    func testAdBlockCosmeticScriptPreparationAndCustomRuleCompilation() {
+        let manager = AdBlockManager.shared
+        let metadata = AdBlockCompiledSourceMetadata(
+            sourceId: "test-source",
+            ruleListIdentifiers: [],
+            ruleCount: 3,
+            skippedRuleCount: 0,
+            cosmeticRules: [
+                AdBlockCosmeticRule(domains: [], excludedDomains: [], selector: ".global-ad"),
+                AdBlockCosmeticRule(domains: ["example.com"], excludedDomains: ["sub.example.com"], selector: ".sponsored")
+            ],
+            cosmeticExceptions: [
+                AdBlockCosmeticException(domains: ["example.com"], selector: ".allowed-ad")
+            ],
+            contentHash: "hash-test"
+        )
+
+        let bgExpectation = expectation(description: "prepare cosmetic scripts on background queue")
+        var prepared: AdBlockManager.PreparedCosmeticScripts?
+        DispatchQueue.global(qos: .userInitiated).async {
+            prepared = manager.prepareCosmeticScripts(metadata: metadata)
+            bgExpectation.fulfill()
+        }
+        wait(for: [bgExpectation], timeout: 5.0)
+
+        XCTAssertNotNil(prepared)
+        XCTAssertNotNil(prepared?.exceptionSource)
+        XCTAssertEqual(prepared?.scriptSources.count, 1)
+        XCTAssertGreaterThan(prepared?.totalChars ?? 0, 0)
+
+        let originalRules = manager.getCustomRules()
+        let wasEnabled = manager.isEnabled
+        manager.isEnabled = true
+
+        let saveExpectation = expectation(description: "save custom cosmetic rules")
+        var saveSuccess = false
+        manager.saveCustomRules("example.com##.ad-banner\nexample.com#@#.allow-banner") { success, _ in
+            saveSuccess = success
+            saveExpectation.fulfill()
+        }
+        wait(for: [saveExpectation], timeout: 10.0)
+
+        XCTAssertTrue(saveSuccess)
+        let activeScripts = manager.activeCosmeticScripts(for: "example.com")
+        XCTAssertEqual(activeScripts.count, 3)
+        XCTAssertTrue(activeScripts.allSatisfy { $0.injectionTime == .atDocumentStart })
+
+        let restoreExpectation = expectation(description: "restore original custom rules")
+        manager.saveCustomRules(originalRules) { _, _ in
+            restoreExpectation.fulfill()
+        }
+        wait(for: [restoreExpectation], timeout: 10.0)
+        manager.isEnabled = wasEnabled
+    }
+
+    func testTabItemHandlesBackgroundUserScriptsUpdatedNotification() {
+        let tab = TabItem()
+        let notifiedExpectation = expectation(description: "background notification handled on main thread")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            NotificationCenter.default.post(name: UserScriptStore.didUpdateScriptsNotification, object: nil)
+            DispatchQueue.main.async {
+                notifiedExpectation.fulfill()
+            }
+        }
+
+        wait(for: [notifiedExpectation], timeout: 5.0)
+        tab.destroy()
     }
 }
