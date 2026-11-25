@@ -90,6 +90,7 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
 
     @objc private func handleStatusDidChange() {
         let latest = AutoBackupManager.shared.currentConfig
+        draftConfig.backupFileName = latest.backupFileName
         draftConfig.lastSuccessDate = latest.lastSuccessDate
         draftConfig.lastAttemptDate = latest.lastAttemptDate
         draftConfig.lastErrorMessage = latest.lastErrorMessage
@@ -192,8 +193,8 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
 
         tableView.reloadRows(
             at: [
-                IndexPath(row: 2, section: 0),
                 IndexPath(row: 3, section: 0),
+                IndexPath(row: 4, section: 0),
                 IndexPath(row: 0, section: 2),
                 IndexPath(row: 1, section: 2)
             ],
@@ -251,7 +252,7 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch section {
         case 0:
-            return 4
+            return 5
         case 1:
             return 5
         case 2:
@@ -303,6 +304,15 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
             }
 
             if indexPath.row == 2 {
+                let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+                cell.selectionStyle = .none
+                cell.textLabel?.text = "备份文件名"
+                cell.detailTextLabel?.text = draftConfig.backupFileName
+                cell.detailTextLabel?.lineBreakMode = .byTruncatingMiddle
+                return cell
+            }
+
+            if indexPath.row == 3 {
                 let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
                 cell.selectionStyle = .none
                 cell.textLabel?.text = "上次上传成功"
