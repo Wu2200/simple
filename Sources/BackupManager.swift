@@ -44,7 +44,6 @@ struct BackupCookieItem: Codable {
 struct BrowserBackupPackage: Codable {
     var version: Int
     var exportedAt: Date
-    var appName: String
     var bookmarks: [BookmarkItem]
     var homeShortcuts: [HomeShortcutItem]
     var history: [BrowserHistoryItem]?
@@ -125,7 +124,6 @@ final class BackupManager {
 
     func createBackupPackage(completion: @escaping (BrowserBackupPackage) -> Void) {
         let build = {
-            let appName = self.currentApplicationName()
             let bookmarks = BookmarkStore.shared.loadAllNodes()
             let shortcuts = HomeShortcutStore.shared.loadShortcuts()
             let history = BrowserHistoryStore.shared.loadHistory()
@@ -165,7 +163,6 @@ final class BackupManager {
                 let package = BrowserBackupPackage(
                     version: 2,
                     exportedAt: Date(),
-                    appName: appName,
                     bookmarks: bookmarks,
                     homeShortcuts: shortcuts,
                     history: history,
