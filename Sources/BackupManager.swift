@@ -124,61 +124,106 @@ final class BackupManager {
     }
 
     func createBackupPackage(completion: @escaping (BrowserBackupPackage) -> Void) {
-        let appName = currentApplicationName()
-        let bookmarks = BookmarkStore.shared.loadAllNodes()
-        let shortcuts = HomeShortcutStore.shared.loadShortcuts()
-        let history = BrowserHistoryStore.shared.loadHistory()
-        let scripts = UserScriptStore.shared.loadScripts()
+        let build = {
+            let appName = self.currentApplicationName()
+            let bookmarks = BookmarkStore.shared.loadAllNodes()
+            let shortcuts = HomeShortcutStore.shared.loadShortcuts()
+            let history = BrowserHistoryStore.shared.loadHistory()
+            let scripts = UserScriptStore.shared.loadScripts()
 
-        var scriptDataMap: [String: String] = [:]
-        for script in scripts {
-            let json = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
-            if json != "{}" {
-                scriptDataMap[script.id] = json
+            var scriptDataMap: [String: String] = [:]
+            for script in scripts {
+                let json = ScriptDataStore.shared.getAllValuesJSON(scriptId: script.id)
+                if json != "{}" {
+                    scriptDataMap[script.id] = json
+                }
+            }
+
+            let customUAs = UserAgentStore.shared.loadCustomItems()
+            let subscriptions = AdBlockManager.shared.loadSubscriptions()
+            let customRules = AdBlockManager.shared.getCustomRules()
+            let lockedDomains = CookieLockStore.shared.getLockedDomains()
+            let searchEngine = SearchEngineStore.shared.currentEngine.rawValue
+            let trustedInsecureHosts = CertificateTrustStore.shared.getAllTrustedHosts()
+
+            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                var cookieMap: [String: BackupCookieItem] = [:]
+                for c in cookies {
+                    let key = "\(c.domain)_\(c.path)_\(c.name)"
+                    cookieMap[key] = BackupCookieItem(from: c)
+                }
+                if let sharedCookies = HTTPCookieStorage.shared.cookies {
+                    for c in sharedCookies {
+                        let key = "\(c.domain)_\(c.path)_\(c.name)"
+                        if cookieMap[key] == nil {
+                            cookieMap[key] = BackupCookieItem(from: c)
+                        }
+                    }
+                }
+                let backupCookies = Array(cookieMap.values)
+
+                let package = BrowserBackupPackage(
+                    version: 2,
+                    exportedAt: Date(),
+                    appName: appName,
+                    bookmarks: bookmarks,
+                    homeShortcuts: shortcuts,
+                    history: history,
+                    cookies: backupCookies,
+                    userScripts: scripts,
+                    scriptData: scriptDataMap,
+                    customUserAgents: customUAs,
+                    adBlockSubscriptions: subscriptions,
+                    customAdBlockRules: customRules,
+                    lockedCookieDomains: lockedDomains,
+                    searchEngine: searchEngine,
+                    trustedInsecureHosts: trustedInsecureHosts
+                )
+                completion(package)
             }
         }
 
-        let customUAs = UserAgentStore.shared.loadCustomItems()
-        let subscriptions = AdBlockManager.shared.loadSubscriptions()
-        let customRules = AdBlockManager.shared.getCustomRules()
-        let lockedDomains = CookieLockStore.shared.getLockedDomains()
-        let searchEngine = SearchEngineStore.shared.currentEngine.rawValue
-        let trustedInsecureHosts = CertificateTrustStore.shared.getAllTrustedHosts()
+        if Thread.isMainThread {
+            build()
+        } else {
+            DispatchQueue.main.async(execute: build)
+        }
+    }
 
-        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
-            var cookieMap: [String: BackupCookieItem] = [:]
-            for c in cookies {
-                let key = "\(c.domain)_\(c.path)_\(c.name)"
-                cookieMap[key] = BackupCookieItem(from: c)
-            }
-            if let sharedCookies = HTTPCookieStorage.shared.cookies {
-                for c in sharedCookies {
-                    let key = "\(c.domain)_\(c.path)_\(c.name)"
-                    if cookieMap[key] == nil {
-                        cookieMap[key] = BackupCookieItem(from: c)
+    func generateBackupData(
+        encryptionPassword: String?,
+        completion: @escaping (Result<(fileName: String, data: Data), Error>) -> Void
+    ) {
+        let appName = currentApplicationName()
+        createBackupPackage { package in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let df = DateFormatter()
+                    df.dateFormat = "yyyyMMdd_HHmmss"
+                    let timestamp = df.string(from: Date())
+                    let data: Data
+                    let filename: String
+
+                    if let password = encryptionPassword, !password.isEmpty {
+                        data = try self.encryptBackupPackage(package, password: password)
+                        filename = "\(appName)_EncryptedBackup_\(timestamp).json"
+                    } else {
+                        let encoder = JSONEncoder()
+                        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                        encoder.dateEncodingStrategy = .iso8601
+                        data = try encoder.encode(package)
+                        filename = "\(appName)_Backup_\(timestamp).json"
+                    }
+
+                    DispatchQueue.main.async {
+                        completion(.success((filename, data)))
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        completion(.failure(error))
                     }
                 }
             }
-            let backupCookies = Array(cookieMap.values)
-
-            let package = BrowserBackupPackage(
-                version: 2,
-                exportedAt: Date(),
-                appName: appName,
-                bookmarks: bookmarks,
-                homeShortcuts: shortcuts,
-                history: history,
-                cookies: backupCookies,
-                userScripts: scripts,
-                scriptData: scriptDataMap,
-                customUserAgents: customUAs,
-                adBlockSubscriptions: subscriptions,
-                customAdBlockRules: customRules,
-                lockedCookieDomains: lockedDomains,
-                searchEngine: searchEngine,
-                trustedInsecureHosts: trustedInsecureHosts
-            )
-            completion(package)
         }
     }
 
