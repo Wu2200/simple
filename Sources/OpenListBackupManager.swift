@@ -107,6 +107,139 @@ struct AutoBackupStatusSnapshot: Equatable {
     let isWaitingForRetry: Bool
 }
 
+enum OpenListBackupTransferError: LocalizedError, Equatable {
+    case emptyInput
+    case invalidFormat
+    case invalidServerURL
+    case missingCredentials
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyInput:
+            return "剪贴板为空，请先复制自动备份配置"
+        case .invalidFormat:
+            return "未检测到有效的自动备份配置"
+        case .invalidServerURL:
+            return "配置中的 OpenList 服务器地址无效"
+        case .missingCredentials:
+            return "配置中缺少 OpenList 密码或 API Token"
+        }
+    }
+}
+
+struct OpenListBackupTransferPayload: Codable, Equatable {
+    static let formatIdentifier = "SimpleBrowserAutoBackupConfig"
+    static let transferPrefix = "simplebrowser-autobackup://v1/"
+
+    var format: String
+    var version: Int
+    var isEnabled: Bool
+    var serverURL: String
+    var username: String
+    var passwordOrToken: String
+    var remoteDirectory: String
+    var intervalHours: Int
+    var backupPassword: String
+
+    init(
+        isEnabled: Bool,
+        serverURL: String,
+        username: String,
+        passwordOrToken: String,
+        remoteDirectory: String,
+        intervalHours: Int,
+        backupPassword: String
+    ) {
+        self.format = Self.formatIdentifier
+        self.version = 1
+        self.isEnabled = isEnabled
+        self.serverURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.passwordOrToken = passwordOrToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.remoteDirectory = OpenListClient.normalizeRemoteDirectory(remoteDirectory)
+        self.intervalHours = min(max(intervalHours, 1), 8760)
+        self.backupPassword = backupPassword
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.format = try container.decodeIfPresent(String.self, forKey: .format) ?? ""
+        self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        self.isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        let rawServer = try container.decodeIfPresent(String.self, forKey: .serverURL) ?? ""
+        self.serverURL = rawServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawUser = try container.decodeIfPresent(String.self, forKey: .username) ?? ""
+        self.username = rawUser.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawSecret = try container.decodeIfPresent(String.self, forKey: .passwordOrToken) ?? ""
+        self.passwordOrToken = rawSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawDir = try container.decodeIfPresent(String.self, forKey: .remoteDirectory) ?? OpenListBackupConfig.defaultRemoteDirectory
+        self.remoteDirectory = OpenListClient.normalizeRemoteDirectory(rawDir)
+        let rawHours = try container.decodeIfPresent(Int.self, forKey: .intervalHours) ?? OpenListBackupConfig.defaultIntervalHours
+        self.intervalHours = min(max(rawHours, 1), 8760)
+        self.backupPassword = try container.decodeIfPresent(String.self, forKey: .backupPassword) ?? ""
+    }
+
+    func encodeToTransferString() throws -> String {
+        guard OpenListClient.normalizeServerURL(serverURL) != nil else {
+            throw OpenListBackupTransferError.invalidServerURL
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(self)
+        let base64URL = data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return Self.transferPrefix + base64URL
+    }
+
+    static func decode(from rawText: String) throws -> OpenListBackupTransferPayload {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw OpenListBackupTransferError.emptyInput
+        }
+
+        let jsonData: Data
+        if trimmed.hasPrefix(transferPrefix) {
+            let encoded = String(trimmed.dropFirst(transferPrefix.count))
+                .components(separatedBy: .whitespacesAndNewlines)
+                .joined()
+            var base64 = encoded
+                .replacingOccurrences(of: "-", with: "+")
+                .replacingOccurrences(of: "_", with: "/")
+            let remainder = base64.count % 4
+            if remainder != 0 {
+                base64.append(String(repeating: "=", count: 4 - remainder))
+            }
+            guard let decodedData = Data(base64Encoded: base64) else {
+                throw OpenListBackupTransferError.invalidFormat
+            }
+            jsonData = decodedData
+        } else if trimmed.hasPrefix("{") {
+            jsonData = Data(trimmed.utf8)
+        } else {
+            throw OpenListBackupTransferError.invalidFormat
+        }
+
+        guard let payload = try? JSONDecoder().decode(OpenListBackupTransferPayload.self, from: jsonData),
+              payload.format == formatIdentifier else {
+            throw OpenListBackupTransferError.invalidFormat
+        }
+
+        guard let serverURL = OpenListClient.normalizeServerURL(payload.serverURL) else {
+            throw OpenListBackupTransferError.invalidServerURL
+        }
+
+        if payload.isEnabled &&
+            OpenListClient.detectProtocolMode(for: serverURL) == .openListAPI &&
+            payload.passwordOrToken.isEmpty {
+            throw OpenListBackupTransferError.missingCredentials
+        }
+
+        return payload
+    }
+}
+
 protocol BackupCredentialStoring: AnyObject {
     func saveSecret(_ value: String, forAccount account: String)
     func loadSecret(forAccount account: String) -> String
@@ -1525,6 +1658,45 @@ final class AutoBackupManager {
                 self?.evaluateScheduleIfNeeded()
             }
         }
+    }
+
+    func exportTransferString(
+        overrideConfig: OpenListBackupConfig? = nil,
+        passwordOrToken: String? = nil,
+        backupPassword: String? = nil
+    ) throws -> String {
+        let effectiveConfig = overrideConfig ?? currentConfig
+        let effectiveSecret = passwordOrToken ?? currentServerSecret
+        let effectiveBackupPassword = backupPassword ?? currentBackupEncryptionPassword
+        let payload = OpenListBackupTransferPayload(
+            isEnabled: effectiveConfig.isEnabled,
+            serverURL: effectiveConfig.serverURL,
+            username: effectiveConfig.username,
+            passwordOrToken: effectiveSecret,
+            remoteDirectory: effectiveConfig.remoteDirectory,
+            intervalHours: effectiveConfig.intervalHours,
+            backupPassword: effectiveBackupPassword
+        )
+        return try payload.encodeToTransferString()
+    }
+
+    @discardableResult
+    func importTransferString(
+        _ rawText: String,
+        triggerIfDue: Bool = true
+    ) throws -> OpenListBackupTransferPayload {
+        let payload = try OpenListBackupTransferPayload.decode(from: rawText)
+        updateConfiguration(
+            isEnabled: payload.isEnabled,
+            serverURL: payload.serverURL,
+            username: payload.username,
+            passwordOrToken: payload.passwordOrToken,
+            remoteDirectory: payload.remoteDirectory,
+            intervalHours: payload.intervalHours,
+            backupPassword: payload.backupPassword,
+            triggerIfDue: triggerIfDue
+        )
+        return payload
     }
 
     func testConnection(
