@@ -256,7 +256,7 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
         case 1:
             return 5
         case 2:
-            return 2
+            return 4
         default:
             return 0
         }
@@ -412,14 +412,23 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
         cell.textLabel?.font = .systemFont(ofSize: 16, weight: .medium)
 
         let isUploading = AutoBackupManager.shared.statusSnapshot.isUploading
-        if indexPath.row == 0 {
+        switch indexPath.row {
+        case 0:
             cell.textLabel?.text = isTestingConnection ? "正在测试连接…" : "测试连接"
             cell.textLabel?.textColor = isTestingConnection ? .secondaryLabel : .systemBlue
             cell.selectionStyle = isTestingConnection ? .none : .default
-        } else {
+        case 1:
             cell.textLabel?.text = isUploading ? "正在上传备份…" : "立即备份"
             cell.textLabel?.textColor = isUploading ? .secondaryLabel : .systemBlue
             cell.selectionStyle = isUploading ? .none : .default
+        case 2:
+            cell.textLabel?.text = "复制配置"
+            cell.textLabel?.textColor = .systemBlue
+            cell.selectionStyle = .default
+        default:
+            cell.textLabel?.text = "粘贴配置"
+            cell.textLabel?.textColor = .systemBlue
+            cell.selectionStyle = .default
         }
         return cell
     }
@@ -435,10 +444,15 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
 
         if indexPath.section == 2 {
             dismissKeyboard()
-            if indexPath.row == 0 {
+            switch indexPath.row {
+            case 0:
                 handleTestConnection()
-            } else {
+            case 1:
                 handleManualBackup()
+            case 2:
+                handleCopyConfiguration()
+            default:
+                handlePasteConfiguration()
             }
         }
     }
@@ -549,6 +563,77 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
             }
         }
         refreshLiveStatusDisplay(force: true)
+    }
+
+    private func handleCopyConfiguration() {
+        syncDraftFieldsFromInputs()
+        do {
+            let transferText = try AutoBackupManager.shared.exportTransferString(
+                overrideConfig: draftConfig,
+                passwordOrToken: draftServerSecret,
+                backupPassword: draftBackupPassword
+            )
+            UIPasteboard.general.string = transferText
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showAlert(title: "复制成功", message: "已复制自动备份配置，可在其他应用内点击粘贴配置快速导入。")
+        } catch {
+            showAlert(title: "无法复制配置", message: error.localizedDescription)
+        }
+    }
+
+    private func handlePasteConfiguration() {
+        let clipboardText = UIPasteboard.general.string ?? ""
+        do {
+            try applyImportedTransferText(clipboardText)
+        } catch {
+            let alert = UIAlertController(
+                title: "未能从剪贴板导入",
+                message: error.localizedDescription,
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "手动粘贴", style: .default) { [weak self] _ in
+                self?.promptManualPasteConfiguration()
+            })
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+            present(alert, animated: true)
+        }
+    }
+
+    private func promptManualPasteConfiguration() {
+        let alert = UIAlertController(
+            title: "粘贴配置",
+            message: "请粘贴从其他应用复制的配置文本",
+            preferredStyle: .alert
+        )
+        alert.addTextField { tf in
+            tf.placeholder = "simplebrowser-autobackup://v1/..."
+            tf.autocapitalizationType = .none
+            tf.autocorrectionType = .no
+            tf.clearButtonMode = .whileEditing
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "导入", style: .default) { [weak self, weak alert] _ in
+            guard let self = self else { return }
+            let input = alert?.textFields?.first?.text ?? ""
+            do {
+                try self.applyImportedTransferText(input)
+            } catch {
+                self.showAlert(title: "导入失败", message: error.localizedDescription)
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func applyImportedTransferText(_ rawText: String) throws {
+        _ = try AutoBackupManager.shared.importTransferString(rawText, triggerIfDue: true)
+        draftConfig = AutoBackupManager.shared.currentConfig
+        draftServerSecret = AutoBackupManager.shared.currentServerSecret
+        draftBackupPassword = AutoBackupManager.shared.currentBackupEncryptionPassword
+        lastRenderedStatusText = nil
+        lastRenderedSuccessText = nil
+        tableView.reloadData()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        showAlert(title: "导入成功", message: "配置已填入并保存，当前备份文件名为 \(draftConfig.backupFileName)")
     }
 
     private func showAlert(title: String, message: String) {
