@@ -7,8 +7,13 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: Build IPA
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -24,6 +29,9 @@ jobs:
           xcodebuild -version
 
       - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install xcodegen
 
       - name: Generate App Icon
@@ -34,6 +42,7 @@ jobs:
           sips -s format png -z 1024 1024 "$ICONSET/$SOURCE_ICON" --out "$ICONSET/icon.png"
           python3 - "$ICONSET/Contents.json" "$SOURCE_ICON" <<'PY'
           import json
+          import os
           import sys
 
           path, source_icon = sys.argv[1:]
@@ -45,7 +54,6 @@ jobs:
               json.dump(data, file, indent=2)
               file.write("\n")
           if source_icon != "icon.png":
-              import os
               os.remove(os.path.join(os.path.dirname(path), source_icon))
           PY
 
@@ -53,33 +61,6 @@ jobs:
         run: |
           xcodegen generate
           sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' SimpleBrowser.xcodeproj/project.pbxproj || true
-
-      - name: Run Unit Tests
-        run: |
-          set -o pipefail
-          SIM_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; data=json.load(sys.stdin); devs=[(rt, d["udid"]) for rt, list_ in data.get("devices", {}).items() if "iOS" in rt for d in list_ if d.get("isAvailable") and "iPhone" in d.get("name", "")]; devs.sort(reverse=True); print(devs[0][1] if devs else "")')
-          echo "Selected Simulator UDID: ${SIM_ID}"
-          if [ -z "$SIM_ID" ]; then
-            echo "No available iPhone simulator found"
-            exit 1
-          fi
-          xcodebuild test \
-            -project SimpleBrowser.xcodeproj \
-            -scheme SimpleBrowser \
-            -destination "platform=iOS Simulator,id=${SIM_ID}" \
-            -configuration Debug \
-            -derivedDataPath build-tests \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="-" \
-            2>&1 | tee xcodetest.log
-
-      - name: Upload Test Log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: SimpleBrowser-Test-Log
-          path: xcodetest.log
 
       - name: Build Application
         run: |
@@ -90,6 +71,8 @@ jobs:
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -derivedDataPath build \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            DEBUG_INFORMATION_FORMAT=dwarf \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -114,3 +97,91 @@ jobs:
         with:
           name: SimpleBrowser-IPA
           path: SimpleBrowser.ipa
+
+  test:
+    name: Unit Tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          fi
+          xcodebuild -version
+
+      - name: Preboot Simulator
+        id: sim
+        run: |
+          SIM_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; data=json.load(sys.stdin); devs=[(rt, d["udid"]) for rt, list_ in data.get("devices", {}).items() if "iOS" in rt for d in list_ if d.get("isAvailable") and "iPhone" in d.get("name", "")]; devs.sort(reverse=True); print(devs[0][1] if devs else "")')
+          echo "Selected Simulator UDID: ${SIM_ID}"
+          if [ -z "$SIM_ID" ]; then
+            echo "No available iPhone simulator found"
+            exit 1
+          fi
+          echo "udid=${SIM_ID}" >> "$GITHUB_OUTPUT"
+          nohup xcrun simctl boot "${SIM_ID}" </dev/null >/dev/null 2>&1 &
+
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install xcodegen
+
+      - name: Generate App Icon
+        run: |
+          ICONSET=Assets.xcassets/AppIcon.appiconset
+          SOURCE_ICON=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["images"][0]["filename"])' "$ICONSET/Contents.json")
+          test -f "$ICONSET/$SOURCE_ICON"
+          sips -s format png -z 1024 1024 "$ICONSET/$SOURCE_ICON" --out "$ICONSET/icon.png"
+          python3 - "$ICONSET/Contents.json" "$SOURCE_ICON" <<'PY'
+          import json
+          import os
+          import sys
+
+          path, source_icon = sys.argv[1:]
+          with open(path, encoding="utf-8") as file:
+              data = json.load(file)
+          for image in data["images"]:
+              image["filename"] = "icon.png"
+          with open(path, "w", encoding="utf-8") as file:
+              json.dump(data, file, indent=2)
+              file.write("\n")
+          if source_icon != "icon.png":
+              os.remove(os.path.join(os.path.dirname(path), source_icon))
+          PY
+
+      - name: Generate Xcode Project
+        run: |
+          xcodegen generate
+          sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' SimpleBrowser.xcodeproj/project.pbxproj || true
+
+      - name: Run Unit Tests
+        run: |
+          set -o pipefail
+          SIM_ID="${{ steps.sim.outputs.udid }}"
+          xcodebuild test \
+            -project SimpleBrowser.xcodeproj \
+            -scheme SimpleBrowser \
+            -destination "platform=iOS Simulator,id=${SIM_ID}" \
+            -configuration Debug \
+            -derivedDataPath build-tests \
+            -enableCodeCoverage NO \
+            -disable-concurrent-destination-testing \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            2>&1 | tee xcodetest.log
+
+      - name: Upload Test Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleBrowser-Test-Log
+          path: xcodetest.log
