@@ -671,6 +671,158 @@ final class SimpleBrowserTests: XCTestCase {
         XCTAssertNotNil(finalSnapshot.config.lastSuccessDate)
         XCTAssertNil(finalSnapshot.config.lastErrorMessage)
         XCTAssertFalse(finalSnapshot.isWaitingForRetry)
-        XCTAssertEqual(finalSnapshot.config.lastUploadedFileName, "SimpleBrowser_Backup_test.json")
+        XCTAssertFalse(finalSnapshot.config.backupFileName.isEmpty)
+        XCTAssertEqual(finalSnapshot.config.lastUploadedFileName, finalSnapshot.config.backupFileName)
+    }
+
+    func testAutoBackupUsesFixedRandomCodeFileNameAcrossUploadsAndInstances() throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("AutoBackupFixedName_\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let configURL1 = tempDir.appendingPathComponent("instance1_config.json")
+        let configURL2 = tempDir.appendingPathComponent("instance2_config.json")
+
+        var uploadedFilePaths: [String] = []
+        var overwriteHeaders: [String?] = []
+
+        MockOpenListURLProtocol.lock.lock()
+        MockOpenListURLProtocol.requestHandler = { [self] request, _ in
+            let url = request.url!
+            if url.path.hasSuffix("/api/fs/get") {
+                return jsonHTTPResponse(url: url, object: ["code": 200, "data": ["is_dir": true]])
+            }
+            if url.path.hasSuffix("/api/fs/put") {
+                uploadedFilePaths.append(request.value(forHTTPHeaderField: "File-Path") ?? "")
+                overwriteHeaders.append(request.value(forHTTPHeaderField: "Overwrite"))
+                return jsonHTTPResponse(url: url, object: ["code": 200, "message": "success"])
+            }
+            return jsonHTTPResponse(url: url, statusCode: 404, object: ["code": 404, "message": "not found"])
+        }
+        MockOpenListURLProtocol.lock.unlock()
+        defer {
+            MockOpenListURLProtocol.lock.lock()
+            MockOpenListURLProtocol.requestHandler = nil
+            MockOpenListURLProtocol.lock.unlock()
+        }
+
+        let credStore1 = InMemoryCredentialStore()
+        let manager1 = AutoBackupManager(
+            configFileURL: configURL1,
+            credentialStore: credStore1,
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("IgnoredTimestamp_\(UUID().uuidString).json", Data("{\"v\":1}".utf8))))
+            }
+        )
+
+        let fixedName1 = manager1.currentConfig.backupFileName
+        XCTAssertTrue(fixedName1.contains("_Backup_"))
+        XCTAssertTrue(fixedName1.hasSuffix(".json"))
+
+        manager1.updateConfiguration(
+            isEnabled: true,
+            serverURL: "https://pan.example.com",
+            username: "",
+            passwordOrToken: "token-1",
+            remoteDirectory: "/Backups",
+            intervalHours: 24,
+            backupPassword: "",
+            triggerIfDue: false
+        )
+
+        let uploadExp1 = expectation(description: "first upload")
+        manager1.triggerManualBackup { result in
+            if case .failure(let error) = result {
+                XCTFail("Unexpected failure: \(error)")
+            }
+            uploadExp1.fulfill()
+        }
+        wait(for: [uploadExp1], timeout: 5.0)
+
+        let uploadExp2 = expectation(description: "second upload")
+        manager1.triggerManualBackup { result in
+            if case .failure(let error) = result {
+                XCTFail("Unexpected failure: \(error)")
+            }
+            uploadExp2.fulfill()
+        }
+        wait(for: [uploadExp2], timeout: 5.0)
+
+        let relaunchedManager1 = AutoBackupManager(
+            configFileURL: configURL1,
+            credentialStore: credStore1,
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("IgnoredTimestamp_\(UUID().uuidString).json", Data("{\"v\":2}".utf8))))
+            }
+        )
+        XCTAssertEqual(relaunchedManager1.currentConfig.backupFileName, fixedName1)
+
+        let uploadExp3 = expectation(description: "upload after relaunch")
+        relaunchedManager1.triggerManualBackup { result in
+            if case .failure(let error) = result {
+                XCTFail("Unexpected failure: \(error)")
+            }
+            uploadExp3.fulfill()
+        }
+        wait(for: [uploadExp3], timeout: 5.0)
+
+        XCTAssertEqual(uploadedFilePaths.count, 3)
+        XCTAssertEqual(Set(uploadedFilePaths).count, 1)
+        XCTAssertEqual(overwriteHeaders, ["true", "true", "true"])
+
+        let manager2 = AutoBackupManager(
+            configFileURL: configURL2,
+            credentialStore: InMemoryCredentialStore(),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            }
+        )
+        XCTAssertNotEqual(manager2.currentConfig.backupFileName, fixedName1)
+    }
+
+    func testOpenListTestConnectionReportsStorageNotFound() {
+        let client = OpenListClient(session: makeMockOpenListSession())
+
+        MockOpenListURLProtocol.lock.lock()
+        MockOpenListURLProtocol.requestHandler = { [self] request, _ in
+            let url = request.url!
+            if url.path.hasSuffix("/api/me") {
+                return jsonHTTPResponse(url: url, object: ["code": 200, "data": ["username": "tester", "role": 2]])
+            }
+            if url.path.hasSuffix("/api/fs/get") {
+                return jsonHTTPResponse(url: url, object: ["code": 500, "message": "failed get storage: storage not found; rawPath: /storage/emulated/0/foo"])
+            }
+            return jsonHTTPResponse(url: url, statusCode: 404, object: ["code": 404, "message": "not found"])
+        }
+        MockOpenListURLProtocol.lock.unlock()
+        defer {
+            MockOpenListURLProtocol.lock.lock()
+            MockOpenListURLProtocol.requestHandler = nil
+            MockOpenListURLProtocol.lock.unlock()
+        }
+
+        let exp = expectation(description: "test connection reports storage not found")
+        var receivedError: Error?
+        client.testConnection(
+            serverURLString: "https://pan.example.com",
+            username: "",
+            passwordOrToken: "token",
+            remoteDirectory: "/storage/emulated/0/foo"
+        ) { result in
+            if case .failure(let error) = result {
+                receivedError = error
+            }
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5.0)
+
+        XCTAssertEqual(receivedError as? OpenListClientError, .storageNotFound(path: "/storage/emulated/0/foo"))
     }
 }
