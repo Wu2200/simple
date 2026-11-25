@@ -411,11 +411,11 @@ extension BrowserViewController {
             preferredStyle: .actionSheet
         )
 
-        sheet.addAction(UIAlertAction(title: "加密导出（推荐）", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: "加密导出", style: .default) { [weak self] _ in
             self?.promptEncryptedBackupPassword()
         })
 
-        sheet.addAction(UIAlertAction(title: "明文导出 (JSON)", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: "明文导出", style: .default) { [weak self] _ in
             self?.performExportBackup()
         })
 
