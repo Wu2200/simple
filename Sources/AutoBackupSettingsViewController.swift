@@ -230,6 +230,10 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
             return ("未开启自动备份", .secondaryLabel)
         }
 
+        if !snapshot.config.isEnabled {
+            return ("点击右上角保存后生效", .systemBlue)
+        }
+
         if let nextDate = snapshot.nextScheduledDate {
             if nextDate <= Date() {
                 return ("等待执行备份", .systemBlue)
@@ -528,7 +532,10 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
             case .success(let remotePath):
                 self.showAlert(title: "备份成功", message: "已上传至 \(remotePath)")
             case .failure(let error):
-                self.showAlert(title: "上传失败", message: "\(error.localizedDescription)\n系统将在 1 分钟后自动重试。")
+                let retrySuffix = AutoBackupManager.shared.statusSnapshot.isWaitingForRetry
+                    ? "\n系统将在 1 分钟后自动重试。"
+                    : ""
+                self.showAlert(title: "上传失败", message: "\(error.localizedDescription)\(retrySuffix)")
             }
         }
         refreshLiveStatusDisplay(force: true)
