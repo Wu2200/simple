@@ -248,7 +248,6 @@ final class SimpleBrowserTests: XCTestCase {
         let package = BrowserBackupPackage(
             version: 2,
             exportedAt: Date(timeIntervalSince1970: 1700000000),
-            appName: "SimpleBrowser",
             bookmarks: [BookmarkItem(id: "b1", title: "Example", urlString: "https://example.com")],
             homeShortcuts: [HomeShortcutItem(id: "s1", title: "Example", urlString: "https://example.com")],
             history: nil,
@@ -262,6 +261,22 @@ final class SimpleBrowserTests: XCTestCase {
             searchEngine: SearchEngine.google.rawValue,
             trustedInsecureHosts: []
         )
+
+        let plainEncoder = JSONEncoder()
+        plainEncoder.dateEncodingStrategy = .iso8601
+        let encodedPlain = try plainEncoder.encode(package)
+        let plainObject = try JSONSerialization.jsonObject(with: encodedPlain) as? [String: Any]
+        XCTAssertNil(plainObject?["appName"])
+
+        var legacyObject = plainObject ?? [:]
+        legacyObject["appName"] = "浏览器8"
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        let inspectedLegacy = try BackupManager.shared.inspectBackupData(legacyData)
+        guard case .plain(let decodedLegacy) = inspectedLegacy else {
+            XCTFail("Expected legacy plain backup package")
+            return
+        }
+        XCTAssertEqual(decodedLegacy.bookmarks.first?.urlString, "https://example.com")
 
         let encryptedData = try BackupManager.shared.encryptBackupPackage(package, password: "secret-password")
         let inspected = try BackupManager.shared.inspectBackupData(encryptedData)
@@ -671,8 +686,8 @@ final class SimpleBrowserTests: XCTestCase {
         XCTAssertNotNil(finalSnapshot.config.lastSuccessDate)
         XCTAssertNil(finalSnapshot.config.lastErrorMessage)
         XCTAssertFalse(finalSnapshot.isWaitingForRetry)
-        XCTAssertFalse(finalSnapshot.config.backupFileName.isEmpty)
-        XCTAssertEqual(finalSnapshot.config.lastUploadedFileName, finalSnapshot.config.backupFileName)
+        XCTAssertFalse(finalSnapshot.config.backupCode.isEmpty)
+        XCTAssertEqual(finalSnapshot.config.lastUploadedFileName, manager.currentBackupFileName)
     }
 
     func testAutoBackupUsesFixedRandomCodeFileNameAcrossUploadsAndInstances() throws {
@@ -683,6 +698,7 @@ final class SimpleBrowserTests: XCTestCase {
 
         let configURL1 = tempDir.appendingPathComponent("instance1_config.json")
         let configURL2 = tempDir.appendingPathComponent("instance2_config.json")
+        let legacyConfigURL = tempDir.appendingPathComponent("legacy_config.json")
 
         var uploadedFilePaths: [String] = []
         var overwriteHeaders: [String?] = []
@@ -708,6 +724,7 @@ final class SimpleBrowserTests: XCTestCase {
         }
 
         let credStore1 = InMemoryCredentialStore()
+        var dynamicAppName = "浏览器8"
         let manager1 = AutoBackupManager(
             configFileURL: configURL1,
             credentialStore: credStore1,
@@ -715,12 +732,13 @@ final class SimpleBrowserTests: XCTestCase {
             enableBackgroundTasks: false,
             backupDataGenerator: { _, completion in
                 completion(.success(("IgnoredTimestamp_\(UUID().uuidString).json", Data("{\"v\":1}".utf8))))
-            }
+            },
+            appNameProvider: { dynamicAppName }
         )
 
-        let fixedName1 = manager1.currentConfig.backupFileName
-        XCTAssertTrue(fixedName1.contains("_Backup_"))
-        XCTAssertTrue(fixedName1.hasSuffix(".json"))
+        let fixedCode1 = manager1.currentConfig.backupCode
+        let fixedName1 = manager1.currentBackupFileName
+        XCTAssertEqual(fixedName1, "浏览器8_Backup_\(fixedCode1).json")
 
         manager1.updateConfiguration(
             isEnabled: true,
@@ -758,9 +776,11 @@ final class SimpleBrowserTests: XCTestCase {
             enableBackgroundTasks: false,
             backupDataGenerator: { _, completion in
                 completion(.success(("IgnoredTimestamp_\(UUID().uuidString).json", Data("{\"v\":2}".utf8))))
-            }
+            },
+            appNameProvider: { dynamicAppName }
         )
-        XCTAssertEqual(relaunchedManager1.currentConfig.backupFileName, fixedName1)
+        XCTAssertEqual(relaunchedManager1.currentConfig.backupCode, fixedCode1)
+        XCTAssertEqual(relaunchedManager1.currentBackupFileName, fixedName1)
 
         let uploadExp3 = expectation(description: "upload after relaunch")
         relaunchedManager1.triggerManualBackup { result in
@@ -775,6 +795,37 @@ final class SimpleBrowserTests: XCTestCase {
         XCTAssertEqual(Set(uploadedFilePaths).count, 1)
         XCTAssertEqual(overwriteHeaders, ["true", "true", "true"])
 
+        dynamicAppName = "浏览器9"
+        XCTAssertEqual(relaunchedManager1.currentConfig.backupCode, fixedCode1)
+        XCTAssertEqual(relaunchedManager1.currentBackupFileName, "浏览器9_Backup_\(fixedCode1).json")
+
+        let uploadExp4 = expectation(description: "upload after app rename")
+        relaunchedManager1.triggerManualBackup { result in
+            if case .failure(let error) = result {
+                XCTFail("Unexpected failure: \(error)")
+            }
+            uploadExp4.fulfill()
+        }
+        wait(for: [uploadExp4], timeout: 5.0)
+        XCTAssertEqual(relaunchedManager1.currentConfig.lastUploadedFileName, "浏览器9_Backup_\(fixedCode1).json")
+
+        let legacyConfigJSON = """
+        {"isEnabled":false,"serverURL":"https://pan.example.com","username":"","remoteDirectory":"/Backups","intervalHours":24,"backupFileName":"浏览器8_Backup_K7P9M2.json"}
+        """
+        try Data(legacyConfigJSON.utf8).write(to: legacyConfigURL)
+        let migratedManager = AutoBackupManager(
+            configFileURL: legacyConfigURL,
+            credentialStore: InMemoryCredentialStore(),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            },
+            appNameProvider: { "浏览器9" }
+        )
+        XCTAssertEqual(migratedManager.currentConfig.backupCode, "K7P9M2")
+        XCTAssertEqual(migratedManager.currentBackupFileName, "浏览器9_Backup_K7P9M2.json")
+
         let manager2 = AutoBackupManager(
             configFileURL: configURL2,
             credentialStore: InMemoryCredentialStore(),
@@ -782,9 +833,10 @@ final class SimpleBrowserTests: XCTestCase {
             enableBackgroundTasks: false,
             backupDataGenerator: { _, completion in
                 completion(.success(("unused.json", Data("{}".utf8))))
-            }
+            },
+            appNameProvider: { "浏览器8" }
         )
-        XCTAssertNotEqual(manager2.currentConfig.backupFileName, fixedName1)
+        XCTAssertNotEqual(manager2.currentConfig.backupCode, fixedCode1)
     }
 
     func testOpenListTestConnectionReportsStorageNotFound() {
@@ -852,9 +904,10 @@ final class SimpleBrowserTests: XCTestCase {
             }
         )
 
-        let sourceFileName = sourceManager.currentConfig.backupFileName
-        let targetOriginalFileName = targetManager.currentConfig.backupFileName
-        XCTAssertNotEqual(sourceFileName, targetOriginalFileName)
+        let sourceCode = sourceManager.currentConfig.backupCode
+        let targetOriginalCode = targetManager.currentConfig.backupCode
+        let targetOriginalFileName = targetManager.currentBackupFileName
+        XCTAssertNotEqual(sourceCode, targetOriginalCode)
 
         sourceManager.updateConfiguration(
             isEnabled: true,
@@ -888,8 +941,9 @@ final class SimpleBrowserTests: XCTestCase {
         XCTAssertEqual(targetManager.currentConfig.intervalHours, 12)
         XCTAssertEqual(targetManager.currentBackupEncryptionPassword, "enc-password-123")
         XCTAssertTrue(targetManager.currentConfig.isEnabled)
-        XCTAssertEqual(targetManager.currentConfig.backupFileName, targetOriginalFileName)
-        XCTAssertNotEqual(targetManager.currentConfig.backupFileName, sourceFileName)
+        XCTAssertEqual(targetManager.currentConfig.backupCode, targetOriginalCode)
+        XCTAssertEqual(targetManager.currentBackupFileName, targetOriginalFileName)
+        XCTAssertNotEqual(targetManager.currentConfig.backupCode, sourceCode)
 
         let rawJSON = """
         {"format":"SimpleBrowserAutoBackupConfig","version":1,"isEnabled":false,"serverURL":"https://pan.example.com/dav","username":"dav","passwordOrToken":"pass","remoteDirectory":"备份","intervalHours":48,"backupPassword":""}
