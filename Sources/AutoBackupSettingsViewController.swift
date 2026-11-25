@@ -90,7 +90,7 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
 
     @objc private func handleStatusDidChange() {
         let latest = AutoBackupManager.shared.currentConfig
-        draftConfig.backupFileName = latest.backupFileName
+        draftConfig.backupCode = latest.backupCode
         draftConfig.lastSuccessDate = latest.lastSuccessDate
         draftConfig.lastAttemptDate = latest.lastAttemptDate
         draftConfig.lastErrorMessage = latest.lastErrorMessage
@@ -307,7 +307,7 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
                 let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
                 cell.selectionStyle = .none
                 cell.textLabel?.text = "备份文件名"
-                cell.detailTextLabel?.text = draftConfig.backupFileName
+                cell.detailTextLabel?.text = AutoBackupManager.shared.currentBackupFileName
                 cell.detailTextLabel?.lineBreakMode = .byTruncatingMiddle
                 return cell
             }
@@ -633,7 +633,7 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
         lastRenderedSuccessText = nil
         tableView.reloadData()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        showAlert(title: "导入成功", message: "配置已填入并保存，当前备份文件名为 \(draftConfig.backupFileName)")
+        showAlert(title: "导入成功", message: "配置已填入并保存，当前备份文件名为 \(AutoBackupManager.shared.currentBackupFileName)")
     }
 
     private func showAlert(title: String, message: String) {
