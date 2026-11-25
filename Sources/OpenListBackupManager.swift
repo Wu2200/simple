@@ -223,7 +223,26 @@ enum OpenListClientError: LocalizedError, Equatable {
     }
 }
 
+private final class OpenListTrustSessionDelegate: NSObject, URLSessionDelegate {
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let serverTrust = challenge.protectionSpace.serverTrust {
+            let host = challenge.protectionSpace.host.lowercased()
+            if CertificateTrustStore.shared.isHostTrusted(host) {
+                completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                return
+            }
+        }
+        completionHandler(.performDefaultHandling, nil)
+    }
+}
+
 final class OpenListClient {
+    private static let trustDelegate = OpenListTrustSessionDelegate()
     private let session: URLSession
     private let tokenLock = NSLock()
     private var cachedTokens: [String: String] = [:]
@@ -244,7 +263,7 @@ final class OpenListClient {
             configuration.allowsCellularAccess = true
             configuration.allowsExpensiveNetworkAccess = true
             configuration.allowsConstrainedNetworkAccess = true
-            self.session = URLSession(configuration: configuration)
+            self.session = URLSession(configuration: configuration, delegate: Self.trustDelegate, delegateQueue: nil)
         }
     }
 
@@ -455,6 +474,7 @@ final class OpenListClient {
             normalizedDirectory: normalizedDir,
             fullPath: fullPath,
             allowTokenRetry: !cleanUsername.isEmpty,
+            skipDirectoryCheck: false,
             completion: completion
         )
     }
@@ -467,6 +487,7 @@ final class OpenListClient {
         normalizedDirectory: String,
         fullPath: String,
         allowTokenRetry: Bool,
+        skipDirectoryCheck: Bool,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
         authenticateOpenListAPI(
@@ -480,6 +501,42 @@ final class OpenListClient {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let token):
+                let uploadStep: () -> Void = {
+                    self.putOpenListFile(
+                        data: data,
+                        baseURL: baseURL,
+                        token: token,
+                        fullPath: fullPath
+                    ) { putResult in
+                        switch putResult {
+                        case .success:
+                            completion(.success(fullPath))
+                        case .failure(let error):
+                            if allowTokenRetry, self.isUnauthorizedAPIError(error) {
+                                self.clearCachedToken(baseURL: baseURL, username: username, passwordOrToken: secret)
+                                self.performOpenListAPIUpload(
+                                    data: data,
+                                    baseURL: baseURL,
+                                    username: username,
+                                    secret: secret,
+                                    normalizedDirectory: normalizedDirectory,
+                                    fullPath: fullPath,
+                                    allowTokenRetry: false,
+                                    skipDirectoryCheck: true,
+                                    completion: completion
+                                )
+                                return
+                            }
+                            completion(.failure(error))
+                        }
+                    }
+                }
+
+                if skipDirectoryCheck {
+                    uploadStep()
+                    return
+                }
+
                 self.ensureOpenListDirectory(
                     baseURL: baseURL,
                     token: token,
@@ -497,39 +554,14 @@ final class OpenListClient {
                                 normalizedDirectory: normalizedDirectory,
                                 fullPath: fullPath,
                                 allowTokenRetry: false,
+                                skipDirectoryCheck: false,
                                 completion: completion
                             )
                             return
                         }
                         completion(.failure(error))
                     case .success:
-                        self.putOpenListFile(
-                            data: data,
-                            baseURL: baseURL,
-                            token: token,
-                            fullPath: fullPath
-                        ) { putResult in
-                            switch putResult {
-                            case .success:
-                                completion(.success(fullPath))
-                            case .failure(let error):
-                                if allowTokenRetry, self.isUnauthorizedAPIError(error) {
-                                    self.clearCachedToken(baseURL: baseURL, username: username, passwordOrToken: secret)
-                                    self.performOpenListAPIUpload(
-                                        data: data,
-                                        baseURL: baseURL,
-                                        username: username,
-                                        secret: secret,
-                                        normalizedDirectory: normalizedDirectory,
-                                        fullPath: fullPath,
-                                        allowTokenRetry: false,
-                                        completion: completion
-                                    )
-                                    return
-                                }
-                                completion(.failure(error))
-                            }
-                        }
+                        uploadStep()
                     }
                 }
             }
@@ -686,7 +718,7 @@ final class OpenListClient {
                 }
                 completion(.success(true))
             case .failure(let err):
-                if case OpenListClientError.apiError(let code, _) = err, (code == 401 || code == 403) {
+                if let openListErr = err as? OpenListClientError, openListErr.isAuthenticationOrPermissionError {
                     completion(.failure(err))
                 } else {
                     completion(.success(false))
@@ -770,7 +802,7 @@ final class OpenListClient {
                     completion: completion
                 )
             case .failure(let err):
-                if case OpenListClientError.apiError(let code, _) = err, (code == 401 || code == 403) {
+                if let openListErr = err as? OpenListClientError, openListErr.isAuthenticationOrPermissionError {
                     completion(.failure(err))
                     return
                 }
