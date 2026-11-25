@@ -15,7 +15,7 @@ struct OpenListBackupConfig: Codable, Equatable {
     var username: String
     var remoteDirectory: String
     var intervalHours: Int
-    var backupFileName: String
+    var backupCode: String
     var lastSuccessDate: Date?
     var lastAttemptDate: Date?
     var lastErrorMessage: String?
@@ -23,6 +23,20 @@ struct OpenListBackupConfig: Codable, Equatable {
 
     static let defaultIntervalHours = 24
     static let defaultRemoteDirectory = "/SimpleBrowserBackups"
+
+    enum CodingKeys: String, CodingKey {
+        case isEnabled
+        case serverURL
+        case username
+        case remoteDirectory
+        case intervalHours
+        case backupCode
+        case legacyBackupFileName = "backupFileName"
+        case lastSuccessDate
+        case lastAttemptDate
+        case lastErrorMessage
+        case lastUploadedFileName
+    }
 
     static func generateRandomCode(length: Int = 6) -> String {
         let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
@@ -36,11 +50,42 @@ struct OpenListBackupConfig: Codable, Equatable {
         return result
     }
 
-    static func makeFixedBackupFileName(
+    static func extractBackupCode(fromLegacyFileName fileName: String) -> String? {
+        var stem = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stem.isEmpty else { return nil }
+        if stem.lowercased().hasSuffix(".json") {
+            stem = String(stem.dropLast(5))
+        }
+        guard let markerRange = stem.range(of: "_Backup_", options: .backwards) else {
+            return nil
+        }
+        let code = String(stem[markerRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty,
+              !code.contains("/"),
+              !code.contains("\\"),
+              !code.contains(".") else {
+            return nil
+        }
+        return code
+    }
+
+    static func makeBackupFileName(
         appName: String = BackupManager.shared.currentApplicationName(),
-        code: String = generateRandomCode()
+        code: String
     ) -> String {
-        "\(appName)_Backup_\(code).json"
+        let trimmedName = appName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let invalidCharacters = CharacterSet(charactersIn: "\\/:*?\"<>|")
+        let sanitizedName = trimmedName.components(separatedBy: invalidCharacters).joined()
+        let effectiveName = sanitizedName.isEmpty ? "SimpleBrowser" : sanitizedName
+        let cleanCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveCode = cleanCode.isEmpty ? generateRandomCode() : cleanCode
+        return "\(effectiveName)_Backup_\(effectiveCode).json"
+    }
+
+    func resolvedBackupFileName(
+        appName: String = BackupManager.shared.currentApplicationName()
+    ) -> String {
+        Self.makeBackupFileName(appName: appName, code: backupCode)
     }
 
     static func defaultConfig() -> OpenListBackupConfig {
@@ -50,7 +95,7 @@ struct OpenListBackupConfig: Codable, Equatable {
             username: "",
             remoteDirectory: defaultRemoteDirectory,
             intervalHours: defaultIntervalHours,
-            backupFileName: "",
+            backupCode: "",
             lastSuccessDate: nil,
             lastAttemptDate: nil,
             lastErrorMessage: nil,
@@ -64,7 +109,7 @@ struct OpenListBackupConfig: Codable, Equatable {
         username: String,
         remoteDirectory: String,
         intervalHours: Int,
-        backupFileName: String = "",
+        backupCode: String = "",
         lastSuccessDate: Date? = nil,
         lastAttemptDate: Date? = nil,
         lastErrorMessage: String? = nil,
@@ -75,7 +120,7 @@ struct OpenListBackupConfig: Codable, Equatable {
         self.username = username
         self.remoteDirectory = remoteDirectory
         self.intervalHours = min(max(intervalHours, 1), 8760)
-        self.backupFileName = backupFileName
+        self.backupCode = backupCode
         self.lastSuccessDate = lastSuccessDate
         self.lastAttemptDate = lastAttemptDate
         self.lastErrorMessage = lastErrorMessage
@@ -90,11 +135,34 @@ struct OpenListBackupConfig: Codable, Equatable {
         self.remoteDirectory = try container.decodeIfPresent(String.self, forKey: .remoteDirectory) ?? Self.defaultRemoteDirectory
         let decodedInterval = try container.decodeIfPresent(Int.self, forKey: .intervalHours) ?? Self.defaultIntervalHours
         self.intervalHours = min(max(decodedInterval, 1), 8760)
-        self.backupFileName = try container.decodeIfPresent(String.self, forKey: .backupFileName) ?? ""
+        let decodedCode = (try container.decodeIfPresent(String.self, forKey: .backupCode) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !decodedCode.isEmpty {
+            self.backupCode = decodedCode
+        } else if let legacyFileName = try container.decodeIfPresent(String.self, forKey: .legacyBackupFileName),
+                  let extracted = Self.extractBackupCode(fromLegacyFileName: legacyFileName) {
+            self.backupCode = extracted
+        } else {
+            self.backupCode = ""
+        }
         self.lastSuccessDate = try container.decodeIfPresent(Date.self, forKey: .lastSuccessDate)
         self.lastAttemptDate = try container.decodeIfPresent(Date.self, forKey: .lastAttemptDate)
         self.lastErrorMessage = try container.decodeIfPresent(String.self, forKey: .lastErrorMessage)
         self.lastUploadedFileName = try container.decodeIfPresent(String.self, forKey: .lastUploadedFileName)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encode(serverURL, forKey: .serverURL)
+        try container.encode(username, forKey: .username)
+        try container.encode(remoteDirectory, forKey: .remoteDirectory)
+        try container.encode(intervalHours, forKey: .intervalHours)
+        try container.encode(backupCode, forKey: .backupCode)
+        try container.encodeIfPresent(lastSuccessDate, forKey: .lastSuccessDate)
+        try container.encodeIfPresent(lastAttemptDate, forKey: .lastAttemptDate)
+        try container.encodeIfPresent(lastErrorMessage, forKey: .lastErrorMessage)
+        try container.encodeIfPresent(lastUploadedFileName, forKey: .lastUploadedFileName)
     }
 }
 
@@ -1277,6 +1345,7 @@ final class AutoBackupManager {
     private let maxAutomaticRetries: Int
     private let enableBackgroundTasks: Bool
     private let backupDataGenerator: BackupDataGenerator
+    private let appNameProvider: () -> String
     private let nowProvider: () -> Date
 
     private var config: OpenListBackupConfig
@@ -1309,6 +1378,7 @@ final class AutoBackupManager {
             backupDataGenerator: { password, completion in
                 BackupManager.shared.generateBackupData(encryptionPassword: password, completion: completion)
             },
+            appNameProvider: { BackupManager.shared.currentApplicationName() },
             nowProvider: { Date() }
         )
     }
@@ -1321,6 +1391,7 @@ final class AutoBackupManager {
         maxAutomaticRetries: Int = AutoBackupManager.defaultMaxRetries,
         enableBackgroundTasks: Bool = false,
         backupDataGenerator: @escaping BackupDataGenerator,
+        appNameProvider: @escaping () -> String = { BackupManager.shared.currentApplicationName() },
         nowProvider: @escaping () -> Date = { Date() }
     ) {
         self.configFileURL = configFileURL
@@ -1330,10 +1401,11 @@ final class AutoBackupManager {
         self.maxAutomaticRetries = max(1, maxAutomaticRetries)
         self.enableBackgroundTasks = enableBackgroundTasks
         self.backupDataGenerator = backupDataGenerator
+        self.appNameProvider = appNameProvider
         self.nowProvider = nowProvider
         var loaded = Self.loadConfig(from: configFileURL)
-        if loaded.backupFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            loaded.backupFileName = OpenListBackupConfig.makeFixedBackupFileName()
+        if loaded.backupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            loaded.backupCode = OpenListBackupConfig.generateRandomCode()
             self.config = loaded
             saveConfigLocked()
         } else {
@@ -1373,6 +1445,13 @@ final class AutoBackupManager {
         lock.lock()
         defer { lock.unlock() }
         return config
+    }
+
+    var currentBackupFileName: String {
+        lock.lock()
+        let code = config.backupCode
+        lock.unlock()
+        return OpenListBackupConfig.makeBackupFileName(appName: appNameProvider(), code: code)
     }
 
     var currentServerSecret: String {
@@ -1809,14 +1888,15 @@ final class AutoBackupManager {
             return
         }
 
-        if config.backupFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            config.backupFileName = OpenListBackupConfig.makeFixedBackupFileName()
+        if config.backupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            config.backupCode = OpenListBackupConfig.generateRandomCode()
             saveConfigLocked()
         }
 
         let effectiveConfig = overrideConfig ?? config
-        let candidateFileName = effectiveConfig.backupFileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetFileName = candidateFileName.isEmpty ? config.backupFileName : candidateFileName
+        let candidateCode = effectiveConfig.backupCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveCode = candidateCode.isEmpty ? config.backupCode : candidateCode
+        let targetFileName = OpenListBackupConfig.makeBackupFileName(appName: appNameProvider(), code: effectiveCode)
         let effectiveSecret = overrideSecret ?? currentServerSecret
         let effectiveEncryptionPassword = overrideBackupPassword ?? currentBackupEncryptionPassword
 
