@@ -825,4 +825,88 @@ final class SimpleBrowserTests: XCTestCase {
 
         XCTAssertEqual(receivedError as? OpenListClientError, .storageNotFound(path: "/storage/emulated/0/foo"))
     }
+
+    func testAutoBackupTransferExportImportPreservesPerInstanceFileName() throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("AutoBackupTransfer_\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let sourceManager = AutoBackupManager(
+            configFileURL: tempDir.appendingPathComponent("source.json"),
+            credentialStore: InMemoryCredentialStore(),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            }
+        )
+
+        let targetManager = AutoBackupManager(
+            configFileURL: tempDir.appendingPathComponent("target.json"),
+            credentialStore: InMemoryCredentialStore(),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            }
+        )
+
+        let sourceFileName = sourceManager.currentConfig.backupFileName
+        let targetOriginalFileName = targetManager.currentConfig.backupFileName
+        XCTAssertNotEqual(sourceFileName, targetOriginalFileName)
+
+        sourceManager.updateConfiguration(
+            isEnabled: true,
+            serverURL: "http://192.168.2.116:5244",
+            username: "1917431753",
+            passwordOrToken: "my-secret-password",
+            remoteDirectory: "/本机存储/SimpleBrowserBackups",
+            intervalHours: 12,
+            backupPassword: "enc-password-123",
+            triggerIfDue: false
+        )
+
+        let exported = try sourceManager.exportTransferString()
+        XCTAssertTrue(exported.hasPrefix(OpenListBackupTransferPayload.transferPrefix))
+
+        let wrappedWithWhitespace = "\n  \(exported)\n"
+        let importedPayload = try targetManager.importTransferString(wrappedWithWhitespace, triggerIfDue: false)
+
+        XCTAssertEqual(importedPayload.serverURL, "http://192.168.2.116:5244")
+        XCTAssertEqual(importedPayload.username, "1917431753")
+        XCTAssertEqual(importedPayload.passwordOrToken, "my-secret-password")
+        XCTAssertEqual(importedPayload.remoteDirectory, "/本机存储/SimpleBrowserBackups")
+        XCTAssertEqual(importedPayload.intervalHours, 12)
+        XCTAssertEqual(importedPayload.backupPassword, "enc-password-123")
+        XCTAssertTrue(importedPayload.isEnabled)
+
+        XCTAssertEqual(targetManager.currentConfig.serverURL, "http://192.168.2.116:5244")
+        XCTAssertEqual(targetManager.currentConfig.username, "1917431753")
+        XCTAssertEqual(targetManager.currentServerSecret, "my-secret-password")
+        XCTAssertEqual(targetManager.currentConfig.remoteDirectory, "/本机存储/SimpleBrowserBackups")
+        XCTAssertEqual(targetManager.currentConfig.intervalHours, 12)
+        XCTAssertEqual(targetManager.currentBackupEncryptionPassword, "enc-password-123")
+        XCTAssertTrue(targetManager.currentConfig.isEnabled)
+        XCTAssertEqual(targetManager.currentConfig.backupFileName, targetOriginalFileName)
+        XCTAssertNotEqual(targetManager.currentConfig.backupFileName, sourceFileName)
+
+        let rawJSON = """
+        {"format":"SimpleBrowserAutoBackupConfig","version":1,"isEnabled":false,"serverURL":"https://pan.example.com/dav","username":"dav","passwordOrToken":"pass","remoteDirectory":"备份","intervalHours":48,"backupPassword":""}
+        """
+        let decodedRaw = try OpenListBackupTransferPayload.decode(from: rawJSON)
+        XCTAssertEqual(decodedRaw.remoteDirectory, "/备份")
+        XCTAssertEqual(decodedRaw.intervalHours, 48)
+        XCTAssertFalse(decodedRaw.isEnabled)
+
+        XCTAssertThrowsError(try OpenListBackupTransferPayload.decode(from: "   ")) { error in
+            XCTAssertEqual(error as? OpenListBackupTransferError, .emptyInput)
+        }
+        XCTAssertThrowsError(try OpenListBackupTransferPayload.decode(from: "random text")) { error in
+            XCTAssertEqual(error as? OpenListBackupTransferError, .invalidFormat)
+        }
+        XCTAssertThrowsError(try OpenListBackupTransferPayload.decode(from: "{\"hello\":\"world\"}")) { error in
+            XCTAssertEqual(error as? OpenListBackupTransferError, .invalidFormat)
+        }
+    }
 }
