@@ -15,6 +15,7 @@ struct OpenListBackupConfig: Codable, Equatable {
     var username: String
     var remoteDirectory: String
     var intervalHours: Int
+    var backupFileName: String
     var lastSuccessDate: Date?
     var lastAttemptDate: Date?
     var lastErrorMessage: String?
@@ -23,6 +24,25 @@ struct OpenListBackupConfig: Codable, Equatable {
     static let defaultIntervalHours = 24
     static let defaultRemoteDirectory = "/SimpleBrowserBackups"
 
+    static func generateRandomCode(length: Int = 6) -> String {
+        let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        var result = ""
+        result.reserveCapacity(length)
+        for _ in 0..<length {
+            if let char = alphabet.randomElement() {
+                result.append(char)
+            }
+        }
+        return result
+    }
+
+    static func makeFixedBackupFileName(
+        appName: String = BackupManager.shared.currentApplicationName(),
+        code: String = generateRandomCode()
+    ) -> String {
+        "\(appName)_Backup_\(code).json"
+    }
+
     static func defaultConfig() -> OpenListBackupConfig {
         OpenListBackupConfig(
             isEnabled: false,
@@ -30,6 +50,7 @@ struct OpenListBackupConfig: Codable, Equatable {
             username: "",
             remoteDirectory: defaultRemoteDirectory,
             intervalHours: defaultIntervalHours,
+            backupFileName: "",
             lastSuccessDate: nil,
             lastAttemptDate: nil,
             lastErrorMessage: nil,
@@ -43,6 +64,7 @@ struct OpenListBackupConfig: Codable, Equatable {
         username: String,
         remoteDirectory: String,
         intervalHours: Int,
+        backupFileName: String = "",
         lastSuccessDate: Date? = nil,
         lastAttemptDate: Date? = nil,
         lastErrorMessage: String? = nil,
@@ -53,6 +75,7 @@ struct OpenListBackupConfig: Codable, Equatable {
         self.username = username
         self.remoteDirectory = remoteDirectory
         self.intervalHours = min(max(intervalHours, 1), 8760)
+        self.backupFileName = backupFileName
         self.lastSuccessDate = lastSuccessDate
         self.lastAttemptDate = lastAttemptDate
         self.lastErrorMessage = lastErrorMessage
@@ -67,6 +90,7 @@ struct OpenListBackupConfig: Codable, Equatable {
         self.remoteDirectory = try container.decodeIfPresent(String.self, forKey: .remoteDirectory) ?? Self.defaultRemoteDirectory
         let decodedInterval = try container.decodeIfPresent(Int.self, forKey: .intervalHours) ?? Self.defaultIntervalHours
         self.intervalHours = min(max(decodedInterval, 1), 8760)
+        self.backupFileName = try container.decodeIfPresent(String.self, forKey: .backupFileName) ?? ""
         self.lastSuccessDate = try container.decodeIfPresent(Date.self, forKey: .lastSuccessDate)
         self.lastAttemptDate = try container.decodeIfPresent(Date.self, forKey: .lastAttemptDate)
         self.lastErrorMessage = try container.decodeIfPresent(String.self, forKey: .lastErrorMessage)
@@ -187,6 +211,7 @@ enum OpenListClientError: LocalizedError, Equatable {
     case httpError(statusCode: Int, message: String)
     case apiError(code: Int, message: String)
     case targetPathIsNotDirectory
+    case storageNotFound(path: String)
 
     var isAuthenticationOrPermissionError: Bool {
         switch self {
@@ -219,6 +244,8 @@ enum OpenListClientError: LocalizedError, Equatable {
             return message.isEmpty ? "OpenList 返回错误码 \(code)" : message
         case .targetPathIsNotDirectory:
             return "指定的远程路径不是文件夹"
+        case .storageNotFound(let path):
+            return "未找到挂载存储：\(path)，请填写 OpenList 网页中显示的虚拟路径"
         }
     }
 }
@@ -417,6 +444,8 @@ final class OpenListClient {
                                 }
                             case .failure(let error):
                                 if case OpenListClientError.targetPathIsNotDirectory = error {
+                                    completion(.failure(error))
+                                } else if case OpenListClientError.storageNotFound = error {
                                     completion(.failure(error))
                                 } else {
                                     completion(.success("连接成功，当前账号 \(resolvedUsername)"))
@@ -718,11 +747,18 @@ final class OpenListClient {
                 }
                 completion(.success(true))
             case .failure(let err):
-                if let openListErr = err as? OpenListClientError, openListErr.isAuthenticationOrPermissionError {
-                    completion(.failure(err))
-                } else {
-                    completion(.success(false))
+                if let openListErr = err as? OpenListClientError {
+                    if openListErr.isAuthenticationOrPermissionError {
+                        completion(.failure(err))
+                        return
+                    }
+                    if case .apiError(_, let message) = openListErr,
+                       message.lowercased().contains("storage not found") {
+                        completion(.failure(OpenListClientError.storageNotFound(path: path)))
+                        return
+                    }
                 }
+                completion(.success(false))
             }
         }.resume()
     }
@@ -1162,7 +1198,14 @@ final class AutoBackupManager {
         self.enableBackgroundTasks = enableBackgroundTasks
         self.backupDataGenerator = backupDataGenerator
         self.nowProvider = nowProvider
-        self.config = Self.loadConfig(from: configFileURL)
+        var loaded = Self.loadConfig(from: configFileURL)
+        if loaded.backupFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            loaded.backupFileName = OpenListBackupConfig.makeFixedBackupFileName()
+            self.config = loaded
+            saveConfigLocked()
+        } else {
+            self.config = loaded
+        }
     }
 
     deinit {
@@ -1594,7 +1637,14 @@ final class AutoBackupManager {
             return
         }
 
+        if config.backupFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            config.backupFileName = OpenListBackupConfig.makeFixedBackupFileName()
+            saveConfigLocked()
+        }
+
         let effectiveConfig = overrideConfig ?? config
+        let candidateFileName = effectiveConfig.backupFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetFileName = candidateFileName.isEmpty ? config.backupFileName : candidateFileName
         let effectiveSecret = overrideSecret ?? currentServerSecret
         let effectiveEncryptionPassword = overrideBackupPassword ?? currentBackupEncryptionPassword
 
@@ -1637,13 +1687,13 @@ final class AutoBackupManager {
             case .success(let payload):
                 self.client.uploadFile(
                     data: payload.data,
-                    fileName: payload.fileName,
+                    fileName: targetFileName,
                     serverURLString: effectiveConfig.serverURL,
                     username: effectiveConfig.username,
                     passwordOrToken: effectiveSecret,
                     remoteDirectory: effectiveConfig.remoteDirectory
                 ) { [weak self] uploadResult in
-                    self?.finishUploadAttempt(with: uploadResult, fileName: payload.fileName)
+                    self?.finishUploadAttempt(with: uploadResult, fileName: targetFileName)
                 }
             }
         }
