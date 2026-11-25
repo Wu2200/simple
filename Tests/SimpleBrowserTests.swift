@@ -3,6 +3,59 @@ import CryptoKit
 import WebKit
 @testable import SimpleBrowser
 
+private final class MockOpenListURLProtocol: URLProtocol {
+    static let lock = NSLock()
+    static var requestHandler: ((URLRequest, Data?) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        var bodyData = request.httpBody
+        if bodyData == nil, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var data = Data()
+            let bufferSize = 4096
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+            defer { buffer.deallocate() }
+            while stream.hasBytesAvailable {
+                let read = stream.read(buffer, maxLength: bufferSize)
+                if read <= 0 {
+                    break
+                }
+                data.append(buffer, count: read)
+            }
+            bodyData = data
+        }
+
+        Self.lock.lock()
+        let handler = Self.requestHandler
+        Self.lock.unlock()
+
+        guard let handler = handler else {
+            client?.urlProtocol(self, didFailWithError: NSError(domain: "MockOpenList", code: -1))
+            return
+        }
+
+        do {
+            let (response, data) = try handler(request, bodyData)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
 final class SimpleBrowserTests: XCTestCase {
     private func appendUInt16LE(_ value: UInt16, to data: inout Data) {
         var le = value.littleEndian
@@ -72,6 +125,18 @@ final class SimpleBrowserTests: XCTestCase {
         appendUInt32LE(cdOffset, to: &zipData)
         appendUInt16LE(0, to: &zipData)
         return zipData
+    }
+
+    private func makeMockOpenListSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockOpenListURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func jsonHTTPResponse(url: URL, statusCode: Int = 200, object: [String: Any]) -> (HTTPURLResponse, Data) {
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [])) ?? Data()
+        let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        return (response, data)
     }
 
     func testZipExtractorBlocksPathTraversalAndSiblingPrefixBypass() throws {
@@ -359,5 +424,253 @@ final class SimpleBrowserTests: XCTestCase {
 
         wait(for: [notifiedExpectation], timeout: 5.0)
         tab.destroy()
+    }
+
+    func testAutoBackupDefaultsAndPathNormalization() {
+        let defaults = OpenListBackupConfig.defaultConfig()
+        XCTAssertEqual(defaults.intervalHours, 24)
+        XCTAssertFalse(defaults.isEnabled)
+        XCTAssertEqual(defaults.remoteDirectory, "/SimpleBrowserBackups")
+        XCTAssertEqual(AutoBackupManager.defaultRetryDelay, 60.0)
+
+        XCTAssertEqual(OpenListClient.normalizeRemoteDirectory("  backups\\browser/  "), "/backups/browser")
+        XCTAssertEqual(OpenListClient.normalizeRemoteDirectory("///"), "/")
+        XCTAssertEqual(OpenListClient.fullRemoteFilePath(directory: "备份/浏览器", fileName: "backup.json"), "/备份/浏览器/backup.json")
+        XCTAssertEqual(OpenListClient.encodeOpenListPathHeader("/备份/a b.json"), "/%E5%A4%87%E4%BB%BD/a%20b.json")
+
+        let apiURL = OpenListClient.normalizeServerURL("192.168.1.10:5244/")
+        XCTAssertEqual(apiURL?.absoluteString, "http://192.168.1.10:5244")
+        XCTAssertEqual(OpenListClient.detectProtocolMode(for: apiURL!), .openListAPI)
+
+        let davURL = OpenListClient.normalizeServerURL("https://pan.example.com/dav/")
+        XCTAssertEqual(OpenListClient.detectProtocolMode(for: davURL!), .webDAV)
+    }
+
+    func testOpenListClientAPILoginMkdirAndTokenRefreshUpload() {
+        let client = OpenListClient(session: makeMockOpenListSession())
+        var loginCount = 0
+        var mkdirPaths: [String] = []
+        var putAttempts = 0
+        var uploadedBody: Data?
+        var uploadedFilePathHeader: String?
+        var uploadedAuthHeader: String?
+
+        MockOpenListURLProtocol.lock.lock()
+        MockOpenListURLProtocol.requestHandler = { [self] request, body in
+            let url = request.url!
+            let path = url.path
+
+            if path.hasSuffix("/api/auth/login") {
+                loginCount += 1
+                let token = loginCount == 1 ? "stale-jwt-token" : "fresh-jwt-token"
+                return jsonHTTPResponse(url: url, object: ["code": 200, "message": "success", "data": ["token": token]])
+            }
+
+            if path.hasSuffix("/api/fs/get") {
+                return jsonHTTPResponse(url: url, object: ["code": 500, "message": "object not found"])
+            }
+
+            if path.hasSuffix("/api/fs/mkdir") {
+                if let body = body,
+                   let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                   let dirPath = json["path"] as? String {
+                    mkdirPaths.append(dirPath)
+                }
+                return jsonHTTPResponse(url: url, object: ["code": 200, "message": "success"])
+            }
+
+            if path.hasSuffix("/api/fs/put") {
+                putAttempts += 1
+                let auth = request.value(forHTTPHeaderField: "Authorization")
+                if putAttempts == 1 && auth == "stale-jwt-token" {
+                    return jsonHTTPResponse(url: url, object: ["code": 401, "message": "token expired"])
+                }
+                uploadedAuthHeader = auth
+                uploadedFilePathHeader = request.value(forHTTPHeaderField: "File-Path")
+                uploadedBody = body
+                return jsonHTTPResponse(url: url, object: ["code": 200, "message": "success"])
+            }
+
+            return jsonHTTPResponse(url: url, statusCode: 404, object: ["code": 404, "message": "not found"])
+        }
+        MockOpenListURLProtocol.lock.unlock()
+        defer {
+            MockOpenListURLProtocol.lock.lock()
+            MockOpenListURLProtocol.requestHandler = nil
+            MockOpenListURLProtocol.lock.unlock()
+        }
+
+        let payload = Data("{\"hello\":\"openlist\"}".utf8)
+        let exp = expectation(description: "OpenList API upload with token refresh")
+        var resultPath: String?
+        var resultError: Error?
+
+        client.uploadFile(
+            data: payload,
+            fileName: "Simple_Backup.json",
+            serverURLString: "https://pan.example.com/sub",
+            username: "admin",
+            passwordOrToken: "secret",
+            remoteDirectory: "浏览器/备份"
+        ) { result in
+            switch result {
+            case .success(let path):
+                resultPath = path
+            case .failure(let error):
+                resultError = error
+            }
+            exp.fulfill()
+        }
+
+        wait(for: [exp], timeout: 5.0)
+
+        XCTAssertNil(resultError)
+        XCTAssertEqual(resultPath, "/浏览器/备份/Simple_Backup.json")
+        XCTAssertEqual(loginCount, 2)
+        XCTAssertEqual(mkdirPaths, ["/浏览器", "/浏览器/备份"])
+        XCTAssertEqual(putAttempts, 2)
+        XCTAssertEqual(uploadedAuthHeader, "fresh-jwt-token")
+        XCTAssertEqual(uploadedFilePathHeader, "/%E6%B5%8F%E8%A7%88%E5%99%A8/%E5%A4%87%E4%BB%BD/Simple_Backup.json")
+        XCTAssertEqual(uploadedBody, payload)
+    }
+
+    func testOpenListClientWebDAVUpload() {
+        let client = OpenListClient(session: makeMockOpenListSession())
+        var mkcolURLs: [String] = []
+        var putURL: String?
+        var putAuth: String?
+
+        MockOpenListURLProtocol.lock.lock()
+        MockOpenListURLProtocol.requestHandler = { request, _ in
+            let url = request.url!
+            if request.httpMethod == "MKCOL" {
+                mkcolURLs.append(url.path)
+                return (HTTPURLResponse(url: url, statusCode: 201, httpVersion: "HTTP/1.1", headerFields: nil)!, Data())
+            }
+            if request.httpMethod == "PUT" {
+                putURL = url.path
+                putAuth = request.value(forHTTPHeaderField: "Authorization")
+                return (HTTPURLResponse(url: url, statusCode: 201, httpVersion: "HTTP/1.1", headerFields: nil)!, Data())
+            }
+            return (HTTPURLResponse(url: url, statusCode: 405, httpVersion: "HTTP/1.1", headerFields: nil)!, Data())
+        }
+        MockOpenListURLProtocol.lock.unlock()
+        defer {
+            MockOpenListURLProtocol.lock.lock()
+            MockOpenListURLProtocol.requestHandler = nil
+            MockOpenListURLProtocol.lock.unlock()
+        }
+
+        let exp = expectation(description: "WebDAV upload")
+        var uploadedPath: String?
+
+        client.uploadFile(
+            data: Data("{}".utf8),
+            fileName: "backup.json",
+            serverURLString: "https://pan.example.com/dav",
+            username: "davuser",
+            passwordOrToken: "davpass",
+            remoteDirectory: "/Backups/Browser"
+        ) { result in
+            if case .success(let path) = result {
+                uploadedPath = path
+            }
+            exp.fulfill()
+        }
+
+        wait(for: [exp], timeout: 5.0)
+
+        XCTAssertEqual(uploadedPath, "/Backups/Browser/backup.json")
+        XCTAssertEqual(mkcolURLs, ["/dav/Backups", "/dav/Backups/Browser"])
+        XCTAssertEqual(putURL, "/dav/Backups/Browser/backup.json")
+        let expectedBasic = "Basic " + Data("davuser:davpass".utf8).base64EncodedString()
+        XCTAssertEqual(putAuth, expectedBasic)
+    }
+
+    func testAutoBackupFailureSchedulesRetryAndRecovers() throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("AutoBackupTest_\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let configURL = tempDir.appendingPathComponent("config.json")
+        let credStore = InMemoryCredentialStore()
+        let client = OpenListClient(session: makeMockOpenListSession())
+
+        var uploadAttempt = 0
+        let firstFailureExp = expectation(description: "first upload fails")
+        let retrySuccessExp = expectation(description: "retry upload succeeds")
+
+        MockOpenListURLProtocol.lock.lock()
+        MockOpenListURLProtocol.requestHandler = { [self] request, _ in
+            let url = request.url!
+            if url.path.hasSuffix("/api/fs/get") {
+                return jsonHTTPResponse(url: url, object: ["code": 200, "data": ["is_dir": true]])
+            }
+            if url.path.hasSuffix("/api/fs/put") {
+                uploadAttempt += 1
+                if uploadAttempt == 1 {
+                    return jsonHTTPResponse(url: url, statusCode: 503, object: ["code": 503, "message": "temporary unavailable"])
+                }
+                return jsonHTTPResponse(url: url, object: ["code": 200, "message": "success"])
+            }
+            return jsonHTTPResponse(url: url, statusCode: 404, object: ["code": 404, "message": "not found"])
+        }
+        MockOpenListURLProtocol.lock.unlock()
+        defer {
+            MockOpenListURLProtocol.lock.lock()
+            MockOpenListURLProtocol.requestHandler = nil
+            MockOpenListURLProtocol.lock.unlock()
+        }
+
+        let manager = AutoBackupManager(
+            configFileURL: configURL,
+            credentialStore: credStore,
+            client: client,
+            retryDelay: 0.25,
+            maxAutomaticRetries: 3,
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("SimpleBrowser_Backup_test.json", Data("{\"ok\":true}".utf8))))
+            }
+        )
+
+        var sawFailureStatus = false
+        let observer = NotificationCenter.default.addObserver(
+            forName: AutoBackupManager.statusDidChangeNotification,
+            object: manager,
+            queue: .main
+        ) { _ in
+            let snap = manager.statusSnapshot
+            if !snap.isUploading && snap.config.lastErrorMessage != nil && snap.isWaitingForRetry && !sawFailureStatus {
+                sawFailureStatus = true
+                XCTAssertNotNil(snap.pendingRetryDate)
+                XCTAssertEqual(snap.retryAttemptCount, 1)
+                firstFailureExp.fulfill()
+            } else if !snap.isUploading && snap.config.lastSuccessDate != nil && snap.config.lastErrorMessage == nil && !snap.isWaitingForRetry {
+                retrySuccessExp.fulfill()
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        manager.updateConfiguration(
+            isEnabled: true,
+            serverURL: "https://pan.example.com",
+            username: "",
+            passwordOrToken: "static-api-token",
+            remoteDirectory: "/Backups",
+            intervalHours: 24,
+            backupPassword: "",
+            triggerIfDue: true
+        )
+
+        wait(for: [firstFailureExp, retrySuccessExp], timeout: 5.0)
+
+        let finalSnapshot = manager.statusSnapshot
+        XCTAssertEqual(uploadAttempt, 2)
+        XCTAssertNotNil(finalSnapshot.config.lastSuccessDate)
+        XCTAssertNil(finalSnapshot.config.lastErrorMessage)
+        XCTAssertFalse(finalSnapshot.isWaitingForRetry)
+        XCTAssertEqual(finalSnapshot.config.lastUploadedFileName, "SimpleBrowser_Backup_test.json")
     }
 }

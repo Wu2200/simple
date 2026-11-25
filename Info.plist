@@ -54,6 +54,11 @@
         <string>fetch</string>
         <string>processing</string>
     </array>
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.example.SimpleBrowser.autobackup.refresh</string>
+        <string>com.example.SimpleBrowser.autobackup.processing</string>
+    </array>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

@@ -665,6 +665,9 @@ extension BrowserViewController {
             dismissOnTap: true,
             handler: { [weak self] in
                 self?.showBackupActionSheet()
+            },
+            longPressHandler: { [weak self] in
+                self?.showAutoBackupSettings()
             }
         ))
 
@@ -683,6 +686,13 @@ extension BrowserViewController {
             }
         }
         present(panel, animated: true)
+    }
+
+    func showAutoBackupSettings() {
+        let settingsVC = AutoBackupSettingsViewController()
+        let nav = UINavigationController(rootViewController: settingsVC)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true)
     }
 
     func showBrowserBookmarksAndHistory() {

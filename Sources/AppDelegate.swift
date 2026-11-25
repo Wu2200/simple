@@ -7,6 +7,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         _ = AdBlockManager.shared
+        AutoBackupManager.shared.start()
         LocalNetworkManager.shared.triggerLocalNetworkPrompt()
         return true
     }
