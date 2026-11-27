@@ -313,13 +313,29 @@ protocol BackupCredentialStoring: AnyObject {
     func loadSecret(forAccount account: String) -> String
 }
 
-final class KeychainCredentialStore: BackupCredentialStoring {
-    private let service: String
+final class SandboxCredentialStore: BackupCredentialStoring {
+    private let fileURL: URL
+    private let legacyKeychainService: String?
+    private let legacyAccounts: [String]
     private let lock = NSLock()
-    private var memoryCache: [String: String] = [:]
+    private var storage: [String: String]
 
-    init(service: String = (Bundle.main.bundleIdentifier ?? "com.example.SimpleBrowser") + ".OpenListBackup") {
-        self.service = service
+    init(
+        fileURL: URL,
+        legacyKeychainService: String? = nil,
+        legacyAccounts: [String] = []
+    ) {
+        self.fileURL = fileURL
+        self.legacyKeychainService = legacyKeychainService
+        self.legacyAccounts = legacyAccounts
+        if FileManager.default.fileExists(atPath: fileURL.path),
+           let data = try? Data(contentsOf: fileURL),
+           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+            self.storage = decoded
+        } else {
+            self.storage = [:]
+            migrateLegacyKeychainIfNeededLocked()
+        }
     }
 
     func saveSecret(_ value: String, forAccount account: String) {
@@ -327,42 +343,70 @@ final class KeychainCredentialStore: BackupCredentialStoring {
         defer { lock.unlock() }
 
         if value.isEmpty {
-            memoryCache.removeValue(forKey: account)
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account
-            ]
-            SecItemDelete(query as CFDictionary)
-            return
-        }
-
-        memoryCache[account] = value
-        let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-
-        let existingStatus = SecItemCopyMatching(query as CFDictionary, nil)
-        if existingStatus == errSecSuccess {
-            let attributesToUpdate: [String: Any] = [
-                kSecValueData as String: data
-            ]
-            SecItemUpdate(query as CFDictionary, attributesToUpdate as CFDictionary)
+            storage.removeValue(forKey: account)
+            if let service = legacyKeychainService {
+                Self.deleteLegacyKeychainSecret(service: service, account: account)
+            }
         } else {
-            var addQuery = query
-            addQuery[kSecValueData as String] = data
-            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            SecItemAdd(addQuery as CFDictionary, nil)
+            storage[account] = value
         }
+        persistLocked()
     }
 
     func loadSecret(forAccount account: String) -> String {
         lock.lock()
         defer { lock.unlock() }
 
+        if let value = storage[account], !value.isEmpty {
+            return value
+        }
+
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            if let data = try? Data(contentsOf: fileURL),
+               let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+                storage = decoded
+                return decoded[account] ?? ""
+            }
+            return ""
+        }
+
+        migrateLegacyKeychainIfNeededLocked()
+        return storage[account] ?? ""
+    }
+
+    private func persistLocked() {
+        let dir = fileURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(storage) else { return }
+        try? data.write(to: fileURL, options: .atomic)
+    }
+
+    private func migrateLegacyKeychainIfNeededLocked() {
+        guard !FileManager.default.fileExists(atPath: fileURL.path),
+              let service = legacyKeychainService,
+              !legacyAccounts.isEmpty else {
+            return
+        }
+
+        var migratedAny = false
+        for account in legacyAccounts {
+            if let value = Self.loadLegacyKeychainSecret(service: service, account: account),
+               !value.isEmpty {
+                storage[account] = value
+                migratedAny = true
+            }
+        }
+
+        if migratedAny {
+            persistLocked()
+        }
+    }
+
+    private static func loadLegacyKeychainSecret(service: String, account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -373,12 +417,21 @@ final class KeychainCredentialStore: BackupCredentialStoring {
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) {
-            memoryCache[account] = value
-            return value
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            return nil
         }
+        return value
+    }
 
-        return memoryCache[account] ?? ""
+    private static func deleteLegacyKeychainSecret(service: String, account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 }
 
@@ -1368,9 +1421,14 @@ final class AutoBackupManager {
         if !fm.fileExists(atPath: dir.path) {
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+        let legacyService = (Bundle.main.bundleIdentifier ?? "com.example.SimpleBrowser") + ".OpenListBackup"
         self.init(
             configFileURL: dir.appendingPathComponent("auto_backup_config_v1.json"),
-            credentialStore: KeychainCredentialStore(),
+            credentialStore: SandboxCredentialStore(
+                fileURL: dir.appendingPathComponent("auto_backup_credentials_v1.json"),
+                legacyKeychainService: legacyService,
+                legacyAccounts: [Self.serverSecretAccount, Self.backupEncryptionPasswordAccount]
+            ),
             client: OpenListClient(),
             retryDelay: Self.defaultRetryDelay,
             maxAutomaticRetries: Self.defaultMaxRetries,
