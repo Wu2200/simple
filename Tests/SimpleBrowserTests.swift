@@ -963,4 +963,122 @@ final class SimpleBrowserTests: XCTestCase {
             XCTAssertEqual(error as? OpenListBackupTransferError, .invalidFormat)
         }
     }
+
+    func testSandboxCredentialStorePersistsAcrossInstancesAndIsolatesClones() throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("SandboxCredTest_\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let clone1Dir = tempDir.appendingPathComponent("Clone1", isDirectory: true)
+        let clone2Dir = tempDir.appendingPathComponent("Clone2", isDirectory: true)
+        let clone1ConfigURL = clone1Dir.appendingPathComponent("auto_backup_config_v1.json")
+        let clone1CredsURL = clone1Dir.appendingPathComponent("auto_backup_credentials_v1.json")
+        let clone2ConfigURL = clone2Dir.appendingPathComponent("auto_backup_config_v1.json")
+        let clone2CredsURL = clone2Dir.appendingPathComponent("auto_backup_credentials_v1.json")
+
+        let manager1 = AutoBackupManager(
+            configFileURL: clone1ConfigURL,
+            credentialStore: SandboxCredentialStore(fileURL: clone1CredsURL),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            }
+        )
+
+        let manager2 = AutoBackupManager(
+            configFileURL: clone2ConfigURL,
+            credentialStore: SandboxCredentialStore(fileURL: clone2CredsURL),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            }
+        )
+
+        manager1.updateConfiguration(
+            isEnabled: true,
+            serverURL: "http://192.168.2.116:5244",
+            username: "user1",
+            passwordOrToken: "clone1-token-xyz",
+            remoteDirectory: "/Backups",
+            intervalHours: 24,
+            backupPassword: "clone1-enc-password",
+            triggerIfDue: false
+        )
+
+        manager2.updateConfiguration(
+            isEnabled: true,
+            serverURL: "http://192.168.2.116:5244",
+            username: "user2",
+            passwordOrToken: "clone2-token-abc",
+            remoteDirectory: "/Backups",
+            intervalHours: 12,
+            backupPassword: "",
+            triggerIfDue: false
+        )
+
+        let relaunchedManager1 = AutoBackupManager(
+            configFileURL: clone1ConfigURL,
+            credentialStore: SandboxCredentialStore(fileURL: clone1CredsURL),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            }
+        )
+        let relaunchedManager2 = AutoBackupManager(
+            configFileURL: clone2ConfigURL,
+            credentialStore: SandboxCredentialStore(fileURL: clone2CredsURL),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            }
+        )
+
+        XCTAssertEqual(relaunchedManager1.currentServerSecret, "clone1-token-xyz")
+        XCTAssertEqual(relaunchedManager1.currentBackupEncryptionPassword, "clone1-enc-password")
+        XCTAssertEqual(relaunchedManager2.currentServerSecret, "clone2-token-abc")
+        XCTAssertEqual(relaunchedManager2.currentBackupEncryptionPassword, "")
+
+        relaunchedManager1.updateConfiguration(
+            isEnabled: true,
+            serverURL: "http://192.168.2.116:5244",
+            username: "user1",
+            passwordOrToken: "clone1-token-xyz",
+            remoteDirectory: "/Backups",
+            intervalHours: 24,
+            backupPassword: "",
+            triggerIfDue: false
+        )
+
+        let afterClearManager1 = AutoBackupManager(
+            configFileURL: clone1ConfigURL,
+            credentialStore: SandboxCredentialStore(fileURL: clone1CredsURL),
+            client: OpenListClient(session: makeMockOpenListSession()),
+            enableBackgroundTasks: false,
+            backupDataGenerator: { _, completion in
+                completion(.success(("unused.json", Data("{}".utf8))))
+            }
+        )
+        XCTAssertEqual(afterClearManager1.currentServerSecret, "clone1-token-xyz")
+        XCTAssertEqual(afterClearManager1.currentBackupEncryptionPassword, "")
+    }
+
+    func testAutoBackupSettingsPasswordFieldsArePlaintext() {
+        let vc = AutoBackupSettingsViewController()
+        vc.loadViewIfNeeded()
+
+        let passwordCell = vc.tableView(vc.tableView, cellForRowAt: IndexPath(row: 2, section: 1))
+        let passwordField = passwordCell.contentView.subviews.compactMap { $0 as? UITextField }.first
+        XCTAssertNotNil(passwordField)
+        XCTAssertFalse(passwordField?.isSecureTextEntry ?? true)
+
+        let encryptionCell = vc.tableView(vc.tableView, cellForRowAt: IndexPath(row: 4, section: 1))
+        let encryptionField = encryptionCell.contentView.subviews.compactMap { $0 as? UITextField }.first
+        XCTAssertNotNil(encryptionField)
+        XCTAssertFalse(encryptionField?.isSecureTextEntry ?? true)
+    }
 }
