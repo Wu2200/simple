@@ -29,10 +29,26 @@ jobs:
           xcodebuild -version
 
       - name: Install XcodeGen
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-          HOMEBREW_NO_INSTALL_CLEANUP: "1"
-        run: brew install xcodegen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            XCODEGEN_DIR="${RUNNER_TEMP}/xcodegen-dist"
+            mkdir -p "${XCODEGEN_DIR}"
+            if curl -fsSL --retry 3 --retry-delay 2 -o "${XCODEGEN_DIR}/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip" && \
+               echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  ${XCODEGEN_DIR}/xcodegen.zip" | shasum -a 256 -c -; then
+              unzip -qo "${XCODEGEN_DIR}/xcodegen.zip" -d "${XCODEGEN_DIR}"
+              if [ -f "${XCODEGEN_DIR}/xcodegen/bin/xcodegen" ]; then
+                chmod +x "${XCODEGEN_DIR}/xcodegen/bin/xcodegen"
+                echo "${XCODEGEN_DIR}/xcodegen/bin" >> "${GITHUB_PATH}"
+              elif [ -f "${XCODEGEN_DIR}/bin/xcodegen" ]; then
+                chmod +x "${XCODEGEN_DIR}/bin/xcodegen"
+                echo "${XCODEGEN_DIR}/bin" >> "${GITHUB_PATH}"
+              else
+                HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install xcodegen
+              fi
+            else
+              HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install xcodegen
+            fi
+          fi
 
       - name: Generate App Icon
         run: |
@@ -114,23 +130,27 @@ jobs:
           fi
           xcodebuild -version
 
-      - name: Preboot Simulator
-        id: sim
-        run: |
-          SIM_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; data=json.load(sys.stdin); devs=[(rt, d["udid"]) for rt, list_ in data.get("devices", {}).items() if "iOS" in rt for d in list_ if d.get("isAvailable") and "iPhone" in d.get("name", "")]; devs.sort(reverse=True); print(devs[0][1] if devs else "")')
-          echo "Selected Simulator UDID: ${SIM_ID}"
-          if [ -z "$SIM_ID" ]; then
-            echo "No available iPhone simulator found"
-            exit 1
-          fi
-          echo "udid=${SIM_ID}" >> "$GITHUB_OUTPUT"
-          nohup xcrun simctl boot "${SIM_ID}" </dev/null >/dev/null 2>&1 &
-
       - name: Install XcodeGen
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-          HOMEBREW_NO_INSTALL_CLEANUP: "1"
-        run: brew install xcodegen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            XCODEGEN_DIR="${RUNNER_TEMP}/xcodegen-dist"
+            mkdir -p "${XCODEGEN_DIR}"
+            if curl -fsSL --retry 3 --retry-delay 2 -o "${XCODEGEN_DIR}/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip" && \
+               echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  ${XCODEGEN_DIR}/xcodegen.zip" | shasum -a 256 -c -; then
+              unzip -qo "${XCODEGEN_DIR}/xcodegen.zip" -d "${XCODEGEN_DIR}"
+              if [ -f "${XCODEGEN_DIR}/xcodegen/bin/xcodegen" ]; then
+                chmod +x "${XCODEGEN_DIR}/xcodegen/bin/xcodegen"
+                echo "${XCODEGEN_DIR}/xcodegen/bin" >> "${GITHUB_PATH}"
+              elif [ -f "${XCODEGEN_DIR}/bin/xcodegen" ]; then
+                chmod +x "${XCODEGEN_DIR}/bin/xcodegen"
+                echo "${XCODEGEN_DIR}/bin" >> "${GITHUB_PATH}"
+              else
+                HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install xcodegen
+              fi
+            else
+              HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install xcodegen
+            fi
+          fi
 
       - name: Generate App Icon
         run: |
@@ -159,6 +179,18 @@ jobs:
         run: |
           xcodegen generate
           sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' SimpleBrowser.xcodeproj/project.pbxproj || true
+
+      - name: Preboot Simulator
+        id: sim
+        run: |
+          SIM_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; data=json.load(sys.stdin); devs=[(rt, d["udid"]) for rt, list_ in data.get("devices", {}).items() if "iOS" in rt for d in list_ if d.get("isAvailable") and "iPhone" in d.get("name", "")]; devs.sort(reverse=True); print(devs[0][1] if devs else "")')
+          echo "Selected Simulator UDID: ${SIM_ID}"
+          if [ -z "$SIM_ID" ]; then
+            echo "No available iPhone simulator found"
+            exit 1
+          fi
+          echo "udid=${SIM_ID}" >> "$GITHUB_OUTPUT"
+          nohup xcrun simctl boot "${SIM_ID}" </dev/null >/dev/null 2>&1 &
 
       - name: Run Unit Tests
         run: |
