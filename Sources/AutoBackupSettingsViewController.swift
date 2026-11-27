@@ -370,7 +370,7 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
                     placeholder: "输入密码或 API Token",
                     text: draftServerSecret,
                     keyboardType: .asciiCapable,
-                    isSecure: true,
+                    isSecure: false,
                     tag: 102,
                     delegate: self,
                     target: self,
@@ -396,7 +396,7 @@ final class AutoBackupSettingsViewController: UITableViewController, UITextField
                     placeholder: "留空则上传明文备份",
                     text: draftBackupPassword,
                     keyboardType: .default,
-                    isSecure: true,
+                    isSecure: false,
                     tag: 104,
                     delegate: self,
                     target: self,
@@ -698,6 +698,10 @@ private final class AutoBackupInputCell: UITableViewCell {
         textField.textAlignment = .right
         textField.autocapitalizationType = .none
         textField.autocorrectionType = .no
+        textField.spellCheckingType = .no
+        textField.smartQuotesType = .no
+        textField.smartDashesType = .no
+        textField.smartInsertDeleteType = .no
         textField.clearButtonMode = .whileEditing
         textField.returnKeyType = .next
 
